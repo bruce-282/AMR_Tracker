@@ -1,0 +1,7 @@
+{
+  "calibration": "CalibrationConfig(checkerboard_size=(9, 6), square_size=25.0, num_calibration_images=15, camera_height=2000.0, calibration_data_path='calibration_data.json', calibration_images_dir='calibration_images/')",
+  "measurement": "MeasurementConfig(min_agv_area=1000, max_tracking_distance=500, fps=30)",
+  "display_scale": 0.5,
+  "record_video": false,
+  "output_video_path": "output.mp4"
+}
