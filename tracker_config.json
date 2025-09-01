@@ -1,0 +1,59 @@
+{
+  "calibration": {
+    "checkerboard_size": [9, 6],
+    "square_size": 25.0,
+    "num_calibration_images": 15,
+    "camera_height": 2000.0
+  },
+  "measurement": {
+    "min_agv_area": 1000,
+    "max_tracking_distance": 500,
+    "fps": 30
+  },
+  "display_scale": 0.5,
+  "record_video": false,
+  "output_video_path": "output.mp4",
+  "execution": {
+    "default_mode": "enhanced",
+    "default_loader_mode": "sequence",
+    "default_source": "data/0001_fixed",
+    "default_fps": 30,
+    "default_detector": "yolo",
+    "default_tracker": "kalman",
+    "stationary_mode": true,
+    "presets": {
+      "enhanced_stationary": {
+        "mode": "enhanced",
+        "loader_mode": "sequence",
+        "source": "data/0001_fixed",
+        "fps": 30,
+        "detector": "yolo",
+        "tracker": "kalman",
+        "stationary_mode": true
+      },
+      "enhanced_tracking": {
+        "mode": "enhanced",
+        "loader_mode": "sequence",
+        "source": "data/0001_fixed",
+        "fps": 30,
+        "detector": "yolo",
+        "tracker": "kalman",
+        "stationary_mode": false
+      },
+      "basic_tracking": {
+        "mode": "basic",
+        "loader_mode": "sequence",
+        "source": "data/0001_fixed",
+        "fps": 30,
+        "stationary_mode": false
+      },
+      "camera_basic": {
+        "mode": "basic",
+        "loader_mode": "camera",
+        "source": 0,
+        "fps": 30,
+        "stationary_mode": false
+      }
+    }
+  }
+}

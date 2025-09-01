@@ -885,6 +885,55 @@ class EnhancedAMRSystem:
             return vis_frame
 
 
+def load_execution_preset(config_path: str, preset_name: str) -> dict:
+    """Load execution preset from config file"""
+    try:
+        with open(config_path, "r") as f:
+            config = json.load(f)
+
+        if "execution" in config and "presets" in config["execution"]:
+            presets = config["execution"]["presets"]
+            if preset_name in presets:
+                print(f"✓ Loaded preset: {preset_name}")
+                return presets[preset_name]
+            else:
+                available_presets = list(presets.keys())
+                print(
+                    f"⚠ Preset '{preset_name}' not found. Available presets: {available_presets}"
+                )
+                return {}
+        else:
+            print("⚠ No execution presets found in config file")
+            return {}
+    except Exception as e:
+        print(f"⚠ Error loading preset: {e}")
+        return {}
+
+
+def apply_preset_to_args(args: argparse.Namespace, preset: dict) -> argparse.Namespace:
+    """Apply preset values to args if not explicitly set"""
+    if not preset:
+        return args
+
+    # Apply preset values only if args are not explicitly set
+    if args.mode == "basic" and "mode" in preset:
+        args.mode = preset["mode"]
+    if args.loader_mode == "auto" and "loader_mode" in preset:
+        args.loader_mode = preset["loader_mode"]
+    if args.source == "0" and "source" in preset:
+        args.source = preset["source"]
+    if args.fps == 30 and "fps" in preset:
+        args.fps = preset["fps"]
+    if not args.stationary_mode and "stationary_mode" in preset:
+        args.stationary_mode = preset["stationary_mode"]
+    if args.detector == "yolo" and "detector" in preset:
+        args.detector = preset["detector"]
+    if args.tracker == "kalman" and "tracker" in preset:
+        args.tracker = preset["tracker"]
+
+    return args
+
+
 def main():
     """Enhanced main function with command line arguments"""
     parser = argparse.ArgumentParser(description="Enhanced AMR Tracking System")
@@ -907,8 +956,13 @@ def main():
     )
     parser.add_argument(
         "--config",
-        default="config.json",
+        default="tracker_config.json",
         help="Configuration file path (enhanced mode only)",
+    )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        help="Load execution preset from config file (e.g., 'enhanced_stationary', 'enhanced_tracking', 'basic_tracking', 'camera_basic')",
     )
     parser.add_argument(
         "--mode",
@@ -937,6 +991,11 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Load preset if provided
+    if args.preset:
+        preset_config = load_execution_preset(args.config, args.preset)
+        args = apply_preset_to_args(args, preset_config)
 
     # Initialize system
     if args.mode == "basic":

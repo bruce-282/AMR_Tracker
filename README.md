@@ -264,6 +264,28 @@ uv run agv_system.py measure --source 0
 uv run agv_system.py measure --source "video.mp4"
 ```
 
+### Preset 사용법 (간편한 실행)
+자주 사용하는 설정을 preset으로 저장하여 간단하게 실행할 수 있습니다:
+
+```bash
+# 1. 정지 모드 + Enhanced mode (위치/방향만 측정)
+uv run main.py --preset stationary_enhanced
+
+# 2. 기본 추적 모드
+uv run main.py --preset basic_tracking
+
+# 3. 웹캠 기본 모드
+uv run main.py --preset webcam_basic
+```
+
+**사용 가능한 Preset:**
+- **`stationary_enhanced`**: 정지 모드 + Enhanced mode (data/0001_fixed, 30fps)
+- **`basic_tracking`**: 기본 추적 모드 (data/0001_fixed, 30fps)
+- **`webcam_basic`**: 웹캠 기본 모드 (카메라 0번, 30fps)
+
+**Preset 커스터마이징:**
+`config.json`의 `execution.presets` 섹션에서 새로운 preset을 추가하거나 기존 preset을 수정할 수 있습니다.
+
 ## 주의사항
 
 - **Enhanced Mode**: `config.json` 파일과 AGV Measurement System 모듈이 필요합니다
