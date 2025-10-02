@@ -11,8 +11,12 @@ import glob
 import os
 import csv
 from datetime import datetime
-from sequence_loader import (
-    SequenceLoader,
+from scipy.optimize import linear_sum_assignment
+from src.utils.sequence_loader import (
+    BaseLoader,
+    CameraDeviceLoader,
+    VideoFileLoader,
+    ImageSequenceLoader,
     create_sequence_loader,
     create_camera_device_loader,
     create_video_file_loader,
@@ -20,491 +24,38 @@ from sequence_loader import (
     LoaderMode,
 )
 
+# Import config first (always available)
+from config import SystemConfig
+
 # Import new modules
 try:
-    from detection.agv_detector import AGVDetector, Detection
-    from measurement.size_measurement import SizeMeasurement
-    from measurement.speed_tracker import SpeedTracker
-    from visualization.display import Visualizer
-    from utils.config import SystemConfig
+    from src.core.detection import Detection, YOLODetector
+    from src.core.measurement.size_measurement import SizeMeasurement
+    from src.core.tracking import (
+        SpeedTracker,
+        KalmanTracker,
+        TrackingDataLogger,
+        associate_detections_to_trackers,
+    )
+    from src.visualization.display import Visualizer
 
-    NEW_MODULES_AVAILABLE = True
+    ENHANCED_MODULES_AVAILABLE = True
 except ImportError:
-    NEW_MODULES_AVAILABLE = False
+    ENHANCED_MODULES_AVAILABLE = False
     print(
         "Warning: New AGV Measurement System modules not available. Using basic mode."
     )
 
 
-class AMROBBTracker:
-    def __init__(self, fps=30, pixel_to_meter=0.01, track_id=0, stationary_mode=False):
-        """
-        AMR tracker with position, velocity, and orientation tracking
-
-        Args:
-            fps: Camera frame rate
-            pixel_to_meter: Conversion ratio (1 pixel = ? meters)
-            track_id: Unique ID for this tracker
-            stationary_mode: If True, only measure position and orientation, skip velocity
-        """
-        self.fps = fps
-        self.pixel_to_meter = pixel_to_meter
-        self.track_id = track_id
-        self.stationary_mode = stationary_mode
-        self.kf = self.init_kalman()
-
-        # For angle continuity (handle angle wrap-around)
-        self.prev_angle = None
-        self.angle_offset = 0
-
-        # For debugging/visualization
-        self.trajectory = deque(maxlen=100)
-
-        # Color for this tracker (different colors for different objects)
-        colors = [
-            (0, 255, 0),  # Green
-            (255, 0, 0),  # Blue
-            (0, 0, 255),  # Red
-            (255, 255, 0),  # Cyan
-            (255, 0, 255),  # Magenta
-            (0, 255, 255),  # Yellow
-            (128, 0, 255),  # Purple
-            (255, 128, 0),  # Orange
-            (0, 128, 255),  # Light Blue
-            (128, 255, 0),  # Light Green
-        ]
-        self.color = colors[track_id % len(colors)]
-
-        # For tracking lost objects
-        self.last_detection_frame = 0
-        self.frames_since_detection = 0
-
-    def init_kalman(self):
-        """
-        Initialize Kalman filter
-        State vector: [x, y, theta, vx, vy, omega]
-        Measurement vector: [x, y, theta]
-        """
-        kf = KalmanFilter(dim_x=6, dim_z=3)
-
-        dt = 1.0 / self.fps
-
-        # State transition matrix
-        kf.F = np.array(
-            [
-                [1, 0, 0, dt, 0, 0],  # x = x + vx*dt
-                [0, 1, 0, 0, dt, 0],  # y = y + vy*dt
-                [0, 0, 1, 0, 0, dt],  # theta = theta + omega*dt
-                [0, 0, 0, 1, 0, 0],  # vx = vx
-                [0, 0, 0, 0, 1, 0],  # vy = vy
-                [0, 0, 0, 0, 0, 1],  # omega = omega
-            ]
-        )
-
-        # Measurement matrix
-        kf.H = np.array([[1, 0, 0, 0, 0, 0], [0, 1, 0, 0, 0, 0], [0, 0, 1, 0, 0, 0]])
-
-        # Measurement noise covariance
-        kf.R = np.array(
-            [
-                [10, 0, 0],  # x measurement noise
-                [0, 10, 0],  # y measurement noise
-                [0, 0, 0.1],  # theta measurement noise (radians)
-            ]
-        )
-
-        # Process noise covariance
-        kf.Q = np.eye(6)
-        kf.Q[0, 0] = kf.Q[1, 1] = 0.1  # position process noise
-        kf.Q[2, 2] = 0.01  # angle process noise
-        kf.Q[3, 3] = kf.Q[4, 4] = 1.0  # velocity process noise
-        kf.Q[5, 5] = 0.1  # angular velocity process noise
-
-        # Initial state covariance
-        kf.P *= 100
-
-        # Initial state
-        kf.x = np.zeros(6)
-
-        return kf
-
-    def detect_orientation_obb(self, image, bbox):
-        """
-        Detect AMR orientation using Oriented Bounding Box
-
-        Args:
-            image: Input frame
-            bbox: [x, y, w, h] detection bounding box
-
-        Returns:
-            theta: Orientation in radians (-pi to pi)
-        """
-        x, y, w, h = map(int, bbox)
-
-        # Extract ROI
-        roi = image[y : y + h, x : x + w]
-
-        if roi.size == 0:
-            return None
-
-        # Convert to grayscale
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-
-        # Apply GaussianBlur to reduce noise
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-
-        # Threshold to get binary image
-        # Use Otsu's method for automatic threshold selection
-        _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-        # Find contours
-        contours, _ = cv2.findContours(
-            binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-
-        if not contours:
-            return None
-
-        # Get the largest contour (assuming it's the AMR)
-        largest_contour = max(contours, key=cv2.contourArea)
-
-        # Check if contour is large enough
-        if cv2.contourArea(largest_contour) < 100:  # Minimum area threshold
-            return None
-
-        # Fit minimum area rectangle
-        rect = cv2.minAreaRect(largest_contour)
-        (center_x, center_y), (width, height), angle = rect
-
-        # OpenCV returns angle in range [-90, 0]
-        # Convert to consistent orientation
-        if width < height:
-            angle = angle + 90
-
-        # Convert to radians
-        theta = np.deg2rad(angle)
-
-        # Normalize to [-pi, pi]
-        theta = np.arctan2(np.sin(theta), np.cos(theta))
-
-        return theta
-
-    def handle_angle_continuity(self, new_angle):
-        """
-        Handle angle wrap-around for continuous tracking
-
-        Args:
-            new_angle: New measured angle in radians
-
-        Returns:
-            Continuous angle in radians
-        """
-        if self.prev_angle is None:
-            self.prev_angle = new_angle
-            return new_angle
-
-        # Calculate angle difference
-        diff = new_angle - self.prev_angle
-
-        # Check for wrap-around
-        if diff > np.pi:
-            self.angle_offset -= 2 * np.pi
-        elif diff < -np.pi:
-            self.angle_offset += 2 * np.pi
-
-        continuous_angle = new_angle + self.angle_offset
-        self.prev_angle = new_angle
-
-        return continuous_angle
-
-    def update(self, image, detection_bbox, frame_number=0):
-        """
-        Update tracker with new detection
-
-        Args:
-            image: Current frame
-            detection_bbox: [x, y, w, h] or None if no detection
-            frame_number: Current frame number
-
-        Returns:
-            Dictionary with tracking results
-        """
-        # Prediction step
-        self.kf.predict()
-
-        if detection_bbox is not None:
-            # Update detection tracking
-            self.last_detection_frame = frame_number
-            self.frames_since_detection = 0
-            # Get center position
-            x, y, w, h = detection_bbox
-            cx = x + w / 2
-            cy = y + h / 2
-
-            # Detect orientation
-            theta = self.detect_orientation_obb(image, detection_bbox)
-
-            if theta is not None:
-                # Handle angle continuity
-                theta = self.handle_angle_continuity(theta)
-            else:
-                # Use previous angle or default to avoid dimension mismatch
-                theta = self.prev_angle if self.prev_angle is not None else 0.0
-
-            # Always use 3D measurement to avoid matrix dimension issues
-            z = np.array([[cx], [cy], [theta]], dtype=np.float64)
-
-            # Update step
-            self.kf.update(z)
-
-            # Store trajectory point
-            self.trajectory.append((cx, cy))
-        else:
-            # No detection, increment frames since detection
-            self.frames_since_detection += 1
-
-        # Extract state
-        state = self.kf.x
-
-        # Calculate speeds (skip if in stationary mode)
-        if not self.stationary_mode:
-            linear_speed_pix = np.sqrt(state[3] ** 2 + state[4] ** 2) * self.fps
-            linear_speed_m = linear_speed_pix * self.pixel_to_meter
-
-            angular_speed_rad = abs(state[5])
-            angular_speed_deg = np.rad2deg(angular_speed_rad)
-        else:
-            # In stationary mode, set velocities to 0
-            linear_speed_pix = 0
-            linear_speed_m = 0
-            angular_speed_rad = 0
-            angular_speed_deg = 0
-
-        # Prepare output
-        results = {
-            "position": {
-                "x": state[0],
-                "y": state[1],
-                "x_m": state[0] * self.pixel_to_meter,
-                "y_m": state[1] * self.pixel_to_meter,
-            },
-            "orientation": {
-                "theta_rad": state[2],
-                "theta_deg": np.rad2deg(state[2]),
-                "theta_normalized_deg": np.rad2deg(
-                    np.arctan2(np.sin(state[2]), np.cos(state[2]))
-                ),
-            },
-            "velocity": {
-                "vx_pix_per_sec": (
-                    state[3] * self.fps if not self.stationary_mode else 0
-                ),
-                "vy_pix_per_sec": (
-                    state[4] * self.fps if not self.stationary_mode else 0
-                ),
-                "vx_m_per_sec": (
-                    state[3] * self.fps * self.pixel_to_meter
-                    if not self.stationary_mode
-                    else 0
-                ),
-                "vy_m_per_sec": (
-                    state[4] * self.fps * self.pixel_to_meter
-                    if not self.stationary_mode
-                    else 0
-                ),
-                "linear_speed_pix_per_sec": linear_speed_pix,
-                "linear_speed_m_per_sec": linear_speed_m,
-            },
-            "angular_velocity": {
-                "omega_rad_per_sec": state[5] if not self.stationary_mode else 0,
-                "omega_deg_per_sec": (
-                    np.rad2deg(state[5]) if not self.stationary_mode else 0
-                ),
-                "angular_speed_rad_per_sec": angular_speed_rad,
-                "angular_speed_deg_per_sec": angular_speed_deg,
-            },
-            "bbox": detection_bbox,
-            "trajectory": list(self.trajectory),
-            "stationary_mode": self.stationary_mode,
-        }
-
-        return results
-
-    def draw_visualization(self, image, results):
-        """
-        Draw tracking results on image
-
-        Args:
-            image: Frame to draw on
-            results: Results from update()
-
-        Returns:
-            Annotated image
-        """
-        img_copy = image.copy()
-
-        # Draw bounding box if available
-        if results["bbox"] is not None:
-            x, y, w, h = map(int, results["bbox"])
-            cv2.rectangle(img_copy, (x, y), (x + w, y + h), self.color, 2)
-
-            # Draw orientation arrow
-            cx = int(results["position"]["x"])
-            cy = int(results["position"]["y"])
-
-            theta = results["orientation"]["theta_rad"]
-            arrow_length = 50
-            end_x = int(cx + arrow_length * np.cos(theta))
-            end_y = int(cy + arrow_length * np.sin(theta))
-
-            cv2.arrowedLine(
-                img_copy, (cx, cy), (end_x, end_y), self.color, 3, tipLength=0.3
-            )
-
-            # Draw speed instead of ID (or show stationary status)
-            if not self.stationary_mode:
-                speed_kmh = (
-                    results["velocity"]["linear_speed_m_per_sec"] * 3.6
-                )  # Convert m/s to km/h
-                display_text = f"{speed_kmh:.1f}km/h"
-            else:
-                # In stationary mode, show position info
-                pos_x = results["position"]["x"]
-                pos_y = results["position"]["y"]
-                display_text = f"({pos_x:.0f},{pos_y:.0f})"
-
-            cv2.putText(
-                img_copy,
-                display_text,
-                (x, y - 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                self.color,
-                2,
-            )
-
-        # Draw trajectory with object's color
-        if len(results["trajectory"]) > 1:
-            pts = np.array(results["trajectory"], np.int32)
-            cv2.polylines(img_copy, [pts], False, self.color, 2)
-
-        # # Add text information
-        # info_text = [
-        #     f"Speed: {results['velocity']['linear_speed_m_per_sec']:.2f} m/s",
-        #     f"Angle: {results['orientation']['theta_normalized_deg']:.1f} deg",
-        #     f"Angular: {results['angular_velocity']['angular_speed_deg_per_sec']:.1f} deg/s",
-        # ]
-
-        # y_offset = 30
-        # for i, text in enumerate(info_text):
-        #     cv2.putText(
-        #         img_copy,
-        #         text,
-        #         (10, y_offset + i * 25),
-        #         cv2.FONT_HERSHEY_SIMPLEX,
-        #         0.7,
-        #         (0, 255, 255),
-        #         2,
-        #     )
-
-        return img_copy
-
-    def is_lost(self, max_frames_lost=10):
-        """
-        Check if tracker has been lost for too long
-
-        Args:
-            max_frames_lost: Maximum frames without detection before considering lost
-
-        Returns:
-            bool: True if tracker should be removed
-        """
-        return self.frames_since_detection > max_frames_lost
-
-
-class TrackingDataLogger:
-    """Class to log tracking data to CSV files"""
-
-    def __init__(self, output_dir="tracking_results"):
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True)
-
-        # Generate filename with timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.csv_file = self.output_dir / f"tracking_results_{timestamp}.csv"
-
-        # Create CSV file with headers
-        with open(self.csv_file, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(
-                [
-                    "timestamp",
-                    "frame_number",
-                    "track_id",
-                    "position_x",
-                    "position_y",
-                    "velocity_x",
-                    "velocity_y",
-                    "linear_speed_ms",
-                    "linear_speed_kmh",
-                    "orientation_deg",
-                    "detection_type",
-                ]
-            )
-
-        print(f"✓ Tracking data will be saved to: {self.csv_file}")
-
-    def log_tracking_result(self, frame_number: int, tracking_result: dict):
-        """Log a single tracking result to CSV"""
-        try:
-            with open(self.csv_file, "a", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-
-                timestamp = datetime.now().isoformat()
-                track_id = tracking_result.get("track_id", "unknown")
-
-                # Position data
-                pos = tracking_result.get("position", {})
-                pos_x = pos.get("x", 0)
-                pos_y = pos.get("y", 0)
-
-                # Velocity data
-                vel = tracking_result.get("velocity", {})
-                vel_x = vel.get("vx", 0)
-                vel_y = vel.get("vy", 0)
-                linear_speed_ms = vel.get("linear_speed_m_per_sec", 0)
-                linear_speed_kmh = linear_speed_ms * 3.6
-
-                # Orientation data
-                orient = tracking_result.get("orientation", {})
-                orientation_deg = orient.get("theta_normalized_deg", 0)
-
-                # Detection type
-                detection_type = tracking_result.get("detection_type", "unknown")
-
-                writer.writerow(
-                    [
-                        timestamp,
-                        frame_number,
-                        track_id,
-                        f"{pos_x:.2f}",
-                        f"{pos_y:.2f}",
-                        f"{vel_x:.2f}",
-                        f"{vel_y:.2f}",
-                        f"{linear_speed_ms:.2f}",
-                        f"{linear_speed_kmh:.2f}",
-                        f"{orientation_deg:.2f}",
-                        detection_type,
-                    ]
-                )
-
-        except Exception as e:
-            print(f"Warning: Failed to log tracking data: {e}")
-
-
 class EnhancedAMRSystem:
     """
-    Enhanced AMR tracking system that can use different detectors and trackers
+    AMR (Autonomous Mobile Robot) tracking system with YOLO detection and Kalman filtering.
+
+    Features:
+    - YOLO-based object detection with configurable classes
+    - Kalman filter tracking with IoU-based association
+    - Real-time speed and orientation estimation
+    - CSV data logging for tracking results
     """
 
     def __init__(
@@ -512,21 +63,23 @@ class EnhancedAMRSystem:
         config: Optional[SystemConfig] = None,
         detector_type: str = "yolo",
         tracker_type: str = "kalman",
-        stationary_mode: bool = False,
+        pixel_size: float = 1.0,
     ):
         """
         Initialize enhanced AMR system
 
         Args:
             config: System configuration
-            detector_type: Type of detector ("yolo", "color", "agv")
+            detector_type: Type of detector ("yolo")
             tracker_type: Type of tracker ("kalman", "speed")
-            stationary_mode: If True, only measure position and orientation, skip velocity
         """
         self.config = config
         self.detector_type = detector_type
         self.tracker_type = tracker_type
-        self.stationary_mode = stationary_mode
+        self.pixel_size = pixel_size
+        self.stationary_threshold = (
+            5.0  # Speed threshold in mm/s to consider object as stationary
+        )
 
         # Initialize data logger
         self.data_logger = TrackingDataLogger()
@@ -545,44 +98,63 @@ class EnhancedAMRSystem:
         print(f"Initializing Enhanced AMR System...")
         print(f"Detector: {self.detector_type}")
         print(f"Tracker: {self.tracker_type}")
-        print(f"New modules: {NEW_MODULES_AVAILABLE}")
+        print(f"New modules: {ENHANCED_MODULES_AVAILABLE}")
 
         # Initialize detector
         if self.detector_type == "yolo":
-            import ultralytics
-
-            self.detector = ultralytics.YOLO("yolov8n.pt")
-            print("✓ YOLO detector initialized")
-        elif self.detector_type == "color" and NEW_MODULES_AVAILABLE:
-            self.detector = AGVDetector(min_area=1000)
-            print("✓ Color-based AGV detector initialized")
-        elif self.detector_type == "agv" and NEW_MODULES_AVAILABLE:
-            self.detector = AGVDetector(min_area=1000)
-            print("✓ AGV detector initialized")
+            try:
+                # Check CUDA availability
+                import torch
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                print(f"Using device: {device}")
+                
+                self.detector = YOLODetector(
+                    "weights/last.pt",
+                    confidence_threshold=0.88,
+                    device=device,  # Auto-detect CUDA availability
+                    imgsz=768,
+                    target_classes=[0],  # Only detect class 0 (AGV)
+                )
+                print("✓ YOLO detector initialized (weights/last.pt)")
+            except ImportError:
+                raise ImportError("ultralytics 모듈이 설치되지 않았습니다.")
+            except FileNotFoundError:
+                raise FileNotFoundError("weights 파일을 찾을 수 없습니다. ")
         else:
-            print("Warning: Using fallback YOLO detector")
-            import ultralytics
-
-            self.detector = ultralytics.YOLO("yolov8n.pt")
+            raise ValueError(
+                f"지원하지 않는 감지기 타입: {self.detector_type}. 'yolo'만 지원됩니다."
+            )
 
         # Initialize tracker
         if self.tracker_type == "kalman":
             self.trackers = {}  # Dictionary to store multiple trackers
             self.next_track_id = 0
             print("✓ Multi-object Kalman filter tracker initialized")
-        elif self.tracker_type == "speed" and NEW_MODULES_AVAILABLE:
+        elif self.tracker_type == "speed" and ENHANCED_MODULES_AVAILABLE:
             self.speed_tracker = SpeedTracker(max_history=30, max_tracking_distance=500)
             print("✓ Speed tracker initialized")
+            print(f"Debug - SpeedTracker created: {self.speed_tracker is not None}")
         else:
             self.trackers = {}  # Dictionary to store multiple trackers
             self.next_track_id = 0
             print("✓ Fallback multi-object Kalman filter tracker initialized")
 
         # Initialize additional components if using new modules
-        if NEW_MODULES_AVAILABLE and self.config:
+        if ENHANCED_MODULES_AVAILABLE and self.config:
             try:
                 # Load calibration data if available
-                calibration_path = self.config.calibration.calibration_data_path
+                try:
+                    if isinstance(self.config, dict):
+                        # dict object
+                        calibration_path = self.config["calibration"][
+                            "calibration_data_path"
+                        ]
+                    else:
+                        # SystemConfig object
+                        calibration_path = self.config.calibration.calibration_data_path
+                except (KeyError, AttributeError) as e:
+                    print(f"⚠ Error accessing calibration_data_path: {e}")
+                    calibration_path = "calibration_data.json"  # 기본값
                 if Path(calibration_path).exists():
                     with open(calibration_path, "r") as f:
                         calibration_data = json.load(f)
@@ -590,7 +162,9 @@ class EnhancedAMRSystem:
                     # Always initialize size measurement and visualizer if calibration data exists
                     self.size_measurement = SizeMeasurement(
                         homography=np.array(calibration_data["homography"]),
-                        camera_height=calibration_data["camera_height"],
+                        camera_height=0.0,  # AGV 위에 캘판을 놓았으므로 높이 0
+                        pixel_size=calibration_data.get("pixel_size", 1.0),
+                        calibration_image_size=(3840, 2160),  # 4K 이미지 크기
                     )
                     print("✓ Size measurement initialized")
 
@@ -611,161 +185,94 @@ class EnhancedAMRSystem:
             timestamp = time.time()
 
         detections = []
-
+        classes = [1]
         if self.detector_type == "yolo":
-            # YOLO detection - filter only cars and trucks
-            # COCO class IDs: car=2, truck=7, bus=5
-            results = self.detector(
-                frame, classes=[2, 7]
-            )  # Only detect cars and trucks
-            if len(results[0].boxes) > 0:
-                for i, box in enumerate(results[0].boxes.xyxy):
-                    x1, y1, x2, y2 = box.cpu().numpy()
-                    bbox = [x1, y1, x2 - x1, y2 - y1]
-                    confidence = results[0].boxes.conf[i].cpu().numpy()
+            # YOLO detection using YOLODetector
+            yolo_detections = self.detector.detect(frame)
 
-                    # Create a simple detection object for compatibility with size measurement
-                    detection_obj = type(
-                        "Detection",
-                        (),
-                        {
-                            "bbox": np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]]),
-                            "confidence": float(confidence),
-                            "type": "vehicle",
-                        },
-                    )()
-
-                    detections.append(
-                        {
-                            "bbox": bbox,
-                            "confidence": float(confidence),
-                            "type": "yolo",
-                            "detection_obj": detection_obj,
-                        }
-                    )
-
-        elif self.detector_type in ["color", "agv"] and NEW_MODULES_AVAILABLE:
-            # AGV detector
-            agv_detections = self.detector.detect(frame, frame_number, timestamp)
-            for detection in agv_detections:
-                # Convert bbox format
-                bbox_points = detection.bbox
-                x_coords = bbox_points[:, 0]
-                y_coords = bbox_points[:, 1]
-                x1, y1 = np.min(x_coords), np.min(y_coords)
-                x2, y2 = np.max(x_coords), np.max(y_coords)
-                bbox = [x1, y1, x2 - x1, y2 - y1]
-
-                detections.append(
-                    {
-                        "bbox": bbox,
-                        "confidence": detection.confidence,
-                        "type": "agv",
-                        "detection_obj": detection,
-                    }
-                )
+            for detection in yolo_detections:
+                # Set timestamp
+                detection.timestamp = timestamp
+                detections.append(detection)
 
         return detections
 
-    def track_objects(self, frame: np.ndarray, detections: List[Dict]) -> List[Dict]:
+    def track_objects(
+        self, frame: np.ndarray, detections: List[Detection]
+    ) -> List[Dict]:
         """Track objects using selected tracker"""
         results = []
 
         if self.tracker_type == "kalman":
-            # Use multi-object Kalman filter tracking
+            # Use multi-object Kalman filter tracking with IoU-based association
             if detections:
-                # Simple association: assign detections to closest trackers
-                used_detections = set()
+                # Use IoU + Hungarian algorithm for optimal association
+                matches, unmatched_detections, unmatched_trackers = (
+                    associate_detections_to_trackers(
+                        detections, self.trackers, iou_threshold=0.1
+                    )
+                )
 
-                # Update existing trackers
-                for track_id, tracker in list(self.trackers.items()):
-                    if not detections:
-                        break
+                # Update matched trackers
+                for detection_idx, tracker_id in matches:
+                    detection = detections[detection_idx]
+                    tracker = self.trackers[tracker_id]
 
-                    # Find closest detection
-                    best_detection_idx = None
-                    best_distance = float("inf")
+                    tracking_result = tracker.update(
+                        frame, detection.bbox, frame_number=len(results)
+                    )
+                    tracking_result["detection_type"] = getattr(
+                        detection, "class_name", "unknown"
+                    )
+                    tracking_result["track_id"] = tracker_id
+                    tracking_result["color"] = tracker.color
 
-                    for i, detection in enumerate(detections):
-                        if i in used_detections:
-                            continue
+                    # Add size measurement if available
+                    if self.size_measurement:
+                        size_measurement = self.size_measurement.measure(detection)
+                        tracking_result["size_measurement"] = size_measurement
 
-                        bbox = detection["bbox"]
-                        cx = bbox[0] + bbox[2] / 2
-                        cy = bbox[1] + bbox[3] / 2
+                    results.append(tracking_result)
 
-                        # Get tracker's last position
-                        tracker_pos = tracker.kf.x[:2]
-                        distance = np.sqrt(
-                            (cx - tracker_pos[0]) ** 2 + (cy - tracker_pos[1]) ** 2
-                        )
+                # Handle unmatched trackers (predict only)
+                for tracker_id in unmatched_trackers:
+                    tracker = self.trackers[tracker_id]
+                    tracking_result = tracker.update(
+                        frame, None, frame_number=len(results)
+                    )
+                    tracking_result["detection_type"] = "predicted"
+                    tracking_result["track_id"] = tracker_id
+                    tracking_result["color"] = tracker.color
+                    results.append(tracking_result)
 
-                        if (
-                            distance < best_distance and distance < 100
-                        ):  # Max association distance
-                            best_distance = distance
-                            best_detection_idx = i
+                # Create new trackers for unmatched detections
+                for detection_idx in unmatched_detections:
+                    detection = detections[detection_idx]
+                    new_tracker = KalmanTracker(
+                        fps=30,
+                        pixel_size=self.pixel_size,
+                        track_id=self.next_track_id,
+                    )
+                    # Initialize tracker with detection position
+                    new_tracker.initialize_with_detection(detection.bbox)
+                    self.trackers[self.next_track_id] = new_tracker
 
-                    if best_detection_idx is not None:
-                        detection = detections[best_detection_idx]
-                        tracking_result = tracker.update(
-                            frame, detection["bbox"], frame_number=len(results)
-                        )
-                        tracking_result["detection_type"] = detection.get(
-                            "type", "unknown"
-                        )
-                        tracking_result["track_id"] = track_id
-                        tracking_result["color"] = tracker.color
+                    tracking_result = new_tracker.update(
+                        frame, detection.bbox, frame_number=len(results)
+                    )
+                    tracking_result["detection_type"] = getattr(
+                        detection, "class_name", "unknown"
+                    )
+                    tracking_result["track_id"] = self.next_track_id
+                    tracking_result["color"] = new_tracker.color
 
-                        # Add size measurement if available
-                        if self.size_measurement and "detection_obj" in detection:
-                            size_measurement = self.size_measurement.measure(
-                                detection["detection_obj"]
-                            )
-                            tracking_result["size_measurement"] = size_measurement
+                    # Add size measurement if available
+                    if self.size_measurement:
+                        size_measurement = self.size_measurement.measure(detection)
+                        tracking_result["size_measurement"] = size_measurement
 
-                        results.append(tracking_result)
-                        used_detections.add(best_detection_idx)
-                    else:
-                        # No detection found, predict only
-                        tracking_result = tracker.update(
-                            frame, None, frame_number=len(results)
-                        )
-                        tracking_result["detection_type"] = "predicted"
-                        tracking_result["track_id"] = track_id
-                        tracking_result["color"] = tracker.color
-                        results.append(tracking_result)
-
-                # Create new trackers for unassigned detections
-                for i, detection in enumerate(detections):
-                    if i not in used_detections:
-                        new_tracker = AMROBBTracker(
-                            fps=30,
-                            pixel_to_meter=0.01,
-                            track_id=self.next_track_id,
-                            stationary_mode=self.stationary_mode,
-                        )
-                        self.trackers[self.next_track_id] = new_tracker
-
-                        tracking_result = new_tracker.update(
-                            frame, detection["bbox"], frame_number=len(results)
-                        )
-                        tracking_result["detection_type"] = detection.get(
-                            "type", "unknown"
-                        )
-                        tracking_result["track_id"] = self.next_track_id
-                        tracking_result["color"] = new_tracker.color
-
-                        # Add size measurement if available
-                        if self.size_measurement and "detection_obj" in detection:
-                            size_measurement = self.size_measurement.measure(
-                                detection["detection_obj"]
-                            )
-                            tracking_result["size_measurement"] = size_measurement
-
-                        results.append(tracking_result)
-
-                        self.next_track_id += 1
+                    results.append(tracking_result)
+                    self.next_track_id += 1
 
                 # Clean up lost trackers
                 trackers_to_remove = []
@@ -777,34 +284,42 @@ class EnhancedAMRSystem:
                     print(f"Removing lost tracker ID: {track_id}")
                     del self.trackers[track_id]
 
-        elif self.tracker_type == "speed" and NEW_MODULES_AVAILABLE:
+        elif self.tracker_type == "speed" and ENHANCED_MODULES_AVAILABLE:
             # Use speed tracker (multiple objects)
             measurements = []
             for detection in detections:
-                if "detection_obj" in detection and self.size_measurement:
+                if self.size_measurement:
                     # Measure size if calibration is available
-                    measurement = self.size_measurement.measure(
-                        detection["detection_obj"]
-                    )
-                    measurement["bbox"] = detection["bbox"]
-                    measurement["confidence"] = detection["confidence"]
+                    measurement = self.size_measurement.measure(detection)
+                    measurement["bbox"] = detection.bbox
+                    measurement["confidence"] = detection.confidence
                     measurements.append(measurement)
                 else:
-                    # Basic measurement
-                    bbox = detection["bbox"]
+                    # Basic measurement - convert to mm coordinates
+                    bbox = detection.bbox
                     cx = bbox[0] + bbox[2] / 2
                     cy = bbox[1] + bbox[3] / 2
+                    # Convert pixel coordinates to mm using pixel_size
+                    cx_mm = cx * self.pixel_size
+                    cy_mm = cy * self.pixel_size
                     measurements.append(
                         {
-                            "center_world": (cx, cy),
-                            "bbox": detection["bbox"],
-                            "confidence": detection["confidence"],
+                            "center_world": (cx_mm, cy_mm),
+                            "bbox": detection.bbox,
+                            "confidence": detection.confidence,
                             "timestamp": time.time(),
                         }
                     )
 
             # Update speed tracker
+            print(f"Debug - measurements before speed tracker: {len(measurements)}")
+            for i, m in enumerate(measurements):
+                print(f"Debug - measurement {i}: {list(m.keys())}")
+
             results = self.speed_tracker.update(measurements)
+            print(f"Debug - speed tracker results: {len(results)}")
+            for i, r in enumerate(results):
+                print(f"Debug - result {i}: {list(r.keys())}")
 
         return results
 
@@ -816,23 +331,21 @@ class EnhancedAMRSystem:
             # Use multi-object AMR tracker visualization
             if self.visualizer and self.size_measurement:
                 # Use enhanced visualizer if available
-                detection_objects = [
-                    d.get("detection_obj") for d in detections if "detection_obj" in d
-                ]
+                detection_objects = detections
                 vis_frame = self.visualizer.draw_detections(
                     frame, detection_objects, tracking_results
                 )
 
                 # Add summary information
-                cv2.putText(
-                    vis_frame,
-                    f"Objects: {len(tracking_results)} (Enhanced)",
-                    (10, vis_frame.shape[0] - 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (255, 255, 255),
-                    2,
-                )
+                # cv2.putText(
+                #     vis_frame,
+                #     f"Objects: {len(tracking_results)} (Enhanced)",
+                #     (10, vis_frame.shape[0] - 30),
+                #     cv2.FONT_HERSHEY_SIMPLEX,
+                #     0.7,
+                #     (255, 255, 255),
+                #     2,
+                # )
             else:
                 # Use basic AMR tracker visualization
                 vis_frame = frame.copy()
@@ -846,42 +359,102 @@ class EnhancedAMRSystem:
                             vis_frame = tracker.draw_visualization(vis_frame, result)
 
                 # Add summary information
-                cv2.putText(
-                    vis_frame,
-                    f"Objects: {len(tracking_results)}",
-                    (10, vis_frame.shape[0] - 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (255, 255, 255),
-                    2,
-                )
+                # cv2.putText(
+                #     vis_frame,
+                #     f"Objects: {len(tracking_results)}",
+                #     (10, vis_frame.shape[0] - 30),
+                #     cv2.FONT_HERSHEY_SIMPLEX,
+                #     0.7,
+                #     (255, 255, 255),
+                #     2,
+                # )
 
             return vis_frame
 
-        elif self.tracker_type == "speed" and NEW_MODULES_AVAILABLE and self.visualizer:
-            # Use enhanced visualizer
-            detection_objects = [
-                d.get("detection_obj") for d in detections if "detection_obj" in d
-            ]
-            return self.visualizer.draw_detections(
-                frame, detection_objects, tracking_results
-            )
+        elif self.tracker_type == "speed" and ENHANCED_MODULES_AVAILABLE:
+            # Use enhanced visualizer with speed information
+            if self.visualizer:
+                detection_objects = detections
+                vis_frame = self.visualizer.draw_detections(
+                    frame, detection_objects, tracking_results
+                )
+            else:
+                # Fallback to basic visualization with speed info
+                vis_frame = frame.copy()
+                print("Debug - Using fallback visualization for SpeedTracker")
+
+            # Add speed information overlay
+            for result in tracking_results:
+                # 디버깅: 결과 정보 출력
+                print(f"Debug - tracking_result keys: {list(result.keys())}")
+                if "speed" in result:
+                    print(f"Debug - speed: {result['speed']}")
+
+                if "bbox" in result and "speed" in result:
+                    bbox = result["bbox"]
+                    x, y, w, h = map(int, bbox)
+                    speed = result["speed"]
+
+                    # 이미지 크기에 따라 텍스트 크기 동적 조정
+                    height, width = vis_frame.shape[:2]
+                    font_scale = max(1.0, min(3.0, width / 400))  # 더 큰 텍스트
+                    thickness = max(2, int(font_scale * 3))
+
+                    # 속도 정보 표시
+                    speed_text = f"Speed: {speed:.1f}mm/s"
+                    # cv2.putText(
+                    #     vis_frame,
+                    #     speed_text,
+                    #     (x, y - int(30 * font_scale)),
+                    #     cv2.FONT_HERSHEY_SIMPLEX,
+                    #     font_scale,
+                    #     (0, 255, 255),  # 노란색
+                    #     thickness,
+                    # )
+                else:
+                    # bbox만 있는 경우 기본 정보 표시
+                    if "bbox" in result:
+                        bbox = result["bbox"]
+                        x, y, w, h = map(int, bbox)
+
+                        # 이미지 크기에 따라 텍스트 크기 동적 조정
+                        height, width = vis_frame.shape[:2]
+                        font_scale = max(1.0, min(3.0, width / 400))
+                        thickness = max(2, int(font_scale * 3))
+
+                        # 기본 정보 표시
+                        info_text = f"Track: {result.get('track_id', 'N/A')}"
+                        # cv2.putText(
+                        #     vis_frame,
+                        #     info_text,
+                        #     (x, y - int(30 * font_scale)),
+                        #     cv2.FONT_HERSHEY_SIMPLEX,
+                        #     font_scale,
+                        #     (255, 0, 0),  # 빨간색
+                        #     thickness,
+                        # )
+
+            return vis_frame
 
         else:
             # Basic visualization
             vis_frame = frame.copy()
             for detection in detections:
-                bbox = detection["bbox"]
-                x, y, w, h = map(int, bbox)
-                cv2.putText(
-                    vis_frame,
-                    f"Conf: {detection['confidence']:.2f}",
-                    (x, y - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 255, 0),
-                    1,
-                )
+                x, y, w, h = map(int, detection.bbox)
+                # 이미지 크기에 따라 텍스트 크기 동적 조정
+                height, width = vis_frame.shape[:2]
+                font_scale = max(1.0, min(3.0, width / 400))  # 더 큰 텍스트
+                thickness = max(2, int(font_scale * 3))
+
+                # cv2.putText(
+                #     vis_frame,
+                #     f"Conf: {detection.confidence:.2f}",
+                #     (x, y - int(10 * font_scale)),
+                #     cv2.FONT_HERSHEY_SIMPLEX,
+                #     font_scale,
+                #     (0, 255, 0),
+                #     thickness,
+                # )
             return vis_frame
 
 
@@ -924,8 +497,6 @@ def apply_preset_to_args(args: argparse.Namespace, preset: dict) -> argparse.Nam
         args.source = preset["source"]
     if args.fps == 30 and "fps" in preset:
         args.fps = preset["fps"]
-    if not args.stationary_mode and "stationary_mode" in preset:
-        args.stationary_mode = preset["stationary_mode"]
     if args.detector == "yolo" and "detector" in preset:
         args.detector = preset["detector"]
     if args.tracker == "kalman" and "tracker" in preset:
@@ -944,7 +515,7 @@ def main():
     )
     parser.add_argument(
         "--detector",
-        choices=["yolo", "color", "agv"],
+        choices=["yolo"],
         default="yolo",
         help="Type of detector to use (enhanced mode only)",
     )
@@ -997,27 +568,90 @@ def main():
         preset_config = load_execution_preset(args.config, args.preset)
         args = apply_preset_to_args(args, preset_config)
 
+    # Load configuration for pixel_size
+    # pixel_size = 1.0  # default value (1 pixel = 1mm)
+    if Path(args.config).exists():
+        try:
+            config = SystemConfig.load(args.config)
+        except Exception as e:
+            print(f"⚠ Error loading config, using default: {e}")
+            import traceback
+
+            traceback.print_exc()
+            config = None
+    else:
+        print(f"⚠ Config file not found: {args.config}")
+        config = None
+
     # Initialize system
     if args.mode == "basic":
         print("Running in basic mode...")
-        run_basic_mode(args.source, args.fps, args.loader_mode, args.stationary_mode)
+        if config:
+            if isinstance(config, dict):
+                # dict object
+                pixel_size = config["measurement"]["pixel_size"]
+            else:
+                # SystemConfig object
+                pixel_size = config.measurement.pixel_size
+        else:
+            pixel_size = 1.0
+        run_basic_mode(
+            args.source,
+            args.fps,
+            args.loader_mode,
+            pixel_size,
+        )
     elif args.mode == "enhanced":
-        if not NEW_MODULES_AVAILABLE:
+        if not ENHANCED_MODULES_AVAILABLE:
             print("Error: Enhanced mode requires AGV Measurement System modules.")
             print("Please install the required modules or use basic mode.")
             return
         print("Running in enhanced mode...")
-        run_enhanced_mode(args, args.source, args.fps, args.loader_mode)
+        if config:
+            print(f"Debug - config type: {type(config)}")
+            print(f"Debug - config is dict: {isinstance(config, dict)}")
+            try:
+                if isinstance(config, dict):
+                    # dict object
+                    pixel_size = config["measurement"]["pixel_size"]
+                elif hasattr(config, "measurement") and hasattr(
+                    config.measurement, "pixel_size"
+                ):
+                    # SystemConfig object
+                    pixel_size = config.measurement.pixel_size
+                else:
+                    print(
+                        "⚠ Config object doesn't have expected structure, using default pixel_size"
+                    )
+                    pixel_size = 1.0
+            except (KeyError, AttributeError) as e:
+                print(f"⚠ Error accessing pixel_size: {e}")
+                pixel_size = 1.0
+        else:
+            print("⚠ No config loaded, using default pixel_size")
+            pixel_size = 1.0
+        run_enhanced_mode(
+            args,
+            args.source,
+            args.fps,
+            args.loader_mode,
+            pixel_size,
+        )
     else:
         print(f"Error: Unknown mode '{args.mode}'")
         return
 
 
-def run_basic_mode(video_source, fps=30, mode="auto", stationary_mode=False):
+def run_basic_mode(
+    video_source,
+    fps=30,
+    mode="auto",
+    pixel_size=1.0,
+):
     """Run basic multi-object AMR tracker"""
     import ultralytics
 
-    detector = ultralytics.YOLO("yolov8n.pt")
+    detector = ultralytics.YOLO("weights/last.pt")
     trackers = {}  # Dictionary to store multiple trackers
     next_track_id = 0
     data_logger = TrackingDataLogger()
@@ -1040,6 +674,10 @@ def run_basic_mode(video_source, fps=30, mode="auto", stationary_mode=False):
     frame_number = 0
     print(f"Processing frames... Press 'q' to quit, 's' to save snapshot")
 
+    classes = range(0, 90, 1)
+
+    # print(classes)
+
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -1047,7 +685,10 @@ def run_basic_mode(video_source, fps=30, mode="auto", stationary_mode=False):
 
         # Detection - filter only cars and trucks
         # COCO class IDs: car=2, truck=7, bus=5
-        results = detector(frame, classes=[2, 7])  # Only detect cars and trucks
+
+        results = detector(
+            frame, classes=[1], imgsz=768, conf=0.88, retina_masks=True, class_id=1
+        )  # Only detect cars and trucks
 
         # Get all detections
         detections = []
@@ -1056,8 +697,22 @@ def run_basic_mode(video_source, fps=30, mode="auto", stationary_mode=False):
                 x1, y1, x2, y2 = box.cpu().numpy()
                 bbox = [x1, y1, x2 - x1, y2 - y1]
                 confidence = results[0].boxes.conf[i].cpu().numpy()
+
+                # 클래스 이름 가져오기
+                class_id = int(results[0].boxes.cls[i].cpu().numpy())
+
+                class_name = detector.names[class_id]
+                print(f"Class ID: {class_id} Class Name: {class_name}")
+                from src.core.detection import Detection
+
                 detections.append(
-                    {"bbox": bbox, "confidence": float(confidence), "type": "vehicle"}
+                    Detection(
+                        bbox=bbox,
+                        confidence=float(confidence),
+                        class_id=class_id,
+                        class_name=class_name,
+                        timestamp=time.time(),
+                    )
                 )
 
         # Multi-object tracking
@@ -1077,12 +732,11 @@ def run_basic_mode(video_source, fps=30, mode="auto", stationary_mode=False):
                 if i in used_detections:
                     continue
 
-                bbox = detection["bbox"]
-                cx = bbox[0] + bbox[2] / 2
-                cy = bbox[1] + bbox[3] / 2
+                bbox = detection.bbox
+                cx, cy = detection.get_center()
 
                 # Get tracker's last position
-                tracker_pos = tracker.kf.x[:2]
+                tracker_pos = tracker.kf.statePost[:2].flatten()
                 distance = np.sqrt(
                     (cx - tracker_pos[0]) ** 2 + (cy - tracker_pos[1]) ** 2
                 )
@@ -1096,11 +750,18 @@ def run_basic_mode(video_source, fps=30, mode="auto", stationary_mode=False):
             if best_detection_idx is not None:
                 detection = detections[best_detection_idx]
                 tracking_result = tracker.update(
-                    frame, detection["bbox"], frame_number=frame_number
+                    frame, detection.bbox, frame_number=frame_number
                 )
-                tracking_result["detection_type"] = detection.get("type", "unknown")
+                tracking_result["detection_type"] = getattr(
+                    detection, "class_name", "unknown"
+                )
                 tracking_result["track_id"] = track_id
                 tracking_result["color"] = tracker.color
+                # 클래스 정보 추가
+                tracking_result["class_name"] = getattr(
+                    detection, "class_name", "Unknown"
+                )
+                tracking_result["class_id"] = getattr(detection, "class_id", -1)
                 tracking_results.append(tracking_result)
                 used_detections.add(best_detection_idx)
             else:
@@ -1114,28 +775,36 @@ def run_basic_mode(video_source, fps=30, mode="auto", stationary_mode=False):
         # Create new trackers for unassigned detections
         for i, detection in enumerate(detections):
             if i not in used_detections:
-                new_tracker = AMROBBTracker(
+
+                new_tracker = KalmanTracker(
                     fps=fps,
-                    pixel_to_meter=0.01,
+                    pixel_size=pixel_size,  # mm 단위로 직접 전달
                     track_id=next_track_id,
-                    stationary_mode=stationary_mode,
                 )
                 trackers[next_track_id] = new_tracker
 
                 tracking_result = new_tracker.update(
-                    frame, detection["bbox"], frame_number=frame_number
+                    frame, detection.bbox, frame_number=frame_number
                 )
-                tracking_result["detection_type"] = detection.get("type", "unknown")
+                tracking_result["detection_type"] = getattr(
+                    detection, "class_name", "unknown"
+                )
                 tracking_result["track_id"] = next_track_id
                 tracking_result["color"] = new_tracker.color
+                # 클래스 정보 추가
+                tracking_result["class_name"] = getattr(
+                    detection, "class_name", "Unknown"
+                )
+                tracking_result["class_id"] = getattr(detection, "class_id", -1)
                 tracking_results.append(tracking_result)
 
                 next_track_id += 1
 
-                # Clean up lost trackers
+                # Clean up lost trackers (더 관대한 설정)
         trackers_to_remove = []
+        max_frames_lost = 30  # 30프레임까지 기다림 (약 1초)
         for track_id, tracker in trackers.items():
-            if tracker.is_lost(max_frames_lost=10):
+            if tracker.is_lost(max_frames_lost=max_frames_lost):
                 trackers_to_remove.append(track_id)
 
         for track_id in trackers_to_remove:
@@ -1156,27 +825,35 @@ def run_basic_mode(video_source, fps=30, mode="auto", stationary_mode=False):
                     vis_frame = tracker.draw_visualization(vis_frame, result)
 
         # Add summary information
-        cv2.putText(
-            vis_frame,
-            f"Objects: {len(tracking_results)}",
-            (10, vis_frame.shape[0] - 30),  # 위쪽으로 이동
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (255, 255, 255),
-            2,
-        )
+        # cv2.putText(
+        #     vis_frame,
+        #     f"Objects: {len(tracking_results)}",
+        #     (10, vis_frame.shape[0] - 30),  # 위쪽으로 이동
+        #     cv2.FONT_HERSHEY_SIMPLEX,
+        #     0.7,
+        #     (255, 255, 255),
+        #     2,
+        # )
 
         # Add frame info
         if hasattr(cap.loader, "frame_number"):  # Image sequence
-            cv2.putText(
-                vis_frame,
-                f"Frame: {frame_number}",
-                (10, vis_frame.shape[0] - 10),  # 맨 아래
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (255, 255, 255),
-                2,
-            )
+            # 이미지 크기에 따라 텍스트 크기 동적 조정
+            height, width = vis_frame.shape[:2]
+            font_scale = max(0.5, min(2.0, width / 800))  # 800px 기준으로 스케일링
+            thickness = max(1, int(font_scale * 2))
+
+            # cv2.putText(
+            #     vis_frame,
+            #     f"Frame: {frame_number}",
+            #     (
+            #         int(10 * font_scale),
+            #         vis_frame.shape[0] - int(10 * font_scale),
+            #     ),  # 맨 아래
+            #     cv2.FONT_HERSHEY_SIMPLEX,
+            #     font_scale,
+            #     (255, 255, 255),
+            #     thickness,
+            # )
 
         # Print results
         if tracking_results:
@@ -1185,9 +862,17 @@ def run_basic_mode(video_source, fps=30, mode="auto", stationary_mode=False):
                 track_id = result.get("track_id", "Unknown")
             print(
                 f"  ID {track_id}: Position ({result['position']['x']:.1f}, {result['position']['y']:.1f}), "
-                f"Speed: {result['velocity']['linear_speed_m_per_sec']:.2f} m/s, "
+                f"Speed: {result['velocity']['linear_speed_mm_per_sec']:.2f} mm/s, "
                 f"Orientation: {result['orientation']['theta_normalized_deg']:.1f}°"
             )
+
+        # 창 크기 조절 (화면이 너무 클 때)
+        height, width = vis_frame.shape[:2]
+        if width > 1280 or height > 720:
+            scale = min(1280 / width, 720 / height)
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            vis_frame = cv2.resize(vis_frame, (new_width, new_height))
 
         cv2.imshow("AMR Tracking (Basic)", vis_frame)
 
@@ -1206,7 +891,7 @@ def run_basic_mode(video_source, fps=30, mode="auto", stationary_mode=False):
     print(f"\n✓ Processed {frame_number} frames")
 
 
-def run_enhanced_mode(args, video_source, fps=30, mode="auto"):
+def run_enhanced_mode(args, video_source, fps=30, mode="auto", pixel_size=1.0):
     """Run enhanced AMR system"""
     # Load configuration
     config = None
@@ -1222,7 +907,7 @@ def run_enhanced_mode(args, video_source, fps=30, mode="auto"):
         config=config,
         detector_type=args.detector,
         tracker_type=args.tracker,
-        stationary_mode=args.stationary_mode,
+        pixel_size=pixel_size,
     )
 
     # Create sequence loader based on mode
@@ -1264,18 +949,34 @@ def run_enhanced_mode(args, video_source, fps=30, mode="auto"):
         vis_frame = system.visualize_results(frame, detections, tracking_results)
 
         # Add frame info
-        if hasattr(cap.loader, "frame_number"):  # Image sequence
-            cv2.putText(
-                vis_frame,
-                f"Frame: {frame_number}",
-                (10, vis_frame.shape[0] - 10),  # 맨 아래
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (255, 255, 255),
-                2,
-            )
+        if hasattr(cap, "frame_number"):  # Image sequence
+            # 이미지 크기에 따라 텍스트 크기 동적 조정
+            height, width = vis_frame.shape[:2]
+            font_scale = max(0.5, min(2.0, width / 800))  # 800px 기준으로 스케일링
+            thickness = max(1, int(font_scale * 2))
+
+            # cv2.putText(
+            #     vis_frame,
+            #     f"Frame: {frame_number}",
+            #     (
+            #         int(10 * font_scale),
+            #         vis_frame.shape[0] - int(10 * font_scale),
+            #     ),  # 맨 아래
+            #     cv2.FONT_HERSHEY_SIMPLEX,
+            #     font_scale,
+            #     (255, 255, 255),
+            #     thickness,
+            # )
 
         # Print results (removed verbose logging for better performance)
+
+        # 창 크기 조절 (화면이 너무 클 때)
+        height, width = vis_frame.shape[:2]
+        if width > 1280 or height > 720:
+            scale = min(1280 / width, 720 / height)
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            vis_frame = cv2.resize(vis_frame, (new_width, new_height))
 
         # Show results
         cv2.imshow("Enhanced AMR Tracking", vis_frame)

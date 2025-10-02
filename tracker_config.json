@@ -1,14 +1,16 @@
 {
   "calibration": {
-    "checkerboard_size": [9, 6],
-    "square_size": 25.0,
-    "num_calibration_images": 15,
-    "camera_height": 2000.0
+    "checkerboard_size": [8, 7],
+    "square_size": 20.0,
+    "num_calibration_images": 29,
+    "camera_height": 0.0,
+    "calibration_data_path": "calibration_data.json"
   },
   "measurement": {
     "min_agv_area": 1000,
     "max_tracking_distance": 500,
-    "fps": 30
+    "fps": 30,
+    "pixel_size": 0.4455786347389221
   },
   "display_scale": 0.5,
   "record_video": false,
@@ -31,6 +33,24 @@
         "tracker": "kalman",
         "stationary_mode": true
       },
+      "enhanced_camera_stationary": {
+        "mode": "enhanced",
+        "loader_mode": "camera",
+        "source": 0,
+        "fps": 30,
+        "detector": "yolo",
+        "tracker": "speed",
+        "stationary_mode": true
+      },
+      "enhanced_video_tracking": {
+        "mode": "enhanced",
+        "loader_mode": "video",
+        "source": "data/test4.mkv",
+        "detector": "yolo",
+        "tracker": "kalman",
+        "fps": 30,
+        "stationary_mode": true
+      },
       "enhanced_tracking": {
         "mode": "enhanced",
         "loader_mode": "sequence",
@@ -46,6 +66,13 @@
         "source": "data/0001_fixed",
         "fps": 30,
         "stationary_mode": false
+      },
+      "basic_video_tracking": {
+        "mode": "basic",
+        "loader_mode": "video",
+        "source": "data/test6.mkv",
+        "fps": 30,
+        "stationary_mode": true
       },
       "camera_basic": {
         "mode": "basic",

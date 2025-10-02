@@ -1,0 +1,4 @@
+
+[submodule "submodules/novitec_camera_module"]
+	path = submodules/novitec_camera_module
+	url = https://github.com/bruce-282/novitec_camera_module.git
