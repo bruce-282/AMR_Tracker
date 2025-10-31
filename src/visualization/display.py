@@ -25,6 +25,7 @@ class Visualizer:
         self.homography = homography
         self.colors = self._generate_colors(20)
         self.track_colors = {}  # Track ID to color mapping
+        self.track_trajs = {}  # Track ID to list of centers
 
     def _generate_colors(self, num_colors: int) -> List[Tuple[int, int, int]]:
         """Generate distinct colors for tracking visualization."""
@@ -34,6 +35,64 @@ class Visualizer:
             color = cv2.cvtColor(np.uint8([[[hue, 255, 255]]]), cv2.COLOR_HSV2BGR)[0][0]
             colors.append(tuple(int(c) for c in color))
         return colors
+
+    def _extract_angle_deg(self, orientation) -> float:
+        """Extract angle in degrees from various orientation formats.
+
+        Accepts:
+        - dict with keys like 'theta_normalized_deg', 'theta_deg', or 'theta_rad'
+        - numpy scalar (e.g., np.float32)
+        - plain float/int
+        - single-element list/tuple/ndarray
+        Returns a float angle in degrees.
+        """
+        # Dict formats from tracker
+        if isinstance(orientation, dict):
+            if "theta_normalized_deg" in orientation:
+                return float(orientation["theta_normalized_deg"])
+            if "theta_deg" in orientation:
+                return float(orientation["theta_deg"])
+            if "theta" in orientation:
+                # 'theta' could be degrees; assume degrees
+                return float(orientation["theta"])
+            if "theta_rad" in orientation:
+                return float(np.degrees(float(orientation["theta_rad"])))
+
+        # numpy scalar
+        try:
+            import numpy as _np
+
+            if isinstance(orientation, (_np.generic,)):
+                return float(orientation)
+        except Exception:
+            pass
+
+        # list/tuple/ndarray with single value
+        if isinstance(orientation, (list, tuple)) and len(orientation) == 1:
+            return float(orientation[0])
+        if isinstance(orientation, np.ndarray) and orientation.size == 1:
+            return float(orientation.reshape(()))
+
+        # plain number or fallback
+        try:
+            return float(orientation)
+        except Exception:
+            return 0.0
+
+    def _clean_mask(self, mask: np.ndarray, min_area: int = 200) -> np.ndarray:
+        m = (mask.astype(np.uint8) > 0).astype(np.uint8)
+        if m.sum() == 0:
+            return m
+        num, lbl, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+        if num <= 1:
+            return np.zeros_like(m)
+        idx = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        if stats[idx, cv2.CC_STAT_AREA] < min_area:
+            return np.zeros_like(m)
+        out = (lbl == idx).astype(np.uint8)
+        out = cv2.morphologyEx(out, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+        return out
 
     def draw_detections(
         self, frame: np.ndarray, detections: List[Dict], measurements: List[Dict]
@@ -54,12 +113,16 @@ class Visualizer:
         for detection, measurement in zip(detections, measurements):
             # Get color for this track
             track_id = measurement.get("track_id", 0)
+            if track_id != 0:
+                continue
             if track_id not in self.track_colors:
                 self.track_colors[track_id] = self.colors[track_id % len(self.colors)]
             color = self.track_colors[track_id]
+            # color_box = tuple(np.clip(np.array(color) + 50, 0, 255).astype(int))
 
             # Draw bounding box
             x, y, w, h = detection.bbox
+
             bbox_corners = np.array(
                 [
                     [x, y],  # top-left
@@ -69,9 +132,54 @@ class Visualizer:
                 ],
                 dtype=np.int32,
             )
-            cv2.polylines(vis_frame, [bbox_corners], True, color, 2)
+            # cv2.polylines(vis_frame, [bbox_corners], True, color, 2)
 
-            # Draw track ID
+            # # Optional: draw instance segmentation polygon if available
+            # if getattr(detection, "masks", None) is not None:
+            #     poly = detection.masks
+            #     try:
+            #         poly = np.asarray(poly, dtype=np.float32)
+            #         if poly.ndim == 2 and poly.shape[1] == 2 and poly.shape[0] >= 3:
+            #             pts = poly.reshape((-1, 1, 2)).astype(np.int32)
+            #             # cv2.polylines(vis_frame, [pts], True, color, 2)
+
+            #             # Build binary mask from polygon and draw min-area-rect box
+            #             h, w_img = vis_frame.shape[:2]
+            #             bin_mask = np.zeros((h, w_img), dtype=np.uint8)
+            #             cv2.fillPoly(bin_mask, [pts], 255)
+
+            #             m = self._clean_mask(bin_mask, min_area=200)
+            #             if m.max() > 0:
+            #                 erode_px = 3
+            #                 core = cv2.erode(
+            #                     m, np.ones((erode_px, erode_px), np.uint8), 1
+            #                 )
+            #                 if int(core.sum()) < 50:
+            #                     core = m
+            #                 cnts, _ = cv2.findContours(
+            #                     core, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            #                 )
+            #                 if cnts:
+            #                     cnt = max(cnts, key=cv2.contourArea)
+            #                     rect = cv2.minAreaRect(cnt)
+            #                     box = cv2.boxPoints(rect).astype(np.float32)
+            #                     box_i32 = box.reshape((-1, 1, 2)).astype(np.int32)
+            #                 # cv2.polylines(vis_frame, [box_i32], True, color, 2)
+            #     except Exception:
+            #         pass
+
+            # angle = measurement.get("orientation", 0)
+            # print(f"Debug - Angle: {angle}")
+            # # Use bbox center for rotated rectangle center
+            # cx = x + w / 2.0
+            # cy = y + h / 2.0
+            # angle_deg = self._extract_angle_deg(angle)
+            # rect = ((cx, cy), (float(w), float(h)), float(angle_deg))
+            # box = cv2.boxPoints(rect)
+            # box = np.int32(box)
+            # cv2.fillPoly(vis_frame, [box], color)
+
+            # Draw track ID & compute center
             center = tuple(np.mean(bbox_corners, axis=0).astype(int))
             # cv2.putText(
             #     vis_frame,
@@ -83,8 +191,23 @@ class Visualizer:
             #     4,
             # )
 
-            # Draw measurements
-            self._draw_measurements(vis_frame, center, measurement, color)
+            # Draw trajectory (keep accumulating center points)
+            if track_id not in self.track_trajs:
+                self.track_trajs[track_id] = []
+            self.track_trajs[track_id].append(center)
+            # 제한 길이 유지
+            if len(self.track_trajs[track_id]) > 200:
+                self.track_trajs[track_id] = self.track_trajs[track_id][-200:]
+
+            traj_pts = self.track_trajs[track_id]
+            if len(traj_pts) >= 2:
+                for i in range(1, len(traj_pts)):
+                    cv2.line(vis_frame, traj_pts[i - 1], traj_pts[i], color, 2)
+            # 중심점도 표시
+            cv2.circle(vis_frame, center, 3, color, -1)
+
+            # Draw measurements (optionally disabled texts kept commented)
+            # self._draw_measurements(vis_frame, center, measurement, color)
 
             # Draw speed vector
             speed_value = None
@@ -96,11 +219,37 @@ class Visualizer:
             ):
                 speed_value = measurement["velocity"]["linear_speed_mm_per_sec"]
 
-            if speed_value is not None and speed_value > 0:
-                self._draw_speed_vector(vis_frame, center, measurement, color)
+            # Skip speed vector; we are drawing trajectory instead
+            # if speed_value is not None and speed_value > 0:
+            #     self._draw_speed_vector(vis_frame, center, measurement, color)
 
-        # Draw statistics panel
-        self._draw_statistics(vis_frame, measurements)
+        # Bottom overlay: x, y, rotation only
+        height, width = vis_frame.shape[:2]
+        base_y = height - 20
+        font_scale = max(0.7, min(1.2, width / 1200))
+        thickness = max(1, int(font_scale * 2))
+
+        lines = []
+        for detection, measurement in zip(detections, measurements):
+            track_id = measurement.get("track_id", 0)
+            x, y, w, h = detection.bbox
+            cx = int(x + w / 2)
+            cy = int(y + h / 2)
+            angle = measurement.get("orientation", 0)
+            theta_deg = self._extract_angle_deg(angle)
+            lines.append(f"ID {track_id}  x={cx}, y={cy}, rot={theta_deg:.1f}°")
+
+        overlay_text = " | ".join(lines) if lines else ""
+        if overlay_text:
+            cv2.putText(
+                vis_frame,
+                overlay_text,
+                (20, base_y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale,
+                (255, 255, 255),
+                thickness,
+            )
 
         return vis_frame
 
@@ -212,6 +361,7 @@ class Visualizer:
                 and "theta_deg" in measurement["orientation"]
             ):
                 direction = measurement["orientation"]["theta_deg"]
+                print(f"Debug - Direction: {direction}")
 
         if speed_value is None or direction is None:
             return
@@ -327,69 +477,75 @@ class Visualizer:
 
         return img_pts
 
-    def create_bird_eye_view(
-        self,
-        measurements: List[Dict],
-        world_size: Tuple[float, float] = (5000, 5000),
-        scale: float = 0.2,
-    ) -> np.ndarray:
-        """
-        Create bird's eye view visualization.
+    # def create_bird_eye_view(
+    #     self,
+    #     measurements: List[Dict],
+    #     world_size: Tuple[float, float] = (5000, 5000),
+    #     scale: float = 0.2,
+    # ) -> np.ndarray:
+    #     """
+    #     Create bird's eye view visualization.
 
-        Args:
-            measurements: List of measurements with world coordinates
-            world_size: Size of world to visualize in mm
-            scale: Scale factor for visualization
+    #     Args:
+    #         measurements: List of measurements with world coordinates
+    #         world_size: Size of world to visualize in mm
+    #         scale: Scale factor for visualization
 
-        Returns:
-            Bird's eye view image
-        """
-        # Create blank canvas
-        width = int(world_size[0] * scale)
-        height = int(world_size[1] * scale)
-        bird_eye = np.ones((height, width, 3), dtype=np.uint8) * 255
+    #     Returns:
+    #         Bird's eye view image
+    #     """
+    #     # Create blank canvas
+    #     width = int(world_size[0] * scale)
+    #     height = int(world_size[1] * scale)
+    #     bird_eye = np.ones((height, width, 3), dtype=np.uint8) * 255
 
-        # Draw grid
-        grid_spacing = int(500 * scale)  # 500mm grid
-        for x in range(0, width, grid_spacing):
-            cv2.line(bird_eye, (x, 0), (x, height), (200, 200, 200), 1)
-        for y in range(0, height, grid_spacing):
-            cv2.line(bird_eye, (0, y), (width, y), (200, 200, 200), 1)
+    #     # Draw grid
+    #     grid_spacing = int(500 * scale)  # 500mm grid
+    #     for x in range(0, width, grid_spacing):
+    #         cv2.line(bird_eye, (x, 0), (x, height), (200, 200, 200), 1)
+    #     for y in range(0, height, grid_spacing):
+    #         cv2.line(bird_eye, (0, y), (width, y), (200, 200, 200), 1)
 
-        # Draw AGVs
-        for measurement in measurements:
-            if "center_world" not in measurement:
-                continue
+    #     # Draw AGVs
+    #     for measurement in measurements:
+    #         if "center_world" not in measurement:
+    #             continue
 
-            # Convert world coordinates to canvas coordinates
-            cx, cy = measurement["center_world"]
-            cx_canvas = int(cx * scale + width / 2)
-            cy_canvas = int(cy * scale + height / 2)
+    #         # Convert world coordinates to canvas coordinates
+    #         cx, cy = measurement["center_world"]
+    #         cx_canvas = int(cx * scale + width / 2)
+    #         cy_canvas = int(cy * scale + height / 2)
 
-            # Get dimensions
-            width_agv = int(measurement.get("width", 100) * scale)
-            height_agv = int(measurement.get("height", 100) * scale)
+    #         # Get dimensions
+    #         width_agv = int(measurement.get("width", 100) * scale)
+    #         height_agv = int(measurement.get("height", 100) * scale)
 
-            # Get color for track
-            track_id = measurement.get("track_id", 0)
-            color = self.colors[track_id % len(self.colors)]
+    #         # Get color for track
+    #         track_id = measurement.get("track_id", 0)
+    #         color = self.colors[track_id % len(self.colors)]
 
-            # Draw AGV rectangle
-            angle = measurement.get("orientation", 0)
-            rect = ((cx_canvas, cy_canvas), (width_agv, height_agv), angle)
-            box = cv2.boxPoints(rect)
-            box = np.int0(box)
-            cv2.fillPoly(bird_eye, [box], color)
+    #         # Draw AGV rectangle
+    #         angle = measurement.get("orientation", 0)
+    #         print(f"Debug - Angle: {angle}")
+    #         angle_deg = self._extract_angle_deg(angle)
+    #         rect = (
+    #             (float(cx_canvas), float(cy_canvas)),
+    #             (float(width_agv), float(height_agv)),
+    #             float(angle_deg),
+    #         )
+    #         box = cv2.boxPoints(rect)
+    #         box = np.int0(box)
+    #         cv2.fillPoly(bird_eye, [box], color)
 
-            # Draw ID
-            # cv2.putText(
-            #     bird_eye,
-            #     str(track_id),
-            #     (cx_canvas - 10, cy_canvas),
-            #     cv2.FONT_HERSHEY_SIMPLEX,
-            #     1.5,
-            #     (0, 0, 0),
-            #     2,
-            # )
+    #         # Draw ID
+    #         # cv2.putText(
+    #         #     bird_eye,
+    #         #     str(track_id),
+    #         #     (cx_canvas - 10, cy_canvas),
+    #         #     cv2.FONT_HERSHEY_SIMPLEX,
+    #         #     1.5,
+    #         #     (0, 0, 0),
+    #         #     2,
+    #         # )
 
-        return bird_eye
+    #     return bird_eye

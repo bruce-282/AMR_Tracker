@@ -14,6 +14,7 @@ class Detection:
         class_id: int = 0,
         class_name: str = "",
         timestamp: Optional[float] = None,
+        masks: Optional[List[List[float]]] = None,
     ):
         """
         Initialize detection.
@@ -24,12 +25,14 @@ class Detection:
             class_id: Object class ID
             class_name: Object class name
             timestamp: Detection timestamp
+            masks: Masks
         """
         self.bbox = bbox
         self.confidence = confidence
         self.class_id = class_id
         self.class_name = class_name
         self.timestamp = timestamp or time.time()
+        self.masks = masks
 
     def get_center(self) -> Tuple[float, float]:
         """Get center point of bounding box."""
@@ -50,6 +53,7 @@ class Detection:
             "class_name": self.class_name,
             "timestamp": self.timestamp,
             "type": self.class_name,  # For backward compatibility
+            "masks": self.masks,
         }
 
     def __str__(self) -> str:

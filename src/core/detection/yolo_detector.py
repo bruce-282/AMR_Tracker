@@ -90,7 +90,10 @@ class YOLODetector:
                     obbs = result.obb.xyxy.cpu().numpy()
                     print(f"obbs: {obbs}")
                 if result.boxes is not None:
+                    masks = result.masks
+
                     boxes = result.boxes.xyxy.cpu().numpy()  # x1, y1, x2, y2
+                    print(f"boxes: {boxes}")
                     confidences = result.boxes.conf.cpu().numpy()
                     class_ids = result.boxes.cls.cpu().numpy().astype(int)
 
@@ -108,6 +111,18 @@ class YOLODetector:
                         x1, y1, x2, y2 = box
                         x, y, w, h = x1, y1, x2 - x1, y2 - y1
 
+                        # Prepare polygon mask per detection if available
+                        poly_xy = None
+                        try:
+                            if (
+                                masks is not None
+                                and hasattr(masks, "xy")
+                                and masks.xy is not None
+                            ):
+                                poly_xy = masks.xy[i]  # Nx2 numpy array (float)
+                        except Exception:
+                            poly_xy = None
+
                         # Create Detection object
                         detection = Detection(
                             bbox=[x, y, w, h],
@@ -115,6 +130,7 @@ class YOLODetector:
                             class_id=int(class_id),
                             class_name=self._get_class_name(class_id),
                             timestamp=0.0,  # Will be set by caller
+                            masks=poly_xy,
                         )
                         detections.append(detection)
 

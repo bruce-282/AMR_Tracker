@@ -45,7 +45,7 @@
       "enhanced_video_tracking": {
         "mode": "enhanced",
         "loader_mode": "video",
-        "source": "data/test4.mkv",
+        "source": "data/test3.mkv",
         "detector": "yolo",
         "tracker": "kalman",
         "fps": 30,

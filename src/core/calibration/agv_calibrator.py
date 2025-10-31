@@ -444,11 +444,11 @@ class AGVCalibrator:
             vis_frame = self.visualizer.draw_detections(frame, detections, measurements)
 
             # 조감도 표시
-            bird_eye = self.visualizer.create_bird_eye_view(measurements)
+            # bird_eye = self.visualizer.create_bird_eye_view(measurements)
 
             # 결과 표시
             cv2.imshow("AGV 측정 시스템", vis_frame)
-            cv2.imshow("조감도", bird_eye)
+            # cv2.imshow("조감도", bird_eye)
 
             # 측정 결과 출력
             for i, m in enumerate(measurements):

@@ -105,9 +105,10 @@ class EnhancedAMRSystem:
             try:
                 # Check CUDA availability
                 import torch
+
                 device = "cuda" if torch.cuda.is_available() else "cpu"
                 print(f"Using device: {device}")
-                
+
                 self.detector = YOLODetector(
                     "weights/last.pt",
                     confidence_threshold=0.88,
@@ -193,6 +194,7 @@ class EnhancedAMRSystem:
             for detection in yolo_detections:
                 # Set timestamp
                 detection.timestamp = timestamp
+
                 detections.append(detection)
 
         return detections
@@ -687,7 +689,7 @@ def run_basic_mode(
         # COCO class IDs: car=2, truck=7, bus=5
 
         results = detector(
-            frame, classes=[1], imgsz=768, conf=0.88, retina_masks=True, class_id=1
+            frame, classes=[1], imgsz=768, conf=0.88, retina_masks=F, class_id=1
         )  # Only detect cars and trucks
 
         # Get all detections
