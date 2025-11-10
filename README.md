@@ -175,6 +175,32 @@ height_mm = pixel_height * pixels_per_mm
 
 ## 🔧 설치 및 의존성
 
+### PyTorch 설치 (권장)
+
+YOLO 기반 감지를 위해 PyTorch가 필요합니다. GPU 가속을 사용하려면 CUDA 지원 버전을 설치하세요.
+
+#### CPU 버전
+```bash
+pip install torch torchvision torchaudio
+```
+
+#### CUDA 지원 버전 (GPU 가속)
+```bash
+# CUDA 12.8 (CUDA 12.9 호환)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
+# CUDA 12.4 (CUDA 12.x 호환)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# CUDA 12.1
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# CUDA 11.8
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+```
+
+**참고**: 설치된 CUDA 버전에 맞는 PyTorch를 설치하세요. `nvcc --version`으로 CUDA 버전을 확인할 수 있습니다.
+
 ### 필수 패키지
 ```bash
 pip install opencv-python>=4.8.0
@@ -183,6 +209,8 @@ pip install filterpy>=1.4.5
 pip install ultralytics>=8.0.0
 pip install matplotlib>=3.5.0
 ```
+
+**참고**: `ultralytics`는 PyTorch를 자동으로 설치하지만, GPU 가속을 위해서는 위의 CUDA 지원 PyTorch를 먼저 설치하는 것을 권장합니다.
 
 ### UV 패키지 매니저 사용
 ```bash
