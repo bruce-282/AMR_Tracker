@@ -15,6 +15,7 @@ class Detection:
         class_name: str = "",
         timestamp: Optional[float] = None,
         masks: Optional[List[List[float]]] = None,
+        frame_number: int = 0,
     ):
         """
         Initialize detection.
@@ -26,6 +27,7 @@ class Detection:
             class_name: Object class name
             timestamp: Detection timestamp
             masks: Masks
+            frame_number: Frame number where detection occurred
         """
         self.bbox = bbox
         self.confidence = confidence
@@ -33,6 +35,7 @@ class Detection:
         self.class_name = class_name
         self.timestamp = timestamp or time.time()
         self.masks = masks
+        self.frame_number = frame_number
 
     def get_center(self) -> Tuple[float, float]:
         """Get center point of bounding box."""
@@ -54,6 +57,7 @@ class Detection:
             "timestamp": self.timestamp,
             "type": self.class_name,  # For backward compatibility
             "masks": self.masks,
+            "frame_number": self.frame_number,
         }
 
     def __str__(self) -> str:
@@ -62,4 +66,4 @@ class Detection:
 
     def __repr__(self) -> str:
         """Detailed string representation of detection."""
-        return f"Detection(bbox={self.bbox}, confidence={self.confidence}, class_id={self.class_id}, class_name='{self.class_name}', timestamp={self.timestamp})"
+        return f"Detection(bbox={self.bbox}, confidence={self.confidence}, class_id={self.class_id}, class_name='{self.class_name}', timestamp={self.timestamp}, frame_number={self.frame_number})"

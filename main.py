@@ -47,7 +47,7 @@ except ImportError:
     )
 
 
-class EnhancedAMRSystem:
+class EnhancedAMRTracker:
     """
     AMR (Autonomous Mobile Robot) tracking system with YOLO detection and Kalman filtering.
 
@@ -73,7 +73,7 @@ class EnhancedAMRSystem:
             detector_type: Type of detector ("yolo")
             tracker_type: Type of tracker ("kalman", "speed")
         """
-        self.config = config
+        self.config = config if config else SystemConfig()
         self.detector_type = detector_type
         self.tracker_type = tracker_type
         self.pixel_size = pixel_size
@@ -95,10 +95,10 @@ class EnhancedAMRSystem:
 
     def _initialize_components(self):
         """Initialize all system components"""
+
         print(f"Initializing Enhanced AMR System...")
         print(f"Detector: {self.detector_type}")
         print(f"Tracker: {self.tracker_type}")
-        print(f"New modules: {ENHANCED_MODULES_AVAILABLE}")
 
         # Initialize detector
         if self.detector_type == "yolo":
@@ -116,32 +116,30 @@ class EnhancedAMRSystem:
                     imgsz=768,
                     target_classes=[0],  # Only detect class 0 (AGV)
                 )
-                print("✓ YOLO detector initialized (weights/last.pt)")
+                print("YOLO detector initialized")
             except ImportError:
-                raise ImportError("ultralytics 모듈이 설치되지 않았습니다.")
+                raise ImportError("ultralytics module is not installed.")
             except FileNotFoundError:
-                raise FileNotFoundError("weights 파일을 찾을 수 없습니다. ")
+                raise FileNotFoundError("weights file not found. ")
         else:
             raise ValueError(
-                f"지원하지 않는 감지기 타입: {self.detector_type}. 'yolo'만 지원됩니다."
+                f"Unsupported detector type: {self.detector_type}. Only 'yolo' is supported."
             )
 
-        # Initialize tracker
-        if self.tracker_type == "kalman":
-            self.trackers = {}  # Dictionary to store multiple trackers
-            self.next_track_id = 0
-            print("✓ Multi-object Kalman filter tracker initialized")
-        elif self.tracker_type == "speed" and ENHANCED_MODULES_AVAILABLE:
+        if self.tracker_type == "speed":  # Speed tracker
             self.speed_tracker = SpeedTracker(max_history=30, max_tracking_distance=500)
-            print("✓ Speed tracker initialized")
+            print("Speed tracker initialized")
             print(f"Debug - SpeedTracker created: {self.speed_tracker is not None}")
-        else:
-            self.trackers = {}  # Dictionary to store multiple trackers
+        else:  # Kalman tracker
+            self.trackers = {}  # Multi-object detection, but track only the first one
             self.next_track_id = 0
-            print("✓ Fallback multi-object Kalman filter tracker initialized")
+            self.primary_track_id = None  # Track ID of the first tracked object
+            print(
+                "Multi-object Kalman filter tracker initialized (tracking first object only)"
+            )
 
         # Initialize additional components if using new modules
-        if ENHANCED_MODULES_AVAILABLE and self.config:
+        if self.config:
             try:
                 # Load calibration data if available
                 try:
@@ -154,29 +152,64 @@ class EnhancedAMRSystem:
                         # SystemConfig object
                         calibration_path = self.config.calibration.calibration_data_path
                 except (KeyError, AttributeError) as e:
-                    print(f"⚠ Error accessing calibration_data_path: {e}")
-                    calibration_path = "calibration_data.json"  # 기본값
-                if Path(calibration_path).exists():
+                    print(f"Error accessing calibration_data_path: {e}")
+                    calibration_path = None
+                if calibration_path and Path(calibration_path).exists():
                     with open(calibration_path, "r") as f:
                         calibration_data = json.load(f)
 
                     # Always initialize size measurement and visualizer if calibration data exists
                     self.size_measurement = SizeMeasurement(
                         homography=np.array(calibration_data["homography"]),
-                        camera_height=0.0,  # AGV 위에 캘판을 놓았으므로 높이 0
+                        camera_height=self.config.calibration.camera_height,
                         pixel_size=calibration_data.get("pixel_size", 1.0),
-                        calibration_image_size=(3840, 2160),  # 4K 이미지 크기
+                        calibration_image_size=self.config.calibration.calibration_image_size,
                     )
-                    print("✓ Size measurement initialized")
+                    print("Size measurement initialized")
 
                     self.visualizer = Visualizer(
                         homography=np.array(calibration_data["homography"])
                     )
-                    print("✓ Enhanced visualizer initialized")
+                    print("Visualizer initialized")
                 else:
-                    print("⚠ No calibration data found. Size measurement disabled.")
+                    print("No calibration data found. Size measurement disabled.")
             except Exception as e:
-                print(f"⚠ Error initializing new modules: {e}")
+                print(f"Error initializing new modules: {e}")
+
+    def _calculate_iou(self, box1, box2):
+        """
+        Calculate Intersection over Union (IoU) of two bounding boxes.
+
+        Args:
+            box1: [x, y, w, h] format
+            box2: [x, y, w, h] format
+
+        Returns:
+            IoU value between 0 and 1
+        """
+        x1, y1, w1, h1 = box1
+        x2, y2, w2, h2 = box2
+
+        # Calculate intersection coordinates
+        x_left = max(x1, x2)
+        y_top = max(y1, y2)
+        x_right = min(x1 + w1, x2 + w2)
+        y_bottom = min(y1 + h1, y2 + h2)
+
+        if x_right < x_left or y_bottom < y_top:
+            return 0.0
+
+        intersection_area = (x_right - x_left) * (y_bottom - y_top)
+
+        # Calculate union area
+        box1_area = w1 * h1
+        box2_area = w2 * h2
+        union_area = box1_area + box2_area - intersection_area
+
+        if union_area == 0:
+            return 0.0
+
+        return intersection_area / union_area
 
     def detect_objects(
         self, frame: np.ndarray, frame_number: int = 0, timestamp: float = None
@@ -186,105 +219,136 @@ class EnhancedAMRSystem:
             timestamp = time.time()
 
         detections = []
-        classes = [1]
         if self.detector_type == "yolo":
             # YOLO detection using YOLODetector
-            yolo_detections = self.detector.detect(frame)
-
-            for detection in yolo_detections:
-                # Set timestamp
-                detection.timestamp = timestamp
-
-                detections.append(detection)
-
+            detections = self.detector.detect(
+                image=frame, frame_number=frame_number, timestamp=timestamp
+            )
         return detections
 
     def track_objects(
-        self, frame: np.ndarray, detections: List[Detection]
+        self, frame: np.ndarray, detections: List[Detection], frame_number: int = 0
     ) -> List[Dict]:
         """Track objects using selected tracker"""
         results = []
 
         if self.tracker_type == "kalman":
-            # Use multi-object Kalman filter tracking with IoU-based association
-            if detections:
-                # Use IoU + Hungarian algorithm for optimal association
-                matches, unmatched_detections, unmatched_trackers = (
-                    associate_detections_to_trackers(
-                        detections, self.trackers, iou_threshold=0.1
+            # Multi-object detection, but track only the first tracked object
+            if len(detections) > 0:
+                # If no primary tracker exists, create one with the best detection
+                if self.primary_track_id is None:
+                    # Select the best detection (largest area or highest confidence)
+                    best_detection = max(
+                        detections, key=lambda d: d.get_area() * d.confidence
                     )
-                )
 
-                # Update matched trackers
-                for detection_idx, tracker_id in matches:
-                    detection = detections[detection_idx]
-                    tracker = self.trackers[tracker_id]
-
-                    tracking_result = tracker.update(
-                        frame, detection.bbox, frame_number=len(results)
-                    )
-                    tracking_result["detection_type"] = getattr(
-                        detection, "class_name", "unknown"
-                    )
-                    tracking_result["track_id"] = tracker_id
-                    tracking_result["color"] = tracker.color
-
-                    # Add size measurement if available
-                    if self.size_measurement:
-                        size_measurement = self.size_measurement.measure(detection)
-                        tracking_result["size_measurement"] = size_measurement
-
-                    results.append(tracking_result)
-
-                # Handle unmatched trackers (predict only)
-                for tracker_id in unmatched_trackers:
-                    tracker = self.trackers[tracker_id]
-                    tracking_result = tracker.update(
-                        frame, None, frame_number=len(results)
-                    )
-                    tracking_result["detection_type"] = "predicted"
-                    tracking_result["track_id"] = tracker_id
-                    tracking_result["color"] = tracker.color
-                    results.append(tracking_result)
-
-                # Create new trackers for unmatched detections
-                for detection_idx in unmatched_detections:
-                    detection = detections[detection_idx]
-                    new_tracker = KalmanTracker(
+                    # Create primary tracker
+                    self.primary_track_id = self.next_track_id
+                    primary_tracker = KalmanTracker(
                         fps=30,
                         pixel_size=self.pixel_size,
-                        track_id=self.next_track_id,
+                        track_id=self.primary_track_id,
                     )
-                    # Initialize tracker with detection position
-                    new_tracker.initialize_with_detection(detection.bbox)
-                    self.trackers[self.next_track_id] = new_tracker
-
-                    tracking_result = new_tracker.update(
-                        frame, detection.bbox, frame_number=len(results)
-                    )
-                    tracking_result["detection_type"] = getattr(
-                        detection, "class_name", "unknown"
-                    )
-                    tracking_result["track_id"] = self.next_track_id
-                    tracking_result["color"] = new_tracker.color
-
-                    # Add size measurement if available
-                    if self.size_measurement:
-                        size_measurement = self.size_measurement.measure(detection)
-                        tracking_result["size_measurement"] = size_measurement
-
-                    results.append(tracking_result)
+                    primary_tracker.initialize_with_detection(best_detection.bbox)
+                    self.trackers[self.primary_track_id] = primary_tracker
                     self.next_track_id += 1
 
-                # Clean up lost trackers
-                trackers_to_remove = []
-                for track_id, tracker in self.trackers.items():
-                    if tracker.is_lost(max_frames_lost=10):
-                        trackers_to_remove.append(track_id)
+                    # Update with first detection
+                    tracking_result = primary_tracker.update(
+                        frame=frame,
+                        bbox=best_detection.bbox,
+                        frame_number=best_detection.frame_number,
+                    )
+                    tracking_result["detection_type"] = getattr(
+                        best_detection, "class_name", "unknown"
+                    )
+                    tracking_result["track_id"] = self.primary_track_id
+                    tracking_result["color"] = primary_tracker.color
 
-                for track_id in trackers_to_remove:
-                    print(f"Removing lost tracker ID: {track_id}")
-                    del self.trackers[track_id]
+                    # Add size measurement if available (only store initial size)
+                    if self.size_measurement:
+                        size_measurement = self.size_measurement.measure(best_detection)
+                        tracking_result["size_measurement"] = size_measurement
+                        primary_tracker.last_size_measurement = size_measurement
+                        primary_tracker.initial_size_measurement = (
+                            size_measurement  # Store initial size
+                        )
+
+                    results.append(tracking_result)
+                else:
+                    # Primary tracker exists - use association to match it with a detection
+                    primary_tracker = self.trackers.get(self.primary_track_id)
+                    if primary_tracker is None:
+                        # Primary tracker was lost, reset
+                        self.primary_track_id = None
+                        return results
+
+                    # Use IoU + Hungarian algorithm for optimal association
+                    # But only match with primary tracker
+                    matches, unmatched_detections, unmatched_trackers = (
+                        associate_detections_to_trackers(
+                            detections,
+                            {self.primary_track_id: primary_tracker},
+                            iou_threshold=0.3,
+                        )
+                    )
+
+                    # Update matched tracker (should be primary tracker)
+                    matched = False
+                    for detection_idx, tracker_id in matches:
+                        if tracker_id == self.primary_track_id:
+                            detection = detections[detection_idx]
+                            tracking_result = primary_tracker.update(
+                                frame=frame,
+                                bbox=detection.bbox,
+                                frame_number=detection.frame_number,
+                            )
+                            tracking_result["detection_type"] = getattr(
+                                detection, "class_name", "unknown"
+                            )
+                            tracking_result["track_id"] = self.primary_track_id
+                            tracking_result["color"] = primary_tracker.color
+
+                            # Use initial size measurement (don't update)
+                            if primary_tracker.initial_size_measurement is not None:
+                                tracking_result["size_measurement"] = (
+                                    primary_tracker.initial_size_measurement
+                                )
+
+                            results.append(tracking_result)
+                            matched = True
+                            break
+
+                    # If no match, predict only (don't create new trackers)
+                    if not matched:
+                        tracking_result = primary_tracker.update(
+                            frame=frame, bbox=None, frame_number=frame_number
+                        )
+                        tracking_result["detection_type"] = "predicted"
+                        tracking_result["track_id"] = self.primary_track_id
+                        tracking_result["color"] = primary_tracker.color
+                        results.append(tracking_result)
+
+            else:
+                # No detections: predict with primary tracker
+                if self.primary_track_id is not None:
+                    primary_tracker = self.trackers.get(self.primary_track_id)
+                    if primary_tracker is not None:
+                        tracking_result = primary_tracker.update(
+                            frame=frame, bbox=None, frame_number=frame_number
+                        )
+                        tracking_result["detection_type"] = "predicted"
+                        tracking_result["track_id"] = self.primary_track_id
+                        tracking_result["color"] = primary_tracker.color
+                        results.append(tracking_result)
+
+                        # Clean up if tracker is lost
+                        if primary_tracker.is_lost(max_frames_lost=10):
+                            print(
+                                f"Removing lost primary tracker ID: {self.primary_track_id}"
+                            )
+                            del self.trackers[self.primary_track_id]
+                            self.primary_track_id = None
 
         elif self.tracker_type == "speed" and ENHANCED_MODULES_AVAILABLE:
             # Use speed tracker (multiple objects)
@@ -337,6 +401,8 @@ class EnhancedAMRSystem:
                 vis_frame = self.visualizer.draw_detections(
                     frame, detection_objects, tracking_results
                 )
+                # Draw tracking results separately (yellow centers)
+                vis_frame = self.visualizer.draw_tracking(vis_frame, tracking_results)
 
                 # Add summary information
                 # cv2.putText(
@@ -689,7 +755,7 @@ def run_basic_mode(
         # COCO class IDs: car=2, truck=7, bus=5
 
         results = detector(
-            frame, classes=[1], imgsz=768, conf=0.88, retina_masks=F, class_id=1
+            frame, classes=[1], imgsz=768, conf=0.88, retina_masks=True, class_id=1
         )  # Only detect cars and trucks
 
         # Get all detections
@@ -826,36 +892,12 @@ def run_basic_mode(
                 if tracker:
                     vis_frame = tracker.draw_visualization(vis_frame, result)
 
-        # Add summary information
-        # cv2.putText(
-        #     vis_frame,
-        #     f"Objects: {len(tracking_results)}",
-        #     (10, vis_frame.shape[0] - 30),  # 위쪽으로 이동
-        #     cv2.FONT_HERSHEY_SIMPLEX,
-        #     0.7,
-        #     (255, 255, 255),
-        #     2,
-        # )
-
         # Add frame info
         if hasattr(cap.loader, "frame_number"):  # Image sequence
             # 이미지 크기에 따라 텍스트 크기 동적 조정
             height, width = vis_frame.shape[:2]
             font_scale = max(0.5, min(2.0, width / 800))  # 800px 기준으로 스케일링
             thickness = max(1, int(font_scale * 2))
-
-            # cv2.putText(
-            #     vis_frame,
-            #     f"Frame: {frame_number}",
-            #     (
-            #         int(10 * font_scale),
-            #         vis_frame.shape[0] - int(10 * font_scale),
-            #     ),  # 맨 아래
-            #     cv2.FONT_HERSHEY_SIMPLEX,
-            #     font_scale,
-            #     (255, 255, 255),
-            #     thickness,
-            # )
 
         # Print results
         if tracking_results:
@@ -905,7 +947,7 @@ def run_enhanced_mode(args, video_source, fps=30, mode="auto", pixel_size=1.0):
             print(f"⚠ Error loading config: {e}")
 
     # Initialize enhanced system
-    system = EnhancedAMRSystem(
+    amr_tracker = EnhancedAMRTracker(
         config=config,
         detector_type=args.detector,
         tracker_type=args.tracker,
@@ -935,20 +977,20 @@ def run_enhanced_mode(args, video_source, fps=30, mode="auto", pixel_size=1.0):
         if not ret:
             break
 
-        timestamp = time.time()
-
         # Detect objects
-        detections = system.detect_objects(frame, frame_number, timestamp)
+        detections = amr_tracker.detect_objects(
+            frame=frame, frame_number=frame_number, timestamp=time.time()
+        )
 
         # Track objects
-        tracking_results = system.track_objects(frame, detections)
+        tracking_results = amr_tracker.track_objects(frame, detections, frame_number)
 
         # Log tracking data
         for result in tracking_results:
-            system.data_logger.log_tracking_result(frame_number, result)
+            amr_tracker.data_logger.log_tracking_result(frame_number, result)
 
         # Visualize results
-        vis_frame = system.visualize_results(frame, detections, tracking_results)
+        vis_frame = amr_tracker.visualize_results(frame, detections, tracking_results)
 
         # Add frame info
         if hasattr(cap, "frame_number"):  # Image sequence
@@ -956,21 +998,6 @@ def run_enhanced_mode(args, video_source, fps=30, mode="auto", pixel_size=1.0):
             height, width = vis_frame.shape[:2]
             font_scale = max(0.5, min(2.0, width / 800))  # 800px 기준으로 스케일링
             thickness = max(1, int(font_scale * 2))
-
-            # cv2.putText(
-            #     vis_frame,
-            #     f"Frame: {frame_number}",
-            #     (
-            #         int(10 * font_scale),
-            #         vis_frame.shape[0] - int(10 * font_scale),
-            #     ),  # 맨 아래
-            #     cv2.FONT_HERSHEY_SIMPLEX,
-            #     font_scale,
-            #     (255, 255, 255),
-            #     thickness,
-            # )
-
-        # Print results (removed verbose logging for better performance)
 
         # 창 크기 조절 (화면이 너무 클 때)
         height, width = vis_frame.shape[:2]

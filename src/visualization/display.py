@@ -26,6 +26,7 @@ class Visualizer:
         self.colors = self._generate_colors(20)
         self.track_colors = {}  # Track ID to color mapping
         self.track_trajs = {}  # Track ID to list of centers
+        self.latest_rect_angles = {}  # Track ID to latest minAreaRect angle (deg)
 
     def _generate_colors(self, num_colors: int) -> List[Tuple[int, int, int]]:
         """Generate distinct colors for tracking visualization."""
@@ -135,38 +136,40 @@ class Visualizer:
             # cv2.polylines(vis_frame, [bbox_corners], True, color, 2)
 
             # # Optional: draw instance segmentation polygon if available
-            # if getattr(detection, "masks", None) is not None:
-            #     poly = detection.masks
-            #     try:
-            #         poly = np.asarray(poly, dtype=np.float32)
-            #         if poly.ndim == 2 and poly.shape[1] == 2 and poly.shape[0] >= 3:
-            #             pts = poly.reshape((-1, 1, 2)).astype(np.int32)
-            #             # cv2.polylines(vis_frame, [pts], True, color, 2)
+            if getattr(detection, "masks", None) is not None:
+                poly = detection.masks
+                try:
+                    poly = np.asarray(poly, dtype=np.float32)
+                    if poly.ndim == 2 and poly.shape[1] == 2 and poly.shape[0] >= 3:
+                        pts = poly.reshape((-1, 1, 2)).astype(np.int32)
+                        cv2.polylines(vis_frame, [pts], True, color, 2)
 
-            #             # Build binary mask from polygon and draw min-area-rect box
-            #             h, w_img = vis_frame.shape[:2]
-            #             bin_mask = np.zeros((h, w_img), dtype=np.uint8)
-            #             cv2.fillPoly(bin_mask, [pts], 255)
+                        # Build binary mask from polygon and draw min-area-rect box
+                        h, w_img = vis_frame.shape[:2]
+                        bin_mask = np.zeros((h, w_img), dtype=np.uint8)
+                        cv2.fillPoly(bin_mask, [pts], 255)
 
-            #             m = self._clean_mask(bin_mask, min_area=200)
-            #             if m.max() > 0:
-            #                 erode_px = 3
-            #                 core = cv2.erode(
-            #                     m, np.ones((erode_px, erode_px), np.uint8), 1
-            #                 )
-            #                 if int(core.sum()) < 50:
-            #                     core = m
-            #                 cnts, _ = cv2.findContours(
-            #                     core, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            #                 )
-            #                 if cnts:
-            #                     cnt = max(cnts, key=cv2.contourArea)
-            #                     rect = cv2.minAreaRect(cnt)
-            #                     box = cv2.boxPoints(rect).astype(np.float32)
-            #                     box_i32 = box.reshape((-1, 1, 2)).astype(np.int32)
-            #                 # cv2.polylines(vis_frame, [box_i32], True, color, 2)
-            #     except Exception:
-            #         pass
+                        m = self._clean_mask(bin_mask, min_area=200)
+                        if m.max() > 0:
+                            erode_px = 3
+                            core = cv2.erode(
+                                m, np.ones((erode_px, erode_px), np.uint8), 1
+                            )
+                            if int(core.sum()) < 50:
+                                core = m
+                            cnts, _ = cv2.findContours(
+                                core, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                            )
+                            if cnts:
+                                cnt = max(cnts, key=cv2.contourArea)
+                                rect = cv2.minAreaRect(cnt)
+                                # Save angle from minAreaRect (degrees)
+                                self.latest_rect_angles[track_id] = float(rect[2])
+                                box = cv2.boxPoints(rect).astype(np.float32)
+                                box_i32 = box.reshape((-1, 1, 2)).astype(np.int32)
+                                cv2.polylines(vis_frame, [box_i32], True, color, 2)
+                except Exception:
+                    pass
 
             # angle = measurement.get("orientation", 0)
             # print(f"Debug - Angle: {angle}")
@@ -226,18 +229,24 @@ class Visualizer:
         # Bottom overlay: x, y, rotation only
         height, width = vis_frame.shape[:2]
         base_y = height - 20
-        font_scale = max(0.7, min(1.2, width / 1200))
-        thickness = max(1, int(font_scale * 2))
+        font_scale = max(1.0, min(1.6, width / 900))
+        thickness = max(2, int(font_scale * 2.2))
 
         lines = []
         for detection, measurement in zip(detections, measurements):
             track_id = measurement.get("track_id", 0)
+            if track_id != 0:
+                continue
             x, y, w, h = detection.bbox
             cx = int(x + w / 2)
             cy = int(y + h / 2)
-            angle = measurement.get("orientation", 0)
-            theta_deg = self._extract_angle_deg(angle)
-            lines.append(f"ID {track_id}  x={cx}, y={cy}, rot={theta_deg:.1f}°")
+            # Prefer minAreaRect angle if available
+            if track_id in self.latest_rect_angles:
+                theta_deg = float(self.latest_rect_angles[track_id])
+            else:
+                angle = measurement.get("orientation", 0)
+                theta_deg = float(self._extract_angle_deg(angle))
+            lines.append(f"ID {track_id}  x={cx}, y={cy}, yaw={theta_deg:.1f}")
 
         overlay_text = " | ".join(lines) if lines else ""
         if overlay_text:
@@ -250,6 +259,56 @@ class Visualizer:
                 (255, 255, 255),
                 thickness,
             )
+
+        return vis_frame
+
+    def draw_tracking(
+        self, frame: np.ndarray, tracking_results: List[Dict]
+    ) -> np.ndarray:
+        """
+        Draw tracking results on frame (tracked objects' centers in yellow).
+
+        Args:
+            frame: Input image
+            tracking_results: List of tracking results
+
+        Returns:
+            Frame with tracking visualizations
+        """
+        vis_frame = frame.copy()
+
+        # Draw tracked objects' centers in yellow (only for tracked objects)
+        for result in tracking_results:
+            track_id = result.get("track_id", 0)
+            if track_id != 0:
+                continue
+
+            # Get position from tracking result
+            position = result.get("position", {})
+            if position:
+                tracked_x = position.get("x", 0)
+                tracked_y = position.get("y", 0)
+                tracked_center = (int(tracked_x), int(tracked_y))
+
+                # Draw yellow circle for tracked center
+                cv2.circle(
+                    vis_frame, tracked_center, 5, (0, 255, 255), -1
+                )  # Yellow filled circle
+
+                # Draw trajectory for tracked object (yellow)
+                if track_id not in self.track_trajs:
+                    self.track_trajs[track_id] = []
+                self.track_trajs[track_id].append(tracked_center)
+                # Limit trajectory length
+                if len(self.track_trajs[track_id]) > 200:
+                    self.track_trajs[track_id] = self.track_trajs[track_id][-200:]
+
+                traj_pts = self.track_trajs[track_id]
+                if len(traj_pts) >= 2:
+                    for i in range(1, len(traj_pts)):
+                        cv2.line(
+                            vis_frame, traj_pts[i - 1], traj_pts[i], (0, 255, 255), 2
+                        )  # Yellow line
 
         return vis_frame
 

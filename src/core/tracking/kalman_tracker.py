@@ -8,7 +8,7 @@ with position, velocity, and orientation.
 import cv2
 import numpy as np
 from collections import deque
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 
 
 class KalmanTracker:
@@ -58,6 +58,12 @@ class KalmanTracker:
         self.last_detection_frame = 0
         self.frames_since_detection = 0
         self.last_bbox = None
+        self.last_size_measurement = (
+            None  # Store last size measurement for prediction mode
+        )
+        self.initial_size_measurement = (
+            None  # Store initial size measurement (never changes)
+        )
 
     def init_kalman(self):
         """
@@ -131,13 +137,13 @@ class KalmanTracker:
 
             print(f"🔍 Track {self.track_id} - INITIALIZED at pos=({cx:.1f}, {cy:.1f})")
 
-    def update(self, image, detection_bbox, frame_number=0):
+    def update(self, frame: np.ndarray, bbox: List[float], frame_number: int = 0):
         """
         Update tracker with new detection
 
         Args:
-            image: Current frame
-            detection_bbox: Bounding box [x, y, w, h]
+            frame: Current frame
+            bbox: Bounding box [x, y, w, h]
             frame_number: Current frame number
 
         Returns:
@@ -156,17 +162,17 @@ class KalmanTracker:
         # Initialize oriented_bbox
         oriented_bbox = None
 
-        if detection_bbox is not None:
+        if bbox is not None:
             # Update detection tracking
             self.last_detection_frame = frame_number
             self.frames_since_detection = 0
             # Get center position
-            x, y, w, h = detection_bbox
+            x, y, w, h = bbox
             cx = x + w / 2
             cy = y + h / 2
 
             # Detect orientation
-            theta = self.detect_orientation_obb(image, detection_bbox)
+            theta = self.detect_orientation_obb(frame, bbox)
 
             if theta is not None:
                 # Handle angle continuity
@@ -202,7 +208,7 @@ class KalmanTracker:
 
             # Store trajectory point and bbox
             self.trajectory.append((cx, cy))
-            self.last_bbox = detection_bbox
+            self.last_bbox = bbox
         else:
             # No detection, increment frames since detection
             self.frames_since_detection += 1
@@ -253,18 +259,22 @@ class KalmanTracker:
                 "angular_speed_rad_per_sec": angular_speed_rad,
                 "angular_speed_deg_per_sec": angular_speed_deg,
             },
-            "bbox": detection_bbox,
+            "bbox": bbox,
             "trajectory": list(self.trajectory),
         }
 
+        # Include initial size measurement if available (always use initial size)
+        if self.initial_size_measurement is not None:
+            results["size_measurement"] = self.initial_size_measurement
+
         return results
 
-    def detect_orientation_obb(self, image, bbox):
+    def detect_orientation_obb(self, frame, bbox):
         """
         Detect object orientation using oriented bounding box
 
         Args:
-            image: Input image
+            frame: Input frame
             bbox: Bounding box [x, y, w, h]
 
         Returns:
@@ -274,7 +284,7 @@ class KalmanTracker:
             x, y, w, h = map(int, bbox)
 
             # Extract ROI
-            roi = image[y : y + h, x : x + w]
+            roi = frame[y : y + h, x : x + w]
             if roi.size == 0:
                 return None
 
@@ -404,7 +414,7 @@ class KalmanTracker:
                     if roi.size > 0:
                         # Detect orientation in current frame
                         detected_angle = self.detect_orientation_obb(
-                            img_copy, self.last_bbox
+                            frame=img_copy, bbox=self.last_bbox
                         )
                         if detected_angle is not None:
                             detected_angle_deg = np.rad2deg(detected_angle)

@@ -14,7 +14,7 @@ class CalibrationConfig:
     square_size: float = 20.0  # mm
     num_calibration_images: int = 15
     camera_height: float = 2000.0  # mm from ground
-
+    calibration_image_size: Tuple[int, int] = (3840, 2160)  # 4K 이미지 크기
     # File paths
     calibration_data_path: str = "calibration_data.json"
     calibration_images_dir: str = "calibration_images/"

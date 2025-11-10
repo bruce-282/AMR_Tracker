@@ -61,13 +61,16 @@ class YOLODetector:
         except Exception as e:
             raise RuntimeError(f"Failed to load YOLO model: {e}")
 
-    def detect(self, image: np.ndarray) -> List[Detection]:
+    def detect(
+        self, image: np.ndarray, frame_number: int = 0, timestamp: float = None
+    ) -> List[Detection]:
         """
         Detect objects in image.
 
         Args:
             image: Input image (BGR format)
-
+            frame_number: Frame number
+            timestamp: Timestamp
         Returns:
             List of Detection objects
         """
@@ -129,8 +132,9 @@ class YOLODetector:
                             confidence=float(conf),
                             class_id=int(class_id),
                             class_name=self._get_class_name(class_id),
-                            timestamp=0.0,  # Will be set by caller
+                            timestamp=timestamp,
                             masks=poly_xy,
+                            frame_number=frame_number,
                         )
                         detections.append(detection)
 

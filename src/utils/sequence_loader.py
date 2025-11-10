@@ -391,10 +391,8 @@ def create_camera_device_loader(device_id: int = 0) -> Optional[BaseLoader]:
             except Exception as e:
                 print(f"Novitec 카메라 실패, 일반 카메라로 폴백: {e}")
 
-        # Fallback to regular camera
-        loader = CameraDeviceLoader(device_id)
-        print("✓ Regular camera device loader created")
-        return loader
+        else:
+            raise RuntimeError("Novitec Camera Module not available")
 
     except Exception as e:
         print(f"Error creating camera device loader: {e}")
