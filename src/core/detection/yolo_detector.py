@@ -126,6 +126,9 @@ class YOLODetector:
                         except Exception:
                             poly_xy = None
 
+                        # Get image size for mask processing
+                        image_size = (image.shape[1], image.shape[0])  # (width, height)
+                        
                         # Create Detection object
                         detection = Detection(
                             bbox=[x, y, w, h],
@@ -135,6 +138,7 @@ class YOLODetector:
                             timestamp=timestamp,
                             masks=poly_xy,
                             frame_number=frame_number,
+                            image_size=image_size,
                         )
                         detections.append(detection)
 

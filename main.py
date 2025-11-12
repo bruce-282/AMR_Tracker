@@ -258,6 +258,7 @@ class EnhancedAMRTracker:
                         frame=frame,
                         bbox=best_detection.bbox,
                         frame_number=best_detection.frame_number,
+                        orientation=best_detection.get_orientation(),
                     )
                     tracking_result["detection_type"] = getattr(
                         best_detection, "class_name", "unknown"
@@ -302,6 +303,7 @@ class EnhancedAMRTracker:
                                 frame=frame,
                                 bbox=detection.bbox,
                                 frame_number=detection.frame_number,
+                                orientation=detection.get_orientation(),
                             )
                             tracking_result["detection_type"] = getattr(
                                 detection, "class_name", "unknown"
@@ -343,7 +345,7 @@ class EnhancedAMRTracker:
                         results.append(tracking_result)
 
                         # Clean up if tracker is lost
-                        if primary_tracker.is_lost(max_frames_lost=10):
+                        if primary_tracker.is_lost(max_frames_lost=500):
                             print(
                                 f"Removing lost primary tracker ID: {self.primary_track_id}"
                             )
@@ -818,7 +820,10 @@ def run_basic_mode(
             if best_detection_idx is not None:
                 detection = detections[best_detection_idx]
                 tracking_result = tracker.update(
-                    frame, detection.bbox, frame_number=frame_number
+                    frame,
+                    detection.bbox,
+                    frame_number=frame_number,
+                    orientation=detection.get_orientation(),
                 )
                 tracking_result["detection_type"] = getattr(
                     detection, "class_name", "unknown"
@@ -852,7 +857,10 @@ def run_basic_mode(
                 trackers[next_track_id] = new_tracker
 
                 tracking_result = new_tracker.update(
-                    frame, detection.bbox, frame_number=frame_number
+                    frame,
+                    detection.bbox,
+                    frame_number=frame_number,
+                    orientation=detection.get_orientation(),
                 )
                 tracking_result["detection_type"] = getattr(
                     detection, "class_name", "unknown"

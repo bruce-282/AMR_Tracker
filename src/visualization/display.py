@@ -135,39 +135,35 @@ class Visualizer:
             )
             # cv2.polylines(vis_frame, [bbox_corners], True, color, 2)
 
-            # # Optional: draw instance segmentation polygon if available
-            if getattr(detection, "masks", None) is not None:
-                poly = detection.masks
+            # Draw oriented bounding box from mask if available
+            if hasattr(detection, "oriented_box_info") and detection.oriented_box_info is not None:
                 try:
+                    # Draw polygon mask if available
+                    if getattr(detection, "masks", None) is not None:
+                        poly = detection.masks
+                        poly = np.asarray(poly, dtype=np.float32)
+                        if poly.ndim == 2 and poly.shape[1] == 2 and poly.shape[0] >= 3:
+                            pts = poly.reshape((-1, 1, 2)).astype(np.int32)
+                            cv2.polylines(vis_frame, [pts], True, color, 2)
+                    
+                    # Draw oriented bounding box from extracted info
+                    box_info = detection.oriented_box_info
+                    box_points = box_info["box_points"]
+                    box_i32 = box_points.reshape((-1, 1, 2)).astype(np.int32)
+                    cv2.polylines(vis_frame, [box_i32], True, color, 2)
+                    
+                    # Save angle from oriented box (degrees)
+                    self.latest_rect_angles[track_id] = float(box_info["angle"])
+                except Exception as e:
+                    print(f"⚠ Failed to draw oriented box: {e}")
+            elif getattr(detection, "masks", None) is not None:
+                # Fallback: draw polygon if no oriented box info
+                try:
+                    poly = detection.masks
                     poly = np.asarray(poly, dtype=np.float32)
                     if poly.ndim == 2 and poly.shape[1] == 2 and poly.shape[0] >= 3:
                         pts = poly.reshape((-1, 1, 2)).astype(np.int32)
                         cv2.polylines(vis_frame, [pts], True, color, 2)
-
-                        # Build binary mask from polygon and draw min-area-rect box
-                        h, w_img = vis_frame.shape[:2]
-                        bin_mask = np.zeros((h, w_img), dtype=np.uint8)
-                        cv2.fillPoly(bin_mask, [pts], 255)
-
-                        m = self._clean_mask(bin_mask, min_area=200)
-                        if m.max() > 0:
-                            erode_px = 3
-                            core = cv2.erode(
-                                m, np.ones((erode_px, erode_px), np.uint8), 1
-                            )
-                            if int(core.sum()) < 50:
-                                core = m
-                            cnts, _ = cv2.findContours(
-                                core, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                            )
-                            if cnts:
-                                cnt = max(cnts, key=cv2.contourArea)
-                                rect = cv2.minAreaRect(cnt)
-                                # Save angle from minAreaRect (degrees)
-                                self.latest_rect_angles[track_id] = float(rect[2])
-                                box = cv2.boxPoints(rect).astype(np.float32)
-                                box_i32 = box.reshape((-1, 1, 2)).astype(np.int32)
-                                cv2.polylines(vis_frame, [box_i32], True, color, 2)
                 except Exception:
                     pass
 

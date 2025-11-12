@@ -137,7 +137,13 @@ class KalmanTracker:
 
             print(f"🔍 Track {self.track_id} - INITIALIZED at pos=({cx:.1f}, {cy:.1f})")
 
-    def update(self, frame: np.ndarray, bbox: List[float], frame_number: int = 0):
+    def update(
+        self,
+        frame: np.ndarray,
+        bbox: List[float],
+        frame_number: int = 0,
+        orientation: Optional[float] = None,
+    ):
         """
         Update tracker with new detection
 
@@ -145,6 +151,7 @@ class KalmanTracker:
             frame: Current frame
             bbox: Bounding box [x, y, w, h]
             frame_number: Current frame number
+            orientation: Orientation angle in radians (from detection mask, optional)
 
         Returns:
             dict: Tracking results
@@ -166,22 +173,35 @@ class KalmanTracker:
             # Update detection tracking
             self.last_detection_frame = frame_number
             self.frames_since_detection = 0
-            # Get center position
+            
+            # Get center position from bbox
+            # Note: If bbox came from mask-based oriented_box_info, this center
+            # is already the mask-based center (from minAreaRect)
             x, y, w, h = bbox
             cx = x + w / 2
             cy = y + h / 2
 
-            # Detect orientation
-            theta = self.detect_orientation_obb(frame, bbox)
-
-            if theta is not None:
+            # Use orientation from detection mask if available, otherwise detect it
+            # orientation comes from detection.get_orientation() which uses oriented_box_info
+            if orientation is not None:
+                # Orientation from mask-based minAreaRect (already in radians)
+                theta = orientation
                 # Handle angle continuity
                 theta = self.handle_angle_continuity(theta)
             else:
-                # Use previous angle or default to avoid dimension mismatch
-                theta = self.prev_angle if self.prev_angle is not None else 0.0
+                # Fallback: Detect orientation using OBB method from frame
+                theta = self.detect_orientation_obb(frame, bbox)
+                if theta is not None:
+                    # Handle angle continuity
+                    theta = self.handle_angle_continuity(theta)
+                else:
+                    # Use previous angle or default to avoid dimension mismatch
+                    theta = self.prev_angle if self.prev_angle is not None else 0.0
 
-            # Always use 3D measurement to avoid matrix dimension issues
+            # Measurement vector: [cx, cy, theta]
+            # cx, cy: center from mask-based oriented_box_info (if mask available)
+            # theta: orientation from mask-based oriented_box_info (if mask available)
+            # This is the input to Kalman filter correction step
             z = np.array([[cx], [cy], [theta]], dtype=np.float32)
 
             # Ensure z has correct shape and type
