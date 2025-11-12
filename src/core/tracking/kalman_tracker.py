@@ -8,7 +8,7 @@ with position, velocity, and orientation.
 import cv2
 import numpy as np
 from collections import deque
-from typing import Optional, Dict, Tuple, List
+from typing import List, Optional, Dict, Tuple
 
 
 class KalmanTracker:
@@ -64,6 +64,10 @@ class KalmanTracker:
         self.initial_size_measurement = (
             None  # Store initial size measurement (never changes)
         )
+        
+        # For detecting segmentation failures (sudden center jumps)
+        self.last_center = None  # Last valid center position
+        self.use_prediction_only = False  # Flag to use prediction only mode
 
     def init_kalman(self):
         """
@@ -134,6 +138,9 @@ class KalmanTracker:
             self.kf.statePost = np.array(
                 [[cx], [cy], [0], [0], [0], [0]], dtype=np.float32
             )
+            
+            # Initialize last center for jump detection
+            self.last_center = (cx, cy)
 
             print(f"🔍 Track {self.track_id} - INITIALIZED at pos=({cx:.1f}, {cy:.1f})")
 
@@ -178,8 +185,65 @@ class KalmanTracker:
             # Note: If bbox came from mask-based oriented_box_info, this center
             # is already the mask-based center (from minAreaRect)
             x, y, w, h = bbox
-            cx = x + w / 2
-            cy = y + h / 2
+            measured_cx = x + w / 2
+            measured_cy = y + h / 2
+            
+            # Get predicted position from Kalman filter (after predict step)
+            predicted_cx = state_pre[0]
+            predicted_cy = state_pre[1]
+            predicted_vx = state_pre[3]
+            predicted_vy = state_pre[4]
+            
+            # Check if center jump is too large (segmentation failure detection)
+            # Calculate distance between measured and predicted center
+            center_jump_distance = np.sqrt(
+                (measured_cx - predicted_cx) ** 2 + (measured_cy - predicted_cy) ** 2
+            )
+            
+            # Use bbox size as reference (average of width and height)
+            bbox_size = (w + h) / 2
+            jump_threshold = bbox_size * 0.5  # 5% of bbox size
+            
+            # Determine if we should use measurement or prediction only
+            # Each frame is evaluated independently - if measurement is valid, use it
+            use_measurement = True
+            if self.last_center is not None:
+                # Check if measured center jumped too much from predicted position
+                if center_jump_distance > jump_threshold:
+                    print(
+                        f"⚠ Track {self.track_id} - Center jump detected: "
+                        f"distance={center_jump_distance:.1f}px > threshold={jump_threshold:.1f}px "
+                        f"(bbox_size={bbox_size:.1f}px). Using prediction only for this frame."
+                    )
+                    use_measurement = False
+                    self.use_prediction_only = True
+                else:
+                    # Normal detection - measurement is valid, return to normal mode
+                    use_measurement = True
+                    self.use_prediction_only = False
+            else:
+                # First frame - always use measurement to initialize
+                use_measurement = True
+                self.use_prediction_only = False
+            
+            # Use velocity-based corrected position if measurement is unreliable
+            if not use_measurement:
+                # Use predicted position (already includes velocity-based prediction)
+                # This frame only - next frame will re-evaluate
+                cx = predicted_cx
+                cy = predicted_cy
+                print(
+                    f"📊 Track {self.track_id} - Using predicted position: "
+                    f"({cx:.1f}, {cy:.1f}) with velocity ({predicted_vx:.1f}, {predicted_vy:.1f})"
+                )
+                # Don't update last_center when using prediction - keep previous valid center
+            else:
+                # Use measured position (from mask-based oriented_box_info)
+                # This is a valid detection - update last_center and return to normal mode
+                cx = measured_cx
+                cy = measured_cy
+                self.last_center = (cx, cy)
+                self.use_prediction_only = False
 
             # Use orientation from detection mask if available, otherwise detect it
             # orientation comes from detection.get_orientation() which uses oriented_box_info
@@ -199,7 +263,7 @@ class KalmanTracker:
                     theta = self.prev_angle if self.prev_angle is not None else 0.0
 
             # Measurement vector: [cx, cy, theta]
-            # cx, cy: center from mask-based oriented_box_info (if mask available)
+            # cx, cy: either measured (if valid) or predicted (if segmentation failed)
             # theta: orientation from mask-based oriented_box_info (if mask available)
             # This is the input to Kalman filter correction step
             z = np.array([[cx], [cy], [theta]], dtype=np.float32)
@@ -208,19 +272,27 @@ class KalmanTracker:
             if z.shape != (3, 1):
                 z = z.reshape(3, 1)
 
-            # Update step
+            # Update step (only if measurement is reliable, otherwise prediction is already done)
             try:
-                self.kf.correct(z)
+                if use_measurement:
+                    # Normal correction with measurement
+                    self.kf.correct(z)
+                else:
+                    # Don't correct, just use prediction (statePost = statePre)
+                    # This maintains prediction-only mode
+                    self.kf.statePost = self.kf.statePre.copy()
 
                 # 🔍 DEBUG: Monitor correction state
                 state_post = self.kf.statePost.flatten()
+                mode_str = "PREDICTION-ONLY" if not use_measurement else "CORRECTION"
                 print(
-                    f"Track {self.track_id} - CORRECTION: pos=({state_post[0]:.1f}, {state_post[1]:.1f}), "
+                    f"Track {self.track_id} - {mode_str}: pos=({state_post[0]:.1f}, {state_post[1]:.1f}), "
                     f"vel=({state_post[3]:.1f}, {state_post[4]:.1f}), theta={state_post[2]:.1f}"
                 )
-                print(
-                    f"Track {self.track_id} - MEASUREMENT: pos=({cx:.1f}, {cy:.1f}), theta={theta:.1f}"
-                )
+                if use_measurement:
+                    print(
+                        f"Track {self.track_id} - MEASUREMENT: pos=({measured_cx:.1f}, {measured_cy:.1f}), theta={theta:.1f}"
+                    )
 
             except cv2.error as e:
                 print(f"⚠ Kalman filter correction failed: {e}")

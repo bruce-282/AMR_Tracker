@@ -404,7 +404,7 @@ class EnhancedAMRTracker:
                     frame, detection_objects, tracking_results
                 )
                 # Draw tracking results separately (yellow centers)
-                vis_frame = self.visualizer.draw_tracking(vis_frame, tracking_results)
+                #vis_frame = self.visualizer.draw_tracking(vis_frame, tracking_results)
 
                 # Add summary information
                 # cv2.putText(

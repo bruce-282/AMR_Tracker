@@ -121,7 +121,19 @@ class Visualizer:
             color = self.track_colors[track_id]
             # color_box = tuple(np.clip(np.array(color) + 50, 0, 255).astype(int))
 
-            # Draw bounding box
+            # Use Kalman tracker position (filtered, handles segmentation failures)
+            # instead of raw detection bbox to avoid drawing jumped centers
+            if "position" in measurement:
+                # Use filtered position from Kalman tracker
+                kalman_cx = measurement["position"]["x"]
+                kalman_cy = measurement["position"]["y"]
+            else:
+                # Fallback to detection center if measurement not available
+                x, y, w, h = detection.bbox
+                kalman_cx = x + w / 2
+                kalman_cy = y + h / 2
+            
+            # Get bbox size from detection (for drawing purposes)
             x, y, w, h = detection.bbox
 
             bbox_corners = np.array(
@@ -178,8 +190,8 @@ class Visualizer:
             # box = np.int32(box)
             # cv2.fillPoly(vis_frame, [box], color)
 
-            # Draw track ID & compute center
-            center = tuple(np.mean(bbox_corners, axis=0).astype(int))
+            # Use Kalman tracker center (filtered, handles segmentation failures)
+            center = (int(kalman_cx), int(kalman_cy))
             # cv2.putText(
             #     vis_frame,
             #     f"ID: {track_id}",
@@ -233,9 +245,16 @@ class Visualizer:
             track_id = measurement.get("track_id", 0)
             if track_id != 0:
                 continue
-            x, y, w, h = detection.bbox
-            cx = int(x + w / 2)
-            cy = int(y + h / 2)
+            
+            # Use Kalman tracker position (filtered, handles segmentation failures)
+            if "position" in measurement:
+                cx = int(measurement["position"]["x"])
+                cy = int(measurement["position"]["y"])
+            else:
+                # Fallback to detection center if measurement not available
+                x, y, w, h = detection.bbox
+                cx = int(x + w / 2)
+                cy = int(y + h / 2)
             # Prefer minAreaRect angle if available
             if track_id in self.latest_rect_angles:
                 theta_deg = float(self.latest_rect_angles[track_id])
