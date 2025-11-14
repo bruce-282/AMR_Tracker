@@ -89,14 +89,55 @@ class YOLODetector:
 
             detections = []
             for result in results:
-                if result.obb is not None:
-                    obbs = result.obb.xyxy.cpu().numpy()
-                    print(f"obbs: {obbs}")
-                if result.boxes is not None:
+                # Check if OBB (Oriented Bounding Box) is available
+                has_obb = result.obb is not None
+                
+                if has_obb:
+                    # OBB model: use xywhr format
+                    try:
+                        xywhr_data = result.obb.xywhr.cpu().numpy()  # [N, 5] array
+                        confidences = result.obb.conf.cpu().numpy()
+                        class_ids = result.obb.cls.cpu().numpy().astype(int)
+                        
+                        for i, (xywhr, conf, class_id) in enumerate(
+                            zip(xywhr_data, confidences, class_ids)
+                        ):
+                            # Filter by target classes if specified
+                            if (
+                                self.target_classes is not None
+                                and class_id not in self.target_classes
+                            ):
+                                continue
+                            
+                            # Convert xywhr to [x, y, w, h] for fallback bbox
+                            x_center, y_center, width, height, _ = xywhr
+                            x = x_center - width / 2
+                            y = y_center - height / 2
+                            
+                            # Get image size
+                            image_size = (image.shape[1], image.shape[0])  # (width, height)
+                            
+                            # Create Detection object with xywhr
+                            detection = Detection(
+                                bbox=[x, y, width, height],
+                                confidence=float(conf),
+                                class_id=int(class_id),
+                                class_name=self._get_class_name(class_id),
+                                timestamp=timestamp,
+                                masks=None,  # OBB model doesn't use masks
+                                frame_number=frame_number,
+                                image_size=image_size,
+                                xywhr=xywhr,  # Pass xywhr directly
+                            )
+                            detections.append(detection)
+                    except Exception as e:
+                        print(f"[WARN] Failed to process OBB: {e}")
+                        has_obb = False  # Fallback to regular boxes
+                
+                # Regular detection (boxes + masks)
+                if not has_obb and result.boxes is not None:
                     masks = result.masks
-
                     boxes = result.boxes.xyxy.cpu().numpy()  # x1, y1, x2, y2
-                    print(f"boxes: {boxes}")
                     confidences = result.boxes.conf.cpu().numpy()
                     class_ids = result.boxes.cls.cpu().numpy().astype(int)
 
@@ -129,7 +170,7 @@ class YOLODetector:
                         # Get image size for mask processing
                         image_size = (image.shape[1], image.shape[0])  # (width, height)
                         
-                        # Create Detection object
+                        # Create Detection object (no xywhr, will use mask if available)
                         detection = Detection(
                             bbox=[x, y, w, h],
                             confidence=float(conf),
@@ -139,6 +180,7 @@ class YOLODetector:
                             masks=poly_xy,
                             frame_number=frame_number,
                             image_size=image_size,
+                            xywhr=None,  # No xywhr for regular detection
                         )
                         detections.append(detection)
 

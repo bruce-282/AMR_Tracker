@@ -39,7 +39,7 @@
         "source": 0,
         "fps": 30,
         "detector": "yolo",
-        "tracker": "speed",
+        "tracker": "kalman",
         "stationary_mode": true
       },
       "enhanced_video_tracking": {

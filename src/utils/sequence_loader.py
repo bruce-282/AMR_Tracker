@@ -17,13 +17,13 @@ try:
     from .novitec_camera_loader import NOVITEC_AVAILABLE, nvt
 
     if NOVITEC_AVAILABLE:
-        print("✓ Novitec Camera Module available")
+        print("[OK] Novitec Camera Module available")
     else:
-        print("⚠ Novitec Camera Module not available")
+        print("[WARN] Novitec Camera Module not available")
         print("  Using fallback camera loader")
 except ImportError as e:
     NOVITEC_AVAILABLE = False
-    print(f"⚠ Novitec Camera Module not available: {e}")
+    print(f"[WARN] Novitec Camera Module not available: {e}")
     print("  Using fallback camera loader")
 
 
@@ -65,7 +65,7 @@ class CameraDeviceLoader(BaseLoader):
         if not self.cap.isOpened():
             raise RuntimeError(f"Cannot open camera {device_id}")
 
-        print(f"✓ Camera device {device_id} opened")
+        print(f"[OK] Camera device {device_id} opened")
 
     def read(self):
         ret, frame = self.cap.read()
@@ -95,7 +95,7 @@ class VideoFileLoader(BaseLoader):
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
 
-        print(f"✓ Video file opened: {file_path}")
+        print(f"[OK] Video file opened: {file_path}")
         print(f"  Total frames: {self.total_frames}, FPS: {self.fps:.2f}")
 
     def read(self):
@@ -137,7 +137,7 @@ class ImageSequenceLoader(BaseLoader):
         self.current_index = 0
         self.last_frame_time = time.time()
 
-        print(f"✓ Image sequence opened: {sequence_path}")
+        print(f"[OK] Image sequence opened: {sequence_path}")
         print(f"  Found {len(self.image_files)} images, FPS: {fps}")
 
     def read(self):
@@ -191,18 +191,18 @@ class NovitecCameraLoader(BaseLoader):
         try:
             # Initialize device manager
             self.device_manager = nvt.DeviceManager()
-            print("✓ Novitec DeviceManager initialized")
+            print("[OK] Novitec DeviceManager initialized")
 
             # Update device list
             err = self.device_manager.Update()
             if err != nvt.NVT_OK:
                 print(f"DeviceManager Update 실패: {err}")
                 raise RuntimeError(f"Failed to update device list: {err}")
-            print("✓ DeviceManager updated successfully")
+            print("[OK] DeviceManager updated successfully")
 
             # Get available devices
             device_count = self.device_manager.GetDeviceCount()
-            print(f"✓ Found {device_count} Novitec devices")
+            print(f"[OK] Found {device_count} Novitec devices")
 
             if device_count == 0:
                 raise RuntimeError("No Novitec devices found")
@@ -217,7 +217,7 @@ class NovitecCameraLoader(BaseLoader):
             if err != nvt.NVT_OK:
                 print(f"Camera Connect 실패: {err}")
                 raise RuntimeError(f"Failed to connect to camera: {err}")
-            print("✓ Novitec camera connected")
+            print("[OK] Novitec camera connected")
 
             self.initialized = True
 
@@ -318,10 +318,10 @@ class NovitecCameraLoader(BaseLoader):
         try:
             if self.camera:
                 self.camera.Disconnect()
-                print("✓ Novitec camera disconnected")
+                print("[OK] Novitec camera disconnected")
             if self.device_manager:
                 self.device_manager = None
-                print("✓ Novitec DeviceManager released")
+                print("[OK] Novitec DeviceManager released")
             print("Novitec 카메라 리소스 해제 완료")
         except Exception as e:
             print(f"Error releasing Novitec camera: {e}")
@@ -386,7 +386,7 @@ def create_camera_device_loader(device_id: int = 0) -> Optional[BaseLoader]:
         if NOVITEC_AVAILABLE:
             try:
                 loader = NovitecCameraLoader(device_id)
-                print("✓ Novitec camera loader created")
+                print("[OK] Novitec camera loader created")
                 return loader
             except Exception as e:
                 print(f"Novitec 카메라 실패, 일반 카메라로 폴백: {e}")
@@ -403,7 +403,7 @@ def create_video_file_loader(file_path: str) -> Optional[BaseLoader]:
     """Create video file loader"""
     try:
         loader = VideoFileLoader(file_path)
-        print("✓ Video file loader created")
+        print("[OK] Video file loader created")
         return loader
     except Exception as e:
         print(f"Error creating video file loader: {e}")
@@ -416,7 +416,7 @@ def create_image_sequence_loader(
     """Create image sequence loader"""
     try:
         loader = ImageSequenceLoader(sequence_path, fps)
-        print("✓ Image sequence loader created")
+        print("[OK] Image sequence loader created")
         return loader
     except Exception as e:
         print(f"Error creating image sequence loader: {e}")

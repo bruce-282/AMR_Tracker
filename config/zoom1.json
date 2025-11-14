@@ -1,0 +1,13 @@
+{
+  "camera_1": 0,
+  "camera_2": 1,
+  "camera_3": 2,
+  "detector": {
+    "model_path": "weights/zoom1/best.pt",
+    "confidence_threshold": 0.2,
+    "nms_threshold": 0.4,
+    "imgsz": 640,
+    "target_classes": [0]
+  }
+}
+

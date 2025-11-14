@@ -110,11 +110,11 @@ class EnhancedAMRTracker:
                 print(f"Using device: {device}")
 
                 self.detector = YOLODetector(
-                    "weights/last.pt",
-                    confidence_threshold=0.88,
+                    "weights/zoom1/best.pt",
+                    confidence_threshold=0.2,
                     device=device,  # Auto-detect CUDA availability
-                    imgsz=768,
-                    target_classes=[0],  # Only detect class 0 (AGV)
+                    imgsz=640,
+                    target_classes=[0, 1],  # Only detect class 0 (AGV)
                 )
                 print("YOLO detector initialized")
             except ImportError:
@@ -721,7 +721,7 @@ def run_basic_mode(
     """Run basic multi-object AMR tracker"""
     import ultralytics
 
-    detector = ultralytics.YOLO("weights/last.pt")
+    detector = ultralytics.YOLO("weights/zoom1/best.pt")
     trackers = {}  # Dictionary to store multiple trackers
     next_track_id = 0
     data_logger = TrackingDataLogger()

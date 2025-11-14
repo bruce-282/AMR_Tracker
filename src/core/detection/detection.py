@@ -19,12 +19,13 @@ class Detection:
         masks: Optional[List[List[float]]] = None,
         frame_number: int = 0,
         image_size: Optional[Tuple[int, int]] = None,
+        xywhr: Optional[np.ndarray] = None,
     ):
         """
         Initialize detection.
 
         Args:
-            bbox: Bounding box [x, y, width, height] (fallback if no mask)
+            bbox: Bounding box [x, y, width, height] (fallback if no mask/xywhr)
             confidence: Detection confidence score
             class_id: Object class ID
             class_name: Object class name
@@ -32,6 +33,7 @@ class Detection:
             masks: Masks (polygon points)
             frame_number: Frame number where detection occurred
             image_size: Image size (width, height) for mask processing
+            xywhr: OBB in [x_center, y_center, width, height, rotation] format (from model)
         """
         self.original_bbox = bbox  # Keep original YOLO bbox as fallback
         self.confidence = confidence
@@ -41,12 +43,18 @@ class Detection:
         self.masks = masks
         self.frame_number = frame_number
         
-        # Extract box information from mask if available
+        # Priority: 1) xywhr (from model), 2) mask extraction, 3) original bbox
         self.oriented_box_info = None
-        if masks is not None and image_size is not None:
+        
+        # First, try to use xywhr if available (from OBB model)
+        if xywhr is not None:
+            self.oriented_box_info = self._extract_box_from_xywhr(xywhr)
+        
+        # If no xywhr, try to extract from mask
+        if self.oriented_box_info is None and masks is not None and image_size is not None:
             self.oriented_box_info = self._extract_box_from_mask(image_size)
         
-        # Use mask-based box if available, otherwise use original bbox
+        # Use oriented box if available, otherwise use original bbox
         if self.oriented_box_info is not None:
             # Convert oriented box to [x, y, w, h] format for compatibility
             center = self.oriented_box_info["center"]
@@ -58,6 +66,46 @@ class Detection:
         else:
             self.bbox = bbox
 
+    def _extract_box_from_xywhr(self, xywhr: np.ndarray) -> Optional[Dict]:
+        """
+        Extract oriented bounding box from xywhr format.
+        
+        Args:
+            xywhr: Array in [x_center, y_center, width, height, rotation] format
+                   rotation is in radians
+        
+        Returns:
+            Dictionary with center, width, height, angle, and box_points
+        """
+        try:
+            if xywhr is None or len(xywhr) < 5:
+                return None
+            
+            x_center, y_center, width, height, rotation_rad = xywhr[:5]
+            center = (float(x_center), float(y_center))
+            width = float(width)
+            height = float(height)
+            angle_rad = float(rotation_rad)
+            angle_deg = np.rad2deg(angle_rad)
+            
+            # Create box points from center, size, and angle
+            # OpenCV's minAreaRect uses angle in degrees, but we'll use radians internally
+            # Convert to OpenCV format: angle in degrees, measured from horizontal
+            rect = ((x_center, y_center), (width, height), np.rad2deg(angle_rad))
+            box_points = cv2.boxPoints(rect).astype(np.float32)
+            
+            return {
+                "center": center,  # (x, y)
+                "width": width,
+                "height": height,
+                "angle": angle_deg,  # degrees
+                "angle_rad": angle_rad,  # radians
+                "box_points": box_points,  # 4 corner points
+            }
+        except Exception as e:
+            print(f"[WARN] Failed to extract box from xywhr: {e}")
+            return None
+    
     def _clean_mask(self, mask: np.ndarray, min_area: int = 200) -> np.ndarray:
         """
         Clean mask by removing small components.

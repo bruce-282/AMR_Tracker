@@ -23,7 +23,7 @@ class KalmanTracker:
         Initialize Kalman tracker
 
         Args:
-            fps: Camera frame rate
+            fps: Camera frame rate (initial value, can be updated from timestamps)
             pixel_size: Pixel size in mm (1 pixel = ? mm)
             track_id: Unique ID for this tracker
         """
@@ -38,6 +38,10 @@ class KalmanTracker:
 
         # For debugging/visualization
         self.trajectory = deque(maxlen=100)
+        
+        # For timestamp-based FPS calculation
+        self.last_timestamp = None
+        self.timestamp_history = deque(maxlen=10)  # Store last 10 frame intervals
 
         # Color for this tracker (different colors for different objects)
         colors = [
@@ -88,9 +92,9 @@ class KalmanTracker:
                 [1, 0, 0, dt, 0, 0],  # x = x + vx*dt
                 [0, 1, 0, 0, dt, 0],  # y = y + vy*dt
                 [0, 0, 1, 0, 0, dt],  # theta = theta + omega*dt
-                [0, 0, 0, 1, 0, 0],  # vx = vx
-                [0, 0, 0, 0, 1, 0],  # vy = vy
-                [0, 0, 0, 0, 0, 1],  # omega = omega
+                [0, 0, 0, 1, 0, 0],  # vx = vx (constant velocity model)
+                [0, 0, 0, 0, 1, 0],  # vy = vy (constant velocity model)
+                [0, 0, 0, 0, 0, 1],  # omega = omega (constant angular velocity model)
             ],
             dtype=np.float32,
         )
@@ -107,16 +111,19 @@ class KalmanTracker:
         )
         # 3 x 6 matrix
 
+        # Process noise covariance (Q) - how much we trust the model
         kf.processNoiseCov = np.eye(6, dtype=np.float32)
-        kf.processNoiseCov[0:3, 0:3] *= 0.1  # position/angle noise
-        kf.processNoiseCov[3:6, 3:6] *= 0.1  # velocity noise
+        kf.processNoiseCov[0:3, 0:3] *= 0.1  # position/angle noise (low - model is reliable)
+        kf.processNoiseCov[3:6, 3:6] *= 0.01  # velocity noise (very low - velocity should be stable)
 
+        # Measurement noise covariance (R) - how much we trust the measurements
         kf.measurementNoiseCov = np.eye(3, dtype=np.float32)
-        kf.measurementNoiseCov[0:2, 0:2] *= 1.0  # position noise
-        kf.measurementNoiseCov[2, 2] *= 5.0  # angle noise
+        kf.measurementNoiseCov[0:2, 0:2] *= 0.5  # position noise (lower - trust measurements more)
+        kf.measurementNoiseCov[2, 2] *= 5.0  # angle noise (higher - angle is less reliable)
 
-        kf.errorCovPost = np.eye(6, dtype=np.float32) * 100
-        kf.errorCovPost[3:6, 3:6] *= 5  # high uncertainty for velocities
+        # Error covariance (P) - initial uncertainty
+        kf.errorCovPost = np.eye(6, dtype=np.float32) * 10  # Lower initial uncertainty
+        kf.errorCovPost[3:6, 3:6] *= 1.0  # Lower uncertainty for velocities (start with low velocity)
 
         # Initialize state
         kf.statePre = np.zeros((6, 1), dtype=np.float32)
@@ -142,7 +149,7 @@ class KalmanTracker:
             # Initialize last center for jump detection
             self.last_center = (cx, cy)
 
-            print(f"🔍 Track {self.track_id} - INITIALIZED at pos=({cx:.1f}, {cy:.1f})")
+            print(f"[INIT] Track {self.track_id} - INITIALIZED at pos=({cx:.1f}, {cy:.1f})")
 
     def update(
         self,
@@ -150,6 +157,7 @@ class KalmanTracker:
         bbox: List[float],
         frame_number: int = 0,
         orientation: Optional[float] = None,
+        timestamp: Optional[float] = None,
     ):
         """
         Update tracker with new detection
@@ -163,13 +171,17 @@ class KalmanTracker:
         Returns:
             dict: Tracking results
         """
+        # Update FPS from timestamp if available
+        if timestamp is not None:
+            self._update_fps_from_timestamp(timestamp)
+        
         # Prediction step
         self.kf.predict()
 
-        # 🔍 DEBUG: Monitor prediction state
+        # DEBUG: Monitor prediction state
         state_pre = self.kf.statePre.flatten()
         print(
-            f"🔍 Track {self.track_id} - PREDICTION: pos=({state_pre[0]:.1f}, {state_pre[1]:.1f}), "
+            f"[PRED] Track {self.track_id} - PREDICTION: pos=({state_pre[0]:.1f}, {state_pre[1]:.1f}), "
             f"vel=({state_pre[3]:.1f}, {state_pre[4]:.1f}), theta={state_pre[2]:.1f}"
         )
 
@@ -211,7 +223,7 @@ class KalmanTracker:
                 # Check if measured center jumped too much from predicted position
                 if center_jump_distance > jump_threshold:
                     print(
-                        f"⚠ Track {self.track_id} - Center jump detected: "
+                        f"[WARN] Track {self.track_id} - Center jump detected: "
                         f"distance={center_jump_distance:.1f}px > threshold={jump_threshold:.1f}px "
                         f"(bbox_size={bbox_size:.1f}px). Using prediction only for this frame."
                     )
@@ -233,7 +245,7 @@ class KalmanTracker:
                 cx = predicted_cx
                 cy = predicted_cy
                 print(
-                    f"📊 Track {self.track_id} - Using predicted position: "
+                    f"[PRED] Track {self.track_id} - Using predicted position: "
                     f"({cx:.1f}, {cy:.1f}) with velocity ({predicted_vx:.1f}, {predicted_vy:.1f})"
                 )
                 # Don't update last_center when using prediction - keep previous valid center
@@ -282,7 +294,7 @@ class KalmanTracker:
                     # This maintains prediction-only mode
                     self.kf.statePost = self.kf.statePre.copy()
 
-                # 🔍 DEBUG: Monitor correction state
+                # DEBUG: Monitor correction state
                 state_post = self.kf.statePost.flatten()
                 mode_str = "PREDICTION-ONLY" if not use_measurement else "CORRECTION"
                 print(
@@ -295,7 +307,7 @@ class KalmanTracker:
                     )
 
             except cv2.error as e:
-                print(f"⚠ Kalman filter correction failed: {e}")
+                print(f"[WARN] Kalman filter correction failed: {e}")
                 # Skip this update if correction fails
 
             # Store trajectory point and bbox
@@ -305,7 +317,7 @@ class KalmanTracker:
             # No detection, increment frames since detection
             self.frames_since_detection += 1
 
-            # 🔍 DEBUG: Monitor prediction-only state
+            # DEBUG: Monitor prediction-only state
             state_post = self.kf.statePost.flatten()
             print(
                 f"Track {self.track_id} - PREDICTION ONLY: pos=({state_post[0]:.1f}, {state_post[1]:.1f}), "
@@ -317,13 +329,21 @@ class KalmanTracker:
 
         # Calculate speeds (always calculate)
         if True:
-            # state[3], state[4] are already in pixels/frame, convert to mm/s
+            # state[3], state[4] are velocity in pixels/frame
+            # To convert to pixels/sec: multiply by fps
+            # Formula: speed = sqrt(vx^2 + vy^2) * fps
+            # Explanation:
+            #   - state[3] = vx (pixels/frame)
+            #   - state[4] = vy (pixels/frame)
+            #   - sqrt(vx^2 + vy^2) = velocity magnitude (pixels/frame)
+            #   - * fps = convert from per-frame to per-second (pixels/sec)
             linear_speed_pix = (
                 np.sqrt(state[3] ** 2 + state[4] ** 2) * self.fps
             )  # pixels/sec
             linear_speed_mm = linear_speed_pix * self.pixel_size  # mm/s
 
-            angular_speed_rad = abs(state[5])
+            # Angular speed is already in rad/frame, convert to rad/sec
+            angular_speed_rad = abs(state[5]) * self.fps  # rad/sec
             angular_speed_deg = np.rad2deg(angular_speed_rad)
         else:
             # In stationary mode, set velocities to 0
@@ -360,6 +380,32 @@ class KalmanTracker:
             results["size_measurement"] = self.initial_size_measurement
 
         return results
+    
+    def _update_fps_from_timestamp(self, timestamp: float):
+        """
+        Update FPS based on actual frame timestamps.
+        
+        Args:
+            timestamp: Current frame timestamp in seconds
+        """
+        if self.last_timestamp is not None:
+            dt = timestamp - self.last_timestamp
+            if dt > 0:
+                # Calculate instantaneous FPS for this frame
+                instant_fps = 1.0 / dt
+                self.timestamp_history.append(instant_fps)
+                
+                # Use median of recent FPS values for stability
+                if len(self.timestamp_history) >= 3:
+                    fps_list = list(self.timestamp_history)
+                    fps_list.sort()
+                    median_idx = len(fps_list) // 2
+                    self.fps = fps_list[median_idx]
+                else:
+                    # Use average if not enough samples
+                    self.fps = sum(self.timestamp_history) / len(self.timestamp_history)
+        
+        self.last_timestamp = timestamp
 
     def detect_orientation_obb(self, frame, bbox):
         """
@@ -464,6 +510,13 @@ class KalmanTracker:
             Annotated image
         """
         img_copy = image.copy()
+        
+        # Calculate font scale and thickness based on image size (do this first)
+        height, width = img_copy.shape[:2]
+        base_width = 1920  # 기준 해상도
+        base_font_scale = 0.8  # 기준 폰트 크기
+        font_scale = max(0.3, min(3.0, (width / base_width) * base_font_scale))
+        thickness = max(1, int(font_scale * 2))
 
         # Draw bounding box if available
         if results["bbox"] is not None:
@@ -551,14 +604,8 @@ class KalmanTracker:
             # Create multi-line display
             display_text = f"ID:{track_id} ({pos_x:.0f},{pos_y:.0f})"
             speed_text = f"Speed: {speed_mms:.1f}mm/s"
-
-            # 이미지 크기에 따라 텍스트 크기 동적 조정
-            height, width = img_copy.shape[:2]
-            # 기준 해상도 대비 비율로 폰트 크기 계산
-            base_width = 1920  # 기준 해상도
-            base_font_scale = 0.8  # 기준 폰트 크기
-            font_scale = max(0.3, min(3.0, (width / base_width) * base_font_scale))
-            thickness = max(1, int(font_scale * 2))
+            
+            # font_scale and thickness are already calculated at the beginning of the method
 
             # Draw main info (ID and position)
             # cv2.putText(
