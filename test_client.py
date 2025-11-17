@@ -57,6 +57,9 @@ class VisionClient:
     
     def send_request(self, request: dict) -> dict:
         """Send request and receive response."""
+        # Log request
+        self.logger.info(f"Request: {json.dumps(request, indent=2)}")
+        
         # Send request
         request_json = json.dumps(request)
         self.socket.sendall(request_json.encode('utf-8'))
@@ -96,10 +99,23 @@ class VisionClient:
                             json_str = text[json_start:json_end]
                             response = json.loads(json_str)
                             
+                            # Handle NOTIFY_CONNECTION (cmd: 7) separately
+                            if response.get("cmd") == 7:
+                                # Log NOTIFY_CONNECTION message as-is
+                                self.logger.info(f"[NOTIFY_CONNECTION] {json.dumps(response, indent=2)}")
+                                
+                                # Remove this JSON from buffer and continue looking for expected response
+                                buffer = text[json_end:].encode('utf-8')
+                                json_start = -1
+                                json_end = -1
+                                continue
+                            
                             # Check if this is the response we're waiting for
                             if expected_cmd is None or response.get("cmd") == expected_cmd:
                                 # Remove this JSON from buffer
                                 remaining = text[json_end:].encode('utf-8')
+                                # Log response
+                                self.logger.info(f"Response: {json.dumps(response, indent=2)}")
                                 return response
                             
                             # Not the response we want, continue looking
@@ -146,8 +162,6 @@ class VisionClient:
             "use_area_scan": use_area_scan
         }
         response = self.send_request(request)
-        self.logger.info(f"Request: {json.dumps(request, indent=2)}")
-        self.logger.info(f"Response: {json.dumps(response, indent=2)}")
         return response
     
     def test_end_vision(self):
@@ -155,8 +169,6 @@ class VisionClient:
         self.logger.info("\n[TEST] END VISION")
         request = {"cmd": 2}
         response = self.send_request(request)
-        self.logger.info(f"Request: {json.dumps(request, indent=2)}")
-        self.logger.info(f"Response: {json.dumps(response, indent=2)}")
         return response
     
     def test_start_cam(self, camera_id: int):
@@ -170,8 +182,6 @@ class VisionClient:
         request = {"cmd": cmd_map[camera_id]}
         
         response = self.send_request(request)
-        self.logger.info(f"Request: {json.dumps(request, indent=2)}")
-        self.logger.info(f"Response: {json.dumps(response, indent=2)}")
         return response
     
     def test_calc_result(self, path_csv=""):
@@ -182,8 +192,6 @@ class VisionClient:
             "path_csv": path_csv
         }
         response = self.send_request(request)
-        self.logger.info(f"Request: {json.dumps(request, indent=2)}")
-        self.logger.info(f"Response: {json.dumps(response, indent=2)}")
         return response
 
 
@@ -283,8 +291,22 @@ def main():
                                     
                                     cmd = response.get("cmd")
                                     
+                                    # Handle NOTIFY_CONNECTION (cmd: 7)
+                                    if cmd == 7:
+                                        # Log NOTIFY_CONNECTION message as-is
+                                        logger.info(f"[NOTIFY_CONNECTION] {json.dumps(response, indent=2)}")
+                                        
+                                        # Remove processed JSON from buffer
+                                        buffer = text[json_end:].encode('utf-8')
+                                        json_start = -1
+                                        json_end = -1
+                                        continue
+                                    
                                     # Handle camera responses (cmd: 3, 4, 5)
                                     if cmd in [3, 4, 5] and response.get("success"):
+                                        # Log response in same format as send_request
+                                        logger.info(f"Response: {json.dumps(response, indent=2)}")
+                                        
                                         response_count[cmd] += 1
                                         
                                         if cmd == 3:  # Camera 1
@@ -341,7 +363,7 @@ def main():
                 traceback.print_exc()
         
         # Test 4: CALC RESULT
-        response = client.test_calc_result(path_csv="test_result.csv")
+        #response = client.test_calc_result(path_csv="test_result.csv")
         
         # Test 5: END VISION
         client.test_end_vision()

@@ -5,7 +5,7 @@ import threading
 import json
 import time
 import logging
-from typing import Dict, Optional, Any, Callable, Tuple, List
+from typing import Dict, Optional, Any, Callable, Tuple, List, Union
 from pathlib import Path
 import cv2
 import numpy as np
@@ -33,11 +33,11 @@ LOADER_MODE_MAP = {
     "camera": "camera_device"
 }
 
-SPEED_THRESHOLD_PIX_PER_FRAME = 10.0  # pixels/frame (속도가 이 값보다 크면 tracking loop 종료)
+SPEED_THRESHOLD_PIX_PER_FRAME = 3.0  # pixels/frame (속도가 이 값보다 크면 tracking loop 종료)
 DETECTION_LOSS_THRESHOLD_FRAMES = 30
 CAMERA2_TRAJECTORY_MAX_FRAMES = 100
-SPEED_NEAR_ZERO_THRESHOLD = 1.0  # pixels/frame (속도가 이 값 이하면 0에 가까운 것으로 간주)
-SPEED_ZERO_FRAMES_THRESHOLD = 10  # 프레임 수 (이 프레임 수 동안 속도가 0에 가까우면 response 전송)
+SPEED_NEAR_ZERO_THRESHOLD = 30.0  # pixels/frame (속도가 이 값 이하면 0에 가까운 것으로 간주)
+SPEED_ZERO_FRAMES_THRESHOLD = 5  # 프레임 수 (이 프레임 수 동안 속도가 0에 가까우면 response 전송)
 
 
 class VisionServer:
@@ -219,7 +219,7 @@ class VisionServer:
             del self.camera_response_sent[camera_id]
     
     def _send_response_to_client(self, cmd: int, success: bool, 
-                                  data: Optional[Dict[str, Any]] = None,
+                                  data: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
                                   error_code: Optional[str] = None,
                                   error_desc: Optional[str] = None) -> bool:
         """Send response to client. Returns True if successful."""
@@ -293,39 +293,39 @@ class VisionServer:
         if camera_id in self.camera_response_sent:
             return  # Already sent
         
-        # Save result image on first detection
-        result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
-        try:
-            # Get tracking results for visualization
-            trackers = self.trackers.get(camera_id, {})
-            tracking_results = []
-            for track_id, tracker in trackers.items():
-                state = tracker.kf.statePost.flatten()
-                tracking_result = {
-                    "track_id": track_id,
-                    "position": {"x": state[0], "y": state[1]},
-                    "orientation": {"theta_rad": state[2]},
-                    "bbox": detection.bbox
-                }
-                tracking_results.append(tracking_result)
-            
-            frame_with_results = self.visualize_results(camera_id, frame.copy(), [detection], tracking_results)
-            cv2.imwrite(str(result_image_path), frame_with_results)
-        except Exception as e:
-            self.logger.warning(f"Failed to save result image for camera {camera_id}: {e}")
-        
-        # Get detection data
+        # Get detection data (use detection center, not tracker position, for cameras 1, 3)
         pixel_size = self._get_pixel_size()
         center = detection.get_center()
         x_mm = center[0] * pixel_size
         y_mm = center[1] * pixel_size
-        rz = detection.get_orientation() if detection.get_orientation() is not None else 0.0
+        rz = detection.get_orientation() if detection.get_orientation() is not None else 0.0  # Already in degrees
         
-        # Send response
+        # Save result image on first detection
+        result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
+        try:
+            # For cameras 1, 3: use detection center (not tracker position) to match response data
+            # Create tracking_results with detection center position
+            tracking_results = []
+            tracking_result = {
+                "track_id": 0,
+                "position": {"x": center[0], "y": center[1]},  # Use detection center, not tracker position
+                "orientation": {"theta_deg": rz},  # Already in degrees
+                "bbox": detection.bbox
+            }
+            tracking_results.append(tracking_result)
+            
+            # For cameras 1, 3: draw only current point, not trajectory
+            draw_trajectory = camera_id not in [1, 3]
+            frame_with_results = self.visualize_results(camera_id, frame.copy(), [detection], tracking_results, draw_trajectory=draw_trajectory)
+            cv2.imwrite(str(result_image_path), frame_with_results)
+        except Exception as e:
+            self.logger.warning(f"Failed to save result image for camera {camera_id}: {e}")
+        
+        # Send response (round to 3 decimal places)
         response_data = {
-            "x": float(x_mm),
-            "y": float(y_mm),
-            "rz": float(rz),
+            "x": round(float(x_mm), 3),
+            "y": round(float(y_mm), 3),
+            "rz": round(float(rz), 3),
             "result_image": str(result_image_path)
         }
         
@@ -392,11 +392,20 @@ class VisionServer:
                 if not request:
                     continue
                 
+                # Log request
+                self.logger.info(f"Request: {json.dumps(request, indent=2)}")
+                
                 # Handle command
                 response = self._handle_command(request)
                 if response:
                     try:
                         client_socket.sendall(response)
+                        # Log response
+                        try:
+                            response_dict = json.loads(response.decode('utf-8'))
+                            self.logger.info(f"Response: {json.dumps(response_dict, indent=2)}")
+                        except:
+                            pass  # If response is not JSON, skip logging
                     except (ConnectionError, OSError) as e:
                         self.logger.warning(f"Connection error while sending response: {e}")
                         break
@@ -521,6 +530,20 @@ class VisionServer:
                     # Initialize camera loader
                     self._initialize_camera(cam_id, loader_mode=loader_mode, source=source, fps=fps)
                     
+                    # Check connection and send NOTIFY_CONNECTION
+                    loader = self.camera_loaders.get(cam_id)
+                    if loader and hasattr(loader, 'check_connection'):
+                        is_connected = loader.check_connection()
+                        if is_connected:
+                            self._send_notification(cam_id, True)
+                            self.logger.info(f"Camera {cam_id} connection confirmed - NOTIFY_CONNECTION sent")
+                        else:
+                            self._send_notification(cam_id, False, error_code="CONNECTION_FAILED", error_desc="Camera connection check failed")
+                            self.logger.warning(f"Camera {cam_id} connection check failed - NOTIFY_CONNECTION sent")
+                    else:
+                        self._send_notification(cam_id, False, error_code="LOADER_ERROR", error_desc="Loader does not support connection check")
+                        self.logger.warning(f"Camera {cam_id} loader does not support connection check")
+                    
                     # For cameras 1 and 3: create tracker instance (track_id=0) without initialization
                     # For camera 2: do not create tracker yet (will be created when cameras 1/3 stop)
                     if cam_id in [1, 3]:
@@ -530,6 +553,8 @@ class VisionServer:
                     
                 except Exception as e:
                     self.logger.error(f"Failed to initialize camera {cam_id}: {e}")
+                    # Send NOTIFY_CONNECTION with error
+                    self._send_notification(cam_id, False, error_code="INIT_ERROR", error_desc=str(e))
                     # Continue initializing other cameras even if one fails
             
             # All cameras initialized
@@ -931,6 +956,9 @@ class VisionServer:
                 # Visualize and display tracking window
                 vis_frame = self.visualize_results(camera_id, frame, detections, tracking_results)
                 
+                # Store original vis_frame before resize (for saving image)
+                vis_frame_original = vis_frame.copy()
+                
                 # Resize window if too large (same as main.py)
                 height, width = vis_frame.shape[:2]
                 if width > 1280 or height > 720:
@@ -1033,6 +1061,11 @@ class VisionServer:
                                                 # Clear camera 2 trajectory before starting
                                                 self.camera2_trajectory = []
                                                 self.camera_detection_loss_frames[2] = 0
+                                                # Clear visualizer trajectory for camera 2 (remove previous camera's trajectory)
+                                                if self.visualizer is not None:
+                                                    track_id = 0
+                                                    if track_id in self.visualizer.track_trajs:
+                                                        self.visualizer.track_trajs[track_id] = []
                                                 self._start_camera_tracking(2)
                                                 self.logger.info("Camera 2 tracking thread started")
                                     
@@ -1042,6 +1075,11 @@ class VisionServer:
                                         # Camera 1 is already initialized from START_VISION
                                         # Just clear state and start tracking thread
                                         self._reset_camera_state(1)
+                                        # Clear visualizer trajectory for camera 1 (remove previous camera's trajectory)
+                                        if self.visualizer is not None:
+                                            track_id = 0
+                                            if track_id in self.visualizer.track_trajs:
+                                                self.visualizer.track_trajs[track_id] = []
                                         if 1 not in self.tracking_threads or not self.tracking_threads[1].is_alive():
                                             if 1 in self.camera_loaders and 1 in self.trackers:
                                                 self._start_camera_tracking(1)
@@ -1061,15 +1099,15 @@ class VisionServer:
                                 pixel_size = self.config.measurement.pixel_size if self.config else 1.0
                                 x_mm = state[0] * pixel_size
                                 y_mm = state[1] * pixel_size
-                                rz_rad = state[2]
+                                rz_deg = state[2]  # Already in degrees
                                 
-                                # Store trajectory with index
+                                # Store trajectory with index (round to 3 decimal places)
                                 trajectory_index = len(self.camera2_trajectory)
                                 self.camera2_trajectory.append({
                                     "track_idx": trajectory_index,
-                                    "x": float(x_mm),
-                                    "y": float(y_mm),
-                                    "rz": float(rz_rad)
+                                    "x": round(float(x_mm), 3),
+                                    "y": round(float(y_mm), 3),
+                                    "rz": round(float(rz_deg), 3)  # in degrees
                                 })
                         
                         # Check if detection lost for camera 2
@@ -1092,12 +1130,18 @@ class VisionServer:
                         if should_send_trajectory and len(self.camera2_trajectory) > 0:
                             self.logger.info(f"Camera 2: {reason}. Sending trajectory data to client ({len(self.camera2_trajectory)} frames).")
                             
-                            # Send trajectory data directly from tracking loop
-                            response_data = {"data": self.camera2_trajectory.copy()}
-                            cmd = Command.START_CAM_1 + camera_id - 1  # cmd: 4 for camera 2
+                            # Save result image at the last frame before sending trajectory data
+                            # Use original vis_frame (before resize) to match camera 1, 3 image size
+                            result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
+                            self._save_result_image(camera_id, result_image_path, frame=vis_frame_original, detections=detections, tracking_results=tracking_results)
                             
-                            if self._send_response_to_client(cmd, success=True, data=response_data):
-                                self.logger.info(f"Camera 2 trajectory data sent ({len(response_data['data'])} frames)")
+                            # Send trajectory data directly from tracking loop
+                            # Protocol: {cmd: 4, success: bool, data: array<object>}
+                            trajectory_data = self.camera2_trajectory.copy()
+                            cmd = Command.START_CAM_2  # cmd: 4 for camera 2
+                            
+                            if self._send_response_to_client(cmd, success=True, data=trajectory_data):
+                                self.logger.info(f"Camera 2 trajectory data sent ({len(trajectory_data)} frames)")
                             
                             # Clear trajectory after sending
                             self.camera2_trajectory = []
@@ -1108,6 +1152,11 @@ class VisionServer:
                                 self.logger.info("Camera 2: Starting camera 3 tracking loop.")
                                 if 3 not in self.tracking_threads or not self.tracking_threads[3].is_alive():
                                     self._reset_camera_state(3)
+                                    # Clear visualizer trajectory for camera 3 (remove previous camera's trajectory)
+                                    if self.visualizer is not None:
+                                        track_id = 0
+                                        if track_id in self.visualizer.track_trajs:
+                                            self.visualizer.track_trajs[track_id] = []
                                     if 3 in self.camera_loaders and 3 in self.trackers:
                                         self._start_camera_tracking(3)
                                     else:
@@ -1169,8 +1218,8 @@ class VisionServer:
         For camera 2: return tracker data
         
         Returns:
-            Dictionary with x, y (in mm) and rz (yaw angle in radians)
-            rz = rotation around Z-axis = yaw angle
+            Dictionary with x, y (in mm) and rz (yaw angle in degrees)
+            rz = rotation around Z-axis = yaw angle (in degrees)
         """
         # Cameras 1, 3: use detection data (not tracker) when use_area_scan is false
         self.logger.debug(f"Camera {camera_id}: use_area_scan={self.use_area_scan}, camera_id in [1,3]={camera_id in [1, 3]}")
@@ -1183,15 +1232,15 @@ class VisionServer:
                 
                 # Convert to mm
                 pixel_size = self.config.measurement.pixel_size if self.config else 1.0
-                x_mm = center[0] #* pixel_size
-                y_mm = center[1] #* pixel_size
-                rz_rad = orientation if orientation is not None else 0.0
+                x_mm = center[0] * pixel_size
+                y_mm = center[1] * pixel_size
+                rz_deg = orientation if orientation is not None else 0.0  # Already in degrees
                 
-                self.logger.debug(f"Camera {camera_id}: Returning DETECTION data: x={x_mm:.2f}, y={y_mm:.2f}, rz={rz_rad:.4f}")
+                self.logger.debug(f"Camera {camera_id}: Returning DETECTION data: x={x_mm:.2f}, y={y_mm:.2f}, rz={rz_deg:.4f}deg")
                 return {
-                    "x": float(x_mm),
-                    "y": float(y_mm),
-                    "rz": float(rz_rad)
+                    "x": round(float(x_mm), 3),
+                    "y": round(float(y_mm), 3),
+                    "rz": round(float(rz_deg), 3)  # in degrees
                 }
             else:
                 # No detection yet
@@ -1214,13 +1263,13 @@ class VisionServer:
         pixel_size = self.config.measurement.pixel_size if self.config else 1.0
         x_mm = state[0] * pixel_size
         y_mm = state[1] * pixel_size
-        rz_rad = state[2]  # rz = yaw = rotation around Z-axis (in radians)
+        rz_deg = state[2]  # rz = yaw = rotation around Z-axis (in degrees)
         
-        self.logger.debug(f"Camera {camera_id}: Returning TRACKER data: x={x_mm:.2f}, y={y_mm:.2f}, rz={rz_rad:.4f}")
+        self.logger.debug(f"Camera {camera_id}: Returning TRACKER data: x={x_mm:.2f}, y={y_mm:.2f}, rz={rz_deg:.4f}deg")
         return {
-            "x": float(x_mm),
-            "y": float(y_mm),
-            "rz": float(rz_rad)  # yaw angle in radians
+            "x": round(float(x_mm), 3),
+            "y": round(float(y_mm), 3),
+            "rz": round(float(rz_deg), 3)  # yaw angle in degrees
         }
     
     def _handle_calc_result(self, request: Dict[str, Any]) -> bytes:
@@ -1292,25 +1341,63 @@ class VisionServer:
                     tracking_result = {
                         "track_id": track_id,
                         "position": {"x": state[0], "y": state[1]},
-                        "orientation": {"theta_rad": state[2]},
+                        "orientation": {"theta_deg": state[2]},  # Already in degrees
                         "bbox": bbox
                     }
                     tracking_results.append(tracking_result)
             
             # Draw tracking results on frame using visualize_results
-            frame_with_results = self.visualize_results(camera_id, frame.copy(), detections, tracking_results)
+            # For cameras 1, 3: draw only current point, not trajectory
+            draw_trajectory = camera_id not in [1, 3]
+            frame_with_results = self.visualize_results(camera_id, frame.copy(), detections, tracking_results, draw_trajectory=draw_trajectory)
             cv2.imwrite(str(image_path), frame_with_results)
             self.logger.info(f"Result image saved: {image_path}")
         except Exception as e:
             self.logger.warning(f"Failed to save result image: {e}")
     
     def visualize_results(
-        self, camera_id: int, frame: np.ndarray, detections: List[Detection], tracking_results: List[Dict]
+        self, camera_id: int, frame: np.ndarray, detections: List[Detection], tracking_results: List[Dict], draw_trajectory: bool = True
     ) -> np.ndarray:
-        """Visualize results using appropriate visualizer (same as main.py)."""
+        """Visualize results using appropriate visualizer (same as main.py).
+        
+        Args:
+            camera_id: Camera ID
+            frame: Input frame
+            detections: List of detections
+            tracking_results: List of tracking results
+            draw_trajectory: Whether to draw trajectory (default: True). Set to False for cameras 1, 3 to show only current point.
+        """
+        # Filter out uninitialized trackers (state at origin: 0, 0, 0)
+        filtered_tracking_results = []
+        for result in tracking_results:
+            position = result.get("position", {})
+            if position:
+                x = position.get("x", 0)
+                y = position.get("y", 0)
+                # Skip if position is at origin (uninitialized tracker)
+                if x == 0.0 and y == 0.0:
+                    continue
+            filtered_tracking_results.append(result)
+        
         if self.visualizer is not None:
+            # For cameras 1, 3: clear trajectory before drawing to show only current point
+            if not draw_trajectory and camera_id in [1, 3]:
+                track_id = 0
+                if track_id in self.visualizer.track_trajs:
+                    # Clear trajectory and keep only current point
+                    if filtered_tracking_results:
+                        position = filtered_tracking_results[0].get("position", {})
+                        if position:
+                            x = int(position.get("x", 0))
+                            y = int(position.get("y", 0))
+                            self.visualizer.track_trajs[track_id] = [(x, y)]
+                        else:
+                            self.visualizer.track_trajs[track_id] = []
+                    else:
+                        self.visualizer.track_trajs[track_id] = []
+            
             vis_frame = self.visualizer.draw_detections(
-                frame, detections, tracking_results
+                frame, detections, filtered_tracking_results
             )
         else:
             # Fallback: return frame as-is if visualizer is not available
@@ -1362,7 +1449,12 @@ class VisionServer:
             self.logger.debug(f"Failed to destroy windows: {e}")
         
         # Stop all cameras (release loaders, delete trackers, etc.)
+        # Send NOTIFY_CONNECTION for each camera before stopping
         for camera_id in list(self.camera_loaders.keys()):
+            # Send NOTIFY_CONNECTION before stopping
+            self._send_notification(camera_id, False, error_code="VISION_ENDED", error_desc="Vision ended")
+            self.logger.info(f"Camera {camera_id} disconnection notified - NOTIFY_CONNECTION sent")
+            # Stop camera
             self._stop_camera(camera_id)
         
         # Clear tracking threads dictionary
@@ -1386,7 +1478,7 @@ class VisionServer:
             del self.data_loggers[camera_id]
         
         self.camera_status[camera_id] = False
-        self._send_notification(camera_id, False)
+        # Note: NOTIFY_CONNECTION is sent in _stop_all_cameras before calling _stop_camera
     
     def _periodic_response_loop(self, camera_id: int):
         """Periodically send tracking data when use_area_scan is false.

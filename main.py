@@ -933,8 +933,8 @@ def run_basic_mode(
         if key == ord("q"):
             break
         elif key == ord("s"):
-            cv2.imwrite(f"snapshot_{frame_number:06d}.jpg", vis_frame)
-            print(f"Snapshot saved: snapshot_{frame_number:06d}.jpg")
+            cv2.imwrite(f"snapshot_{frame_number:06d}.png", vis_frame)
+            print(f"Snapshot saved: snapshot_{frame_number:06d}.png")
 
         frame_number += 1
 
@@ -1013,18 +1013,18 @@ def run_enhanced_mode(args, video_source, fps=30, mode="auto", pixel_size=1.0):
             scale = min(1280 / width, 720 / height)
             new_width = int(width * scale)
             new_height = int(height * scale)
-            vis_frame = cv2.resize(vis_frame, (new_width, new_height))
+            vis_frame_window = cv2.resize(vis_frame, (new_width, new_height))
 
         # Show results
-        cv2.imshow("Enhanced AMR Tracking", vis_frame)
+        cv2.imshow("Enhanced AMR Tracking", vis_frame_window)
 
         # Handle key press
         key = cv2.waitKey(1)
         if key == ord("q"):
             break
         elif key == ord("s"):
-            cv2.imwrite(f"snapshot_{frame_number:06d}.jpg", vis_frame)
-            print(f"Snapshot saved: snapshot_{frame_number:06d}.jpg")
+            cv2.imwrite(f"snapshot_{frame_number:06d}.png", vis_frame)
+            print(f"Snapshot saved: snapshot_{frame_number:06d}.png")
 
         frame_number += 1
 

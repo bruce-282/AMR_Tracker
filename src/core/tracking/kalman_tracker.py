@@ -79,9 +79,9 @@ class KalmanTracker:
 
         State vector: [x, y, theta, vx, vy, omega]
         - x, y: position
-        - theta: orientation
+        - theta: orientation (in degrees)
         - vx, vy: linear velocity
-        - omega: angular velocity
+        - omega: angular velocity (in degrees/frame)
         """
         kf = cv2.KalmanFilter(6, 3)  # 6 states, 3 measurements
 
@@ -149,7 +149,9 @@ class KalmanTracker:
             # Initialize last center for jump detection
             self.last_center = (cx, cy)
 
-            print(f"[INIT] Track {self.track_id} - INITIALIZED at pos=({cx:.1f}, {cy:.1f})")
+            cx_mm = cx * self.pixel_size
+            cy_mm = cy * self.pixel_size
+            print(f"[INIT] Track {self.track_id} - INITIALIZED at pos=({cx:.1f}, {cy:.1f}) / ({cx_mm:.1f}mm, {cy_mm:.1f}mm)")
 
     def update(
         self,
@@ -166,7 +168,7 @@ class KalmanTracker:
             frame: Current frame
             bbox: Bounding box [x, y, w, h]
             frame_number: Current frame number
-            orientation: Orientation angle in radians (from detection mask, optional)
+            orientation: Orientation angle in degrees (from detection mask, optional)
 
         Returns:
             dict: Tracking results
@@ -180,9 +182,14 @@ class KalmanTracker:
 
         # DEBUG: Monitor prediction state
         state_pre = self.kf.statePre.flatten()
+        # Calculate mm values for display only
+        pos_x_mm = state_pre[0] * self.pixel_size
+        pos_y_mm = state_pre[1] * self.pixel_size
+        vel_x_mm = state_pre[3] * self.pixel_size
+        vel_y_mm = state_pre[4] * self.pixel_size
         print(
-            f"[PRED] Track {self.track_id} - PREDICTION: pos=({state_pre[0]:.1f}, {state_pre[1]:.1f}), "
-            f"vel=({state_pre[3]:.1f}, {state_pre[4]:.1f}), theta={state_pre[2]:.1f}"
+            f"[PRED] Track {self.track_id} - PREDICTION: pos=({state_pre[0]:.1f}, {state_pre[1]:.1f}) / ({pos_x_mm:.1f}mm, {pos_y_mm:.1f}mm), "
+            f"vel=({state_pre[3]:.1f}, {state_pre[4]:.1f}) / ({vel_x_mm:.2f}mm/f, {vel_y_mm:.2f}mm/f), theta={state_pre[2]:.1f}"
         )
 
         # Initialize oriented_bbox
@@ -258,17 +265,17 @@ class KalmanTracker:
                 self.use_prediction_only = False
 
             # Use orientation from detection mask if available, otherwise detect it
-            # orientation comes from detection.get_orientation() which uses oriented_box_info
+            # orientation comes from detection.get_orientation() which now returns degrees
             if orientation is not None:
-                # Orientation from mask-based minAreaRect (already in radians)
+                # Orientation from mask-based minAreaRect (already in degrees)
                 theta = orientation
-                # Handle angle continuity
+                # Handle angle continuity (in degrees)
                 theta = self.handle_angle_continuity(theta)
             else:
                 # Fallback: Detect orientation using OBB method from frame
                 theta = self.detect_orientation_obb(frame, bbox)
                 if theta is not None:
-                    # Handle angle continuity
+                    # Handle angle continuity (in degrees)
                     theta = self.handle_angle_continuity(theta)
                 else:
                     # Use previous angle or default to avoid dimension mismatch
@@ -276,7 +283,7 @@ class KalmanTracker:
 
             # Measurement vector: [cx, cy, theta]
             # cx, cy: either measured (if valid) or predicted (if segmentation failed)
-            # theta: orientation from mask-based oriented_box_info (if mask available)
+            # theta: orientation in degrees from mask-based oriented_box_info (if mask available)
             # This is the input to Kalman filter correction step
             z = np.array([[cx], [cy], [theta]], dtype=np.float32)
 
@@ -296,19 +303,60 @@ class KalmanTracker:
 
                 # DEBUG: Monitor correction state
                 state_post = self.kf.statePost.flatten()
+                # Calculate mm values for display only
+                pos_x_mm = state_post[0] * self.pixel_size
+                pos_y_mm = state_post[1] * self.pixel_size
+                vel_x_mm = state_post[3] * self.pixel_size
+                vel_y_mm = state_post[4] * self.pixel_size
                 mode_str = "PREDICTION-ONLY" if not use_measurement else "CORRECTION"
                 print(
-                    f"Track {self.track_id} - {mode_str}: pos=({state_post[0]:.1f}, {state_post[1]:.1f}), "
-                    f"vel=({state_post[3]:.1f}, {state_post[4]:.1f}), theta={state_post[2]:.1f}"
+                    f"Track {self.track_id} - {mode_str}: pos=({state_post[0]:.1f}, {state_post[1]:.1f}) / ({pos_x_mm:.1f}mm, {pos_y_mm:.1f}mm), "
+                    f"vel=({state_post[3]:.1f}, {state_post[4]:.1f}) / ({vel_x_mm:.2f}mm/f, {vel_y_mm:.2f}mm/f), theta={state_post[2]:.1f}"
                 )
                 if use_measurement:
+                    measured_cx_mm = measured_cx * self.pixel_size
+                    measured_cy_mm = measured_cy * self.pixel_size
                     print(
-                        f"Track {self.track_id} - MEASUREMENT: pos=({measured_cx:.1f}, {measured_cy:.1f}), theta={theta:.1f}"
+                        f"Track {self.track_id} - MEASUREMENT: pos=({measured_cx:.1f}, {measured_cy:.1f}) / ({measured_cx_mm:.1f}mm, {measured_cy_mm:.1f}mm), theta={theta:.1f}"
                     )
 
             except cv2.error as e:
                 print(f"[WARN] Kalman filter correction failed: {e}")
                 # Skip this update if correction fails
+
+            # Apply velocity damping when position is nearly stationary
+            # If position change is very small, reduce velocity towards zero
+            if use_measurement and self.last_center is not None:
+                state_post = self.kf.statePost.flatten()
+                # Calculate actual position change
+                pos_change_x = abs(measured_cx - self.last_center[0])
+                pos_change_y = abs(measured_cy - self.last_center[1])
+                pos_change = np.sqrt(pos_change_x**2 + pos_change_y**2)
+                
+                # If position change is very small (< 0.5 pixels), apply velocity damping
+                VELOCITY_DAMPING_THRESHOLD = 0.5  # pixels
+                VELOCITY_DAMPING_FACTOR = 0.9  # Multiply velocity by this factor when stationary
+                
+                if pos_change < VELOCITY_DAMPING_THRESHOLD:
+                    # Object is nearly stationary - reduce velocity
+                    current_vx = state_post[3]
+                    current_vy = state_post[4]
+                    current_vel_magnitude = np.sqrt(current_vx**2 + current_vy**2)
+                    
+                    # Only damp if velocity is already small (avoid damping during actual movement)
+                    if current_vel_magnitude < 5.0:  # Only damp velocities < 5 pixels/frame
+                        # Apply damping: reduce velocity by damping factor
+                        new_vx = current_vx * VELOCITY_DAMPING_FACTOR
+                        new_vy = current_vy * VELOCITY_DAMPING_FACTOR
+                        
+                        # Update velocity in state
+                        self.kf.statePost[3, 0] = new_vx
+                        self.kf.statePost[4, 0] = new_vy
+                        
+                        # Also update error covariance for velocity to reflect reduced uncertainty
+                        # (velocity is more certain when object is stationary)
+                        self.kf.errorCovPost[3, 3] *= 0.9
+                        self.kf.errorCovPost[4, 4] *= 0.9
 
             # Store trajectory point and bbox
             self.trajectory.append((cx, cy))
@@ -319,9 +367,14 @@ class KalmanTracker:
 
             # DEBUG: Monitor prediction-only state
             state_post = self.kf.statePost.flatten()
+            # Calculate mm values for display only
+            pos_x_mm = state_post[0] * self.pixel_size
+            pos_y_mm = state_post[1] * self.pixel_size
+            vel_x_mm = state_post[3] * self.pixel_size
+            vel_y_mm = state_post[4] * self.pixel_size
             print(
-                f"Track {self.track_id} - PREDICTION ONLY: pos=({state_post[0]:.1f}, {state_post[1]:.1f}), "
-                f"vel=({state_post[3]:.1f}, {state_post[4]:.1f}), theta={state_post[2]:.1f}"
+                f"Track {self.track_id} - PREDICTION ONLY: pos=({state_post[0]:.1f}, {state_post[1]:.1f}) / ({pos_x_mm:.1f}mm, {pos_y_mm:.1f}mm), "
+                f"vel=({state_post[3]:.1f}, {state_post[4]:.1f}) / ({vel_x_mm:.2f}mm/f, {vel_y_mm:.2f}mm/f), theta={state_post[2]:.1f}"
             )
 
         # Extract state
@@ -342,9 +395,9 @@ class KalmanTracker:
             )  # pixels/sec
             linear_speed_mm = linear_speed_pix * self.pixel_size  # mm/s
 
-            # Angular speed is already in rad/frame, convert to rad/sec
-            angular_speed_rad = abs(state[5]) * self.fps  # rad/sec
-            angular_speed_deg = np.rad2deg(angular_speed_rad)
+            # Angular speed is already in deg/frame, convert to deg/sec
+            angular_speed_deg = abs(state[5]) * self.fps  # deg/sec
+            angular_speed_rad = np.deg2rad(angular_speed_deg)  # rad/sec (for compatibility)
         else:
             # In stationary mode, set velocities to 0
             linear_speed_pix = 0
@@ -361,9 +414,9 @@ class KalmanTracker:
                 "y_mm": state[1] * self.pixel_size,
             },
             "orientation": {
-                "theta_rad": state[2],
-                "theta_deg": np.rad2deg(state[2]),
-                "theta_normalized_deg": self.normalize_angle_deg(np.rad2deg(state[2])),
+                "theta_deg": state[2],  # Already in degrees
+                "theta_rad": np.deg2rad(state[2]),  # Convert to radians for compatibility
+                "theta_normalized_deg": self.normalize_angle_deg(state[2]),
             },
             "velocity": {
                 "linear_speed_pix_per_sec": linear_speed_pix,
@@ -416,7 +469,7 @@ class KalmanTracker:
             bbox: Bounding box [x, y, w, h]
 
         Returns:
-            float: Orientation angle in radians
+            float: Orientation angle in degrees
         """
         try:
             x, y, w, h = map(int, bbox)
@@ -441,15 +494,12 @@ class KalmanTracker:
 
             # Fit oriented bounding box
             rect = cv2.minAreaRect(largest_contour)
-            angle = rect[2]
-
-            # Convert to radians and normalize
-            angle_rad = np.deg2rad(angle)
+            angle = rect[2]  # Already in degrees from OpenCV
 
             # Store for continuity
-            self.prev_angle = angle_rad
+            self.prev_angle = angle
 
-            return angle_rad
+            return angle
 
         except Exception as e:
             print(f"Orientation detection failed: {e}")
@@ -457,13 +507,13 @@ class KalmanTracker:
 
     def handle_angle_continuity(self, new_angle):
         """
-        Handle angle continuity to avoid jumps
+        Handle angle continuity to avoid jumps (e.g., from 359° to 0°)
 
         Args:
-            new_angle: New angle in radians
+            new_angle: New angle in degrees
 
         Returns:
-            float: Continuous angle
+            float: Continuous angle in degrees
         """
         if self.prev_angle is None:
             return new_angle
@@ -471,11 +521,11 @@ class KalmanTracker:
         # Calculate angle difference
         angle_diff = new_angle - self.prev_angle
 
-        # Normalize to [-pi, pi]
-        while angle_diff > np.pi:
-            angle_diff -= 2 * np.pi
-        while angle_diff < -np.pi:
-            angle_diff += 2 * np.pi
+        # Normalize to [-180, 180] degrees
+        while angle_diff > 180:
+            angle_diff -= 360
+        while angle_diff < -180:
+            angle_diff += 360
 
         # Apply offset
         continuous_angle = self.prev_angle + angle_diff
@@ -527,18 +577,18 @@ class KalmanTracker:
             cx = int(results["position"]["x"])
             cy = int(results["position"]["y"])
 
-            theta = results["orientation"]["theta_rad"]
+            theta_deg = results["orientation"]["theta_deg"]
+            theta_rad = np.deg2rad(theta_deg)  # Convert to radians for drawing
             arrow_length = 50
-            end_x = int(cx + arrow_length * np.cos(theta))
-            end_y = int(cy + arrow_length * np.sin(theta))
+            end_x = int(cx + arrow_length * np.cos(theta_rad))
+            end_y = int(cy + arrow_length * np.sin(theta_rad))
 
             cv2.arrowedLine(
                 img_copy, (cx, cy), (end_x, end_y), self.color, 3, tipLength=0.3
             )
 
             # Draw orientation angle text
-            angle_deg = np.rad2deg(theta)
-            angle_text = f"θ: {angle_deg:.1f}°"
+            angle_text = f"θ: {theta_deg:.1f}°"
             cv2.putText(
                 img_copy,
                 angle_text,
@@ -558,17 +608,17 @@ class KalmanTracker:
                     roi = img_copy[int(y) : int(y + h), int(x) : int(x + w)]
                     if roi.size > 0:
                         # Detect orientation in current frame
-                        detected_angle = self.detect_orientation_obb(
+                        detected_angle_deg = self.detect_orientation_obb(
                             frame=img_copy, bbox=self.last_bbox
                         )
-                        if detected_angle is not None:
-                            detected_angle_deg = np.rad2deg(detected_angle)
+                        if detected_angle_deg is not None:
                             # Draw detected orientation with different color
+                            detected_angle_rad = np.deg2rad(detected_angle_deg)
                             detected_end_x = int(
-                                cx + arrow_length * np.cos(detected_angle)
+                                cx + arrow_length * np.cos(detected_angle_rad)
                             )
                             detected_end_y = int(
-                                cy + arrow_length * np.sin(detected_angle)
+                                cy + arrow_length * np.sin(detected_angle_rad)
                             )
 
                             # Draw detected orientation in red

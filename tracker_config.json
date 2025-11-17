@@ -45,7 +45,7 @@
       "enhanced_video_tracking": {
         "mode": "enhanced",
         "loader_mode": "video",
-        "source": "data/novitec_capture_20251110_144903.mp4",
+        "source": "data/novitec_capture_20251110_150019.mp4",
         "detector": "yolo",
         "tracker": "kalman",
         "fps": 30,

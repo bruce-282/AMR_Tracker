@@ -40,6 +40,7 @@ class BaseLoader:
 
     def __init__(self):
         self.frame_number = 0
+        self.is_connected = False
 
     def read(self):
         """Read next frame"""
@@ -52,6 +53,10 @@ class BaseLoader:
     def is_opened(self):
         """Check if loader is opened"""
         raise NotImplementedError
+    
+    def check_connection(self) -> bool:
+        """Check if loader is connected"""
+        return self.is_connected
 
 
 class CameraDeviceLoader(BaseLoader):
@@ -65,6 +70,7 @@ class CameraDeviceLoader(BaseLoader):
         if not self.cap.isOpened():
             raise RuntimeError(f"Cannot open camera {device_id}")
 
+        self.is_connected = True
         print(f"[OK] Camera device {device_id} opened")
 
     def read(self):
@@ -94,6 +100,7 @@ class VideoFileLoader(BaseLoader):
 
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+        self.is_connected = True
 
         print(f"[OK] Video file opened: {file_path}")
         print(f"  Total frames: {self.total_frames}, FPS: {self.fps:.2f}")
@@ -136,6 +143,7 @@ class ImageSequenceLoader(BaseLoader):
 
         self.current_index = 0
         self.last_frame_time = time.time()
+        self.is_connected = True
 
         print(f"[OK] Image sequence opened: {sequence_path}")
         print(f"  Found {len(self.image_files)} images, FPS: {fps}")
@@ -220,6 +228,7 @@ class NovitecCameraLoader(BaseLoader):
             print("[OK] Novitec camera connected")
 
             self.initialized = True
+            self.is_connected = True
 
         except Exception as e:
             print(f"Novitec camera initialization failed: {e}")

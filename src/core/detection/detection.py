@@ -205,12 +205,6 @@ class Detection:
         return w * h
     
     def get_orientation(self) -> Optional[float]:
-        """Get orientation angle in radians (from mask if available)."""
-        if self.oriented_box_info is not None:
-            return self.oriented_box_info["angle_rad"]
-        return None
-    
-    def get_orientation_deg(self) -> Optional[float]:
         """Get orientation angle in degrees (from mask if available)."""
         if self.oriented_box_info is not None:
             return self.oriented_box_info["angle"]

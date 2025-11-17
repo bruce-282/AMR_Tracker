@@ -1,7 +1,7 @@
 """Protocol handler for TCP/IP communication."""
 
 import json
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, Union, List
 from enum import IntEnum
 
 
@@ -45,7 +45,7 @@ class ProtocolHandler:
         success: bool = True,
         error_code: Optional[str] = None,
         error_desc: Optional[str] = None,
-        data: Optional[Dict[str, Any]] = None
+        data: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None
     ) -> bytes:
         """
         Create response message.
