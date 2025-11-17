@@ -309,29 +309,21 @@ def main():
                                         
                                         response_count[cmd] += 1
                                         
-                                        if cmd == 3:  # Camera 1
-                                            data = response.get("data", {})
-                                            logger.info(f"  [OK] Camera 1 Response #{response_count[cmd]}: x={data.get('x', 0):.2f}mm, y={data.get('y', 0):.2f}mm, rz={data.get('rz', 0):.4f}rad")
-                                            if "result_image" in data:
-                                                logger.info(f"  [OK] Result image: {data['result_image']}")
+                                        # if cmd == 3:  # Camera 1
+                                        #     data = response.get("data", {})
+                                        #     logger.info(f"  [OK] Camera 1 Response #{response_count[cmd]}: x={data.get('x', 0):.2f}mm, y={data.get('y', 0):.2f}mm, rz={data.get('rz', 0):.4f}rad")
+                                        #     if "result_image" in data:
+                                        #         logger.info(f"  [OK] Result image: {data['result_image']}")
                                         
-                                        elif cmd == 4:  # Camera 2
-                                            trajectory_data = response.get("data", {})
-                                            if isinstance(trajectory_data, list):
-                                                logger.info(f"  [OK] Camera 2 Trajectory Data #{response_count[cmd]}: {len(trajectory_data)} frames")
-                                                # Log first few frames as sample
-                                                for idx, frame_data in enumerate(trajectory_data[:3]):
-                                                    logger.info(f"    track_idx={frame_data.get('track_idx', idx)}: x={frame_data.get('x', 0):.2f}mm, y={frame_data.get('y', 0):.2f}mm, rz={frame_data.get('rz', 0):.4f}rad")
-                                                if len(trajectory_data) > 3:
-                                                    logger.info(f"    ... and {len(trajectory_data) - 3} more frames")
-                                            else:
-                                                logger.info(f"  [OK] Camera 2 Response #{response_count[cmd]}: {trajectory_data}")
+                                        # elif cmd == 4:  # Camera 2
+                                        #     # Log entire response as-is (same as NOTIFY_CONNECTION)
+                                        #     logger.info(f"  [OK] Camera 2 Response #{response_count[cmd]}: {json.dumps(response, indent=2)}")
                                         
-                                        elif cmd == 5:  # Camera 3
-                                            data = response.get("data", {})
-                                            logger.info(f"  [OK] Camera 3 Response #{response_count[cmd]}: x={data.get('x', 0):.2f}mm, y={data.get('y', 0):.2f}mm, rz={data.get('rz', 0):.4f}rad")
-                                            if "result_image" in data:
-                                                logger.info(f"  [OK] Result image: {data['result_image']}")
+                                        # elif cmd == 5:  # Camera 3
+                                        #     data = response.get("data", {})
+                                        #     logger.info(f"  [OK] Camera 3 Response #{response_count[cmd]}: x={data.get('x', 0):.2f}mm, y={data.get('y', 0):.2f}mm, rz={data.get('rz', 0):.4f}rad")
+                                        #     if "result_image" in data:
+                                        #         logger.info(f"  [OK] Result image: {data['result_image']}")
                                         
                                         # Check if we completed a cycle (received 1, 2, 3 in sequence)
                                         # A cycle is complete when we have equal counts for all cameras
@@ -366,6 +358,7 @@ def main():
         #response = client.test_calc_result(path_csv="test_result.csv")
         
         # Test 5: END VISION
+        time.sleep(5)
         client.test_end_vision()
         
         logger.info("\n" + "=" * 60)

@@ -89,9 +89,9 @@ class KalmanTracker:
         dt = 1.0 / self.fps
         kf.transitionMatrix = np.array(
             [
-                [1, 0, 0, dt, 0, 0],  # x = x + vx*dt
-                [0, 1, 0, 0, dt, 0],  # y = y + vy*dt
-                [0, 0, 1, 0, 0, dt],  # theta = theta + omega*dt
+                [1, 0, 0, 1, 0, 0],  # x = x + vx*dt
+                [0, 1, 0, 0, 1, 0],  # y = y + vy*dt
+                [0, 0, 1, 0, 0, 1],  # theta = theta + omega*dt
                 [0, 0, 0, 1, 0, 0],  # vx = vx (constant velocity model)
                 [0, 0, 0, 0, 1, 0],  # vy = vy (constant velocity model)
                 [0, 0, 0, 0, 0, 1],  # omega = omega (constant angular velocity model)
@@ -187,10 +187,10 @@ class KalmanTracker:
         pos_y_mm = state_pre[1] * self.pixel_size
         vel_x_mm = state_pre[3] * self.pixel_size
         vel_y_mm = state_pre[4] * self.pixel_size
-        print(
-            f"[PRED] Track {self.track_id} - PREDICTION: pos=({state_pre[0]:.1f}, {state_pre[1]:.1f}) / ({pos_x_mm:.1f}mm, {pos_y_mm:.1f}mm), "
-            f"vel=({state_pre[3]:.1f}, {state_pre[4]:.1f}) / ({vel_x_mm:.2f}mm/f, {vel_y_mm:.2f}mm/f), theta={state_pre[2]:.1f}"
-        )
+        # print(
+        #     f"[PRED] Track {self.track_id} - PREDICTION: pos=({state_pre[0]:.1f}, {state_pre[1]:.1f}) / ({pos_x_mm:.1f}mm, {pos_y_mm:.1f}mm), "
+        #     f"vel=({state_pre[3]:.1f}, {state_pre[4]:.1f}) / ({vel_x_mm:.2f}mm/f, {vel_y_mm:.2f}mm/f), theta={state_pre[2]:.1f}"
+        # )
 
         # Initialize oriented_bbox
         oriented_bbox = None
@@ -251,10 +251,10 @@ class KalmanTracker:
                 # This frame only - next frame will re-evaluate
                 cx = predicted_cx
                 cy = predicted_cy
-                print(
-                    f"[PRED] Track {self.track_id} - Using predicted position: "
-                    f"({cx:.1f}, {cy:.1f}) with velocity ({predicted_vx:.1f}, {predicted_vy:.1f})"
-                )
+                # print(
+                #     f"[PRED] Track {self.track_id} - Using predicted position: "
+                #     f"({cx:.1f}, {cy:.1f}) with velocity ({predicted_vx:.1f}, {predicted_vy:.1f})"
+                # )
                 # Don't update last_center when using prediction - keep previous valid center
             else:
                 # Use measured position (from mask-based oriented_box_info)
@@ -308,17 +308,17 @@ class KalmanTracker:
                 pos_y_mm = state_post[1] * self.pixel_size
                 vel_x_mm = state_post[3] * self.pixel_size
                 vel_y_mm = state_post[4] * self.pixel_size
-                mode_str = "PREDICTION-ONLY" if not use_measurement else "CORRECTION"
-                print(
-                    f"Track {self.track_id} - {mode_str}: pos=({state_post[0]:.1f}, {state_post[1]:.1f}) / ({pos_x_mm:.1f}mm, {pos_y_mm:.1f}mm), "
-                    f"vel=({state_post[3]:.1f}, {state_post[4]:.1f}) / ({vel_x_mm:.2f}mm/f, {vel_y_mm:.2f}mm/f), theta={state_post[2]:.1f}"
-                )
+                # mode_str = "PREDICTION-ONLY" if not use_measurement else "CORRECTION"
+                # print(
+                #     f"Track {self.track_id} - {mode_str}: pos=({state_post[0]:.1f}, {state_post[1]:.1f}) / ({pos_x_mm:.1f}mm, {pos_y_mm:.1f}mm), "
+                #     f"vel=({state_post[3]:.1f}, {state_post[4]:.1f}) / ({vel_x_mm:.2f}mm/f, {vel_y_mm:.2f}mm/f), theta={state_post[2]:.1f}"
+                # )
                 if use_measurement:
                     measured_cx_mm = measured_cx * self.pixel_size
                     measured_cy_mm = measured_cy * self.pixel_size
-                    print(
-                        f"Track {self.track_id} - MEASUREMENT: pos=({measured_cx:.1f}, {measured_cy:.1f}) / ({measured_cx_mm:.1f}mm, {measured_cy_mm:.1f}mm), theta={theta:.1f}"
-                    )
+                    # print(
+                    #     f"Track {self.track_id} - MEASUREMENT: pos=({measured_cx:.1f}, {measured_cy:.1f}) / ({measured_cx_mm:.1f}mm, {measured_cy_mm:.1f}mm), theta={theta:.1f}"
+                    # )
 
             except cv2.error as e:
                 print(f"[WARN] Kalman filter correction failed: {e}")

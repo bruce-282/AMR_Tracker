@@ -35,7 +35,7 @@ LOADER_MODE_MAP = {
 
 SPEED_THRESHOLD_PIX_PER_FRAME = 3.0  # pixels/frame (속도가 이 값보다 크면 tracking loop 종료)
 DETECTION_LOSS_THRESHOLD_FRAMES = 30
-CAMERA2_TRAJECTORY_MAX_FRAMES = 100
+CAMERA2_TRAJECTORY_MAX_FRAMES = 40
 SPEED_NEAR_ZERO_THRESHOLD = 30.0  # pixels/frame (속도가 이 값 이하면 0에 가까운 것으로 간주)
 SPEED_ZERO_FRAMES_THRESHOLD = 5  # 프레임 수 (이 프레임 수 동안 속도가 0에 가까우면 response 전송)
 
@@ -153,6 +153,7 @@ class VisionServer:
         
         # For camera 2: store all frame positions
         self.camera2_trajectory = []  # List of {"track_idx": int, "x": float, "y": float, "rz": float}
+        self.camera2_trajectory_sent = False  # Flag to prevent duplicate sends in the same cycle
         
         # For cameras 1, 3: track speed and detection loss
         self.camera_speed_history = {}  # camera_id -> list of speeds (mm/s)
@@ -1061,6 +1062,7 @@ class VisionServer:
                                                 # Clear camera 2 trajectory before starting
                                                 self.camera2_trajectory = []
                                                 self.camera_detection_loss_frames[2] = 0
+                                                self.camera2_trajectory_sent = False  # Reset flag for new cycle
                                                 # Clear visualizer trajectory for camera 2 (remove previous camera's trajectory)
                                                 if self.visualizer is not None:
                                                     track_id = 0
@@ -1127,7 +1129,10 @@ class VisionServer:
                             should_send_trajectory = True
                             reason = f"trajectory reached {len(self.camera2_trajectory)} frames (>= {CAMERA2_TRAJECTORY_MAX_FRAMES})"
                         
-                        if should_send_trajectory and len(self.camera2_trajectory) > 0:
+                        if should_send_trajectory and len(self.camera2_trajectory) > 0 and not self.camera2_trajectory_sent:
+                            # Set flag IMMEDIATELY to prevent duplicate sends (even within same frame)
+                            self.camera2_trajectory_sent = True
+                            
                             self.logger.info(f"Camera 2: {reason}. Sending trajectory data to client ({len(self.camera2_trajectory)} frames).")
                             
                             # Save result image at the last frame before sending trajectory data
@@ -1136,12 +1141,18 @@ class VisionServer:
                             self._save_result_image(camera_id, result_image_path, frame=vis_frame_original, detections=detections, tracking_results=tracking_results)
                             
                             # Send trajectory data directly from tracking loop
-                            # Protocol: {cmd: 4, success: bool, data: array<object>}
+                            # Protocol: {cmd: 4, success: bool, data: {trajectory: array<object>, result_image: string}}
                             trajectory_data = self.camera2_trajectory.copy()
                             cmd = Command.START_CAM_2  # cmd: 4 for camera 2
                             
-                            if self._send_response_to_client(cmd, success=True, data=trajectory_data):
-                                self.logger.info(f"Camera 2 trajectory data sent ({len(trajectory_data)} frames)")
+                            # Include result_image in response data (same as cameras 1, 3)
+                            response_data = {
+                                "trajectory": trajectory_data,
+                                "result_image": str(result_image_path)
+                            }
+                            
+                            if self._send_response_to_client(cmd, success=True, data=response_data):
+                                self.logger.info(f"Camera 2 trajectory data sent ({len(trajectory_data)} frames) with result_image")
                             
                             # Clear trajectory after sending
                             self.camera2_trajectory = []
@@ -1162,7 +1173,9 @@ class VisionServer:
                                     else:
                                         self.logger.warning("Camera 3 not initialized, cannot start tracking")
                             
-                            # Exit tracking loop
+                            # Exit tracking loop immediately after sending trajectory
+                            # This prevents duplicate sends in the same cycle
+                            self.logger.info(f"Camera 2: Tracking loop exiting after sending trajectory.")
                             break
                 
                 # Save debug data periodically (every 100 frames)
