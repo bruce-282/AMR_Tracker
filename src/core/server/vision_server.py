@@ -33,11 +33,11 @@ LOADER_MODE_MAP = {
     "camera": "camera_device"
 }
 
-SPEED_THRESHOLD_PIX_PER_FRAME = 3.0  # pixels/frame (속도가 이 값보다 크면 tracking loop 종료)
+SPEED_THRESHOLD_PIX_PER_FRAME = 5.0  # pixels/frame (속도가 이 값보다 크면 tracking loop 종료)
 DETECTION_LOSS_THRESHOLD_FRAMES = 30
-CAMERA2_TRAJECTORY_MAX_FRAMES = 40
-SPEED_NEAR_ZERO_THRESHOLD = 30.0  # pixels/frame (속도가 이 값 이하면 0에 가까운 것으로 간주)
-SPEED_ZERO_FRAMES_THRESHOLD = 5  # 프레임 수 (이 프레임 수 동안 속도가 0에 가까우면 response 전송)
+CAMERA2_TRAJECTORY_MAX_FRAMES = 50
+SPEED_NEAR_ZERO_THRESHOLD = 3.0  # pixels/frame (속도가 이 값 이하면 0에 가까운 것으로 간주)
+SPEED_ZERO_FRAMES_THRESHOLD = 10  # 프레임 수 (이 프레임 수 동안 속도가 0에 가까우면 response 전송)
 
 
 class VisionServer:
