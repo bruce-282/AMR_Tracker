@@ -233,6 +233,8 @@ class VisionServer:
                 error_code=error_code, error_desc=error_desc
             )
             self.client_socket.sendall(response)
+            # Add small delay to prevent TCP packet merging (especially after multiple NOTIFY_CONNECTION)
+            time.sleep(0.005)  # 5ms delay
             return True
         except (ConnectionError, OSError) as e:
             self.logger.warning(f"Failed to send response (cmd={cmd}): {e}")
@@ -351,6 +353,12 @@ class VisionServer:
                 client_socket, client_address = self.socket.accept()
                 self.logger.info(f"Client connected from {client_address}")
                 
+                # Configure client socket for efficient data transmission
+                # TCP_NODELAY: Disable Nagle's algorithm (send data immediately, don't wait for ACK)
+                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                # Increase send buffer size for large trajectory data
+                client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)  # 64KB send buffer
+                
                 self.client_socket = client_socket
                 self.client_address = client_address
                 
@@ -401,6 +409,8 @@ class VisionServer:
                 if response:
                     try:
                         client_socket.sendall(response)
+                        # Add small delay to prevent TCP packet merging
+                        time.sleep(0.005)  # 5ms delay
                         # Log response
                         try:
                             response_dict = json.loads(response.decode('utf-8'))
@@ -416,13 +426,22 @@ class VisionServer:
             import traceback
             traceback.print_exc()
         finally:
+            # Client disconnected - cleanup all resources (same as END_VISION)
+            self.logger.info(f"Client {client_address} disconnected. Cleaning up all resources...")
+            
+            # Set vision_active to False to stop all tracking loops (same as END_VISION)
+            self.vision_active = False
+            
+            # Stop all cameras and cleanup (same as END_VISION)
+            self._stop_all_cameras()
+            
             try:
                 client_socket.close()
             except:
                 pass
-            self.logger.info(f"Client {client_address} disconnected")
             self.client_socket = None
             self.client_address = None
+            self.logger.info("All resources cleaned up after client disconnection")
     
     def _handle_command(self, request: Dict[str, Any]) -> Optional[bytes]:
         """Handle incoming command."""
@@ -1141,17 +1160,13 @@ class VisionServer:
                             self._save_result_image(camera_id, result_image_path, frame=vis_frame_original, detections=detections, tracking_results=tracking_results)
                             
                             # Send trajectory data directly from tracking loop
-                            # Protocol: {cmd: 4, success: bool, data: {trajectory: array<object>, result_image: string}}
+                            # Protocol: {cmd: 4, success: bool, data: array<object>}
                             trajectory_data = self.camera2_trajectory.copy()
                             cmd = Command.START_CAM_2  # cmd: 4 for camera 2
                             
-                            # Include result_image in response data (same as cameras 1, 3)
-                            response_data = {
-                                "trajectory": trajectory_data,
-                                "result_image": str(result_image_path)
-                            }
-                            
-                            if self._send_response_to_client(cmd, success=True, data=response_data):
+                            # Send trajectory array directly (without trajectory key wrapper)
+                            # result_image is saved but not included in response (as per protocol)
+                            if self._send_response_to_client(cmd, success=True, data=trajectory_data):
                                 self.logger.info(f"Camera 2 trajectory data sent ({len(trajectory_data)} frames) with result_image")
                             
                             # Clear trajectory after sending
@@ -1493,51 +1508,51 @@ class VisionServer:
         self.camera_status[camera_id] = False
         # Note: NOTIFY_CONNECTION is sent in _stop_all_cameras before calling _stop_camera
     
-    def _periodic_response_loop(self, camera_id: int):
-        """Periodically send tracking data when use_area_scan is false.
+    # def _periodic_response_loop(self, camera_id: int):
+    #     """Periodically send tracking data when use_area_scan is false.
         
-        For cameras 1, 3: send detection result once and exit.
-        For camera 2: send trajectory data when detection is lost for 30+ frames.
-        """
-        # Cameras 1, 3: send detection result once and exit
-        if camera_id in [1, 3]:
-            # Wait for detection to be available
-            max_wait_time = 5.0  # Wait up to 5 seconds for detection
-            wait_start = time.time()
-            while time.time() - wait_start < max_wait_time:
-                data = self._get_tracking_data(camera_id)
-                if not (data["x"] == 0.0 and data["y"] == 0.0 and data["rz"] == 0.0):
-                    # Detection available, send once and exit
-                    # Image should already be saved in _tracking_loop on first detection
-                    result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
+    #     For cameras 1, 3: send detection result once and exit.
+    #     For camera 2: send trajectory data when detection is lost for 30+ frames.
+    #     """
+    #     # Cameras 1, 3: send detection result once and exit
+    #     if camera_id in [1, 3]:
+    #         # Wait for detection to be available
+    #         max_wait_time = 5.0  # Wait up to 5 seconds for detection
+    #         wait_start = time.time()
+    #         while time.time() - wait_start < max_wait_time:
+    #             data = self._get_tracking_data(camera_id)
+    #             if not (data["x"] == 0.0 and data["y"] == 0.0 and data["rz"] == 0.0):
+    #                 # Detection available, send once and exit
+    #                 # Image should already be saved in _tracking_loop on first detection
+    #                 result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
                     
-                    response_data = {
-                        "x": data["x"],
-                        "y": data["y"],
-                        "rz": data["rz"],
-                        "result_image": str(result_image_path)
-                    }
+    #                 response_data = {
+    #                     "x": data["x"],
+    #                     "y": data["y"],
+    #                     "rz": data["rz"],
+    #                     "result_image": str(result_image_path)
+    #                 }
                     
-                    cmd = Command.START_CAM_1 + camera_id - 1
-                    if self._send_response_to_client(cmd, success=True, data=response_data):
-                        self.logger.info(f"Camera {camera_id}: Detection result sent to client (one-time)")
+    #                 cmd = Command.START_CAM_1 + camera_id - 1
+    #                 if self._send_response_to_client(cmd, success=True, data=response_data):
+    #                     self.logger.info(f"Camera {camera_id}: Detection result sent to client (one-time)")
                     
-                    # Exit after sending once
-                    return
+    #                 # Exit after sending once
+    #                 return
                 
-                time.sleep(0.1)  # Check every 100ms
+    #             time.sleep(0.1)  # Check every 100ms
             
-            # No detection available after waiting
-            self.logger.warning(f"Camera {camera_id}: No detection available after {max_wait_time}s, exiting periodic response loop")
-            return
+    #         # No detection available after waiting
+    #         self.logger.warning(f"Camera {camera_id}: No detection available after {max_wait_time}s, exiting periodic response loop")
+    #         return
         
-        # Camera 2: does not use periodic response loop
-        # Trajectory data is sent directly from _tracking_loop when detection is lost for 30+ frames
-        elif camera_id == 2:
-            # Camera 2 should not have a periodic response loop
-            # It sends data directly from _tracking_loop
-            self.logger.warning(f"Camera {camera_id}: Periodic response loop should not be called for camera 2")
-            return
+    #     # Camera 2: does not use periodic response loop
+    #     # Trajectory data is sent directly from _tracking_loop when detection is lost for 30+ frames
+    #     elif camera_id == 2:
+    #         # Camera 2 should not have a periodic response loop
+    #         # It sends data directly from _tracking_loop
+    #         self.logger.warning(f"Camera {camera_id}: Periodic response loop should not be called for camera 2")
+    #         return
     
     def _send_notification(self, camera_id: int, is_connected: bool, 
                           error_code: Optional[str] = None,
@@ -1552,6 +1567,9 @@ class VisionServer:
                     error_desc
                 )
                 self.client_socket.sendall(notification)
+                # Add small delay to prevent TCP packet merging
+                # 5ms delay ensures OS has time to send the packet before next sendall()
+                time.sleep(0.005)  # 5ms delay
             except Exception as e:
                 self.logger.warning(f"Failed to send notification: {e}")
 

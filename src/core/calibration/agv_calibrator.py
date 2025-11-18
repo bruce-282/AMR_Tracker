@@ -83,7 +83,7 @@ class AGVCalibrator:
             self._calibrate_from_images(image_path)
         else:
             # 실시간 카메라 사용
-            self._calibrate_from_camera()
+            raise ValueError("실시간 카메라 사용은 지원하지 않습니다")
 
     def _calibrate_from_images(self, image_path: str):
         """이미지 폴더에서 캘리브레이션 수행"""
@@ -224,7 +224,7 @@ class AGVCalibrator:
             ground_image = self._find_ground_image(image_path)
         else:
             # 실시간 카메라 사용
-            ground_image = self._capture_ground_image()
+            raise ValueError("실시간 카메라 사용은 지원하지 않습니다")
 
         if ground_image is None:
             print("❌ 지면 이미지를 찾을 수 없습니다!")
