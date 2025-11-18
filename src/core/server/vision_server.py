@@ -13,7 +13,7 @@ import numpy as np
 from .protocol import ProtocolHandler, Command
 from .model_config import ModelConfig
 from src.core.detection import YOLODetector, Detection
-from src.core.tracking import KalmanTracker, TrackingDataLogger, associate_detections_to_trackers
+from src.core.tracking import KalmanTracker, associate_detections_to_trackers
 from src.utils.sequence_loader import create_sequence_loader, BaseLoader
 from config import SystemConfig
 
@@ -108,7 +108,6 @@ class VisionServer:
         self.detector = None
         self.trackers = {}  # camera_id -> tracker dict
         self.camera_loaders = {}  # camera_id -> loader
-        self.data_loggers = {}  # camera_id -> logger
         self.next_track_ids = {}  # camera_id -> next_track_id
         self.tracking_threads = {}  # camera_id -> thread
         self.frame_numbers = {}  # camera_id -> frame_number
@@ -245,7 +244,6 @@ class VisionServer:
         if camera_id not in self.trackers:
             self.trackers[camera_id] = {}
             self.next_track_ids[camera_id] = track_id + 1
-            self.data_loggers[camera_id] = TrackingDataLogger()
             self.frame_numbers[camera_id] = 0
         
         tracker = self._create_tracker(camera_id, track_id, fps)
@@ -811,7 +809,6 @@ class VisionServer:
         self.camera_loaders[camera_id] = loader
         self.trackers[camera_id] = {}
         self.next_track_ids[camera_id] = 0
-        self.data_loggers[camera_id] = TrackingDataLogger()
         self.frame_numbers[camera_id] = 0
         self.camera_status[camera_id] = True
         
@@ -827,7 +824,6 @@ class VisionServer:
             return
         
         trackers = self.trackers[camera_id]
-        data_logger = self.data_loggers[camera_id]
         frame_number = 0
         
         self.logger.info(f"Camera {camera_id} tracking started")
@@ -968,10 +964,6 @@ class VisionServer:
                         tracking_result["track_id"] = track_id
                         tracking_result["class_name"] = getattr(detection, "class_name", "Unknown")
                         tracking_results.append(tracking_result)
-                
-                # Log tracking data (for debugging - separate from studio results)
-                for result in tracking_results:
-                    data_logger.log_tracking_result(frame_number, result)
                 
                 # Visualize and display tracking window
                 vis_frame = self.visualize_results(camera_id, frame, detections, tracking_results)
@@ -1193,15 +1185,6 @@ class VisionServer:
                             self.logger.info(f"Camera 2: Tracking loop exiting after sending trajectory.")
                             break
                 
-                # Save debug data periodically (every 100 frames)
-                if frame_number % 100 == 0:
-                    debug_csv_path = self.debug_base_path / f"cam_{camera_id}_debug_{frame_number}.csv"
-                    try:
-                        if hasattr(data_logger, 'export_to_csv'):
-                            data_logger.export_to_csv(str(debug_csv_path))
-                    except Exception as e:
-                        pass  # Silent fail for debug data
-                
                 # Clean up lost trackers
                 trackers_to_remove = []
                 for track_id, tracker in trackers.items():
@@ -1303,8 +1286,6 @@ class VisionServer:
     def _handle_calc_result(self, request: Dict[str, Any]) -> bytes:
         """Handle CALC RESULT command."""
         try:
-            path_csv = request.get("path_csv", "")
-            
             # Calculate performance metrics for all active cameras
             results = {}
             
@@ -1316,16 +1297,9 @@ class VisionServer:
                 result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
                 self._save_result_image(camera_id, result_image_path)
                 
-                # Save result data to CSV if path provided
-                if path_csv:
-                    csv_path = Path(path_csv)
-                    csv_path.parent.mkdir(parents=True, exist_ok=True)
-                    self._save_result_csv(camera_id, csv_path)
-                
                 results[f"cam_{camera_id}"] = {
                     "position": tracking_data,
-                    "result_image": str(result_image_path),
-                    "csv_path": path_csv if path_csv else None
+                    "result_image": str(result_image_path)
                 }
             
             return self.protocol.create_response(
@@ -1433,16 +1407,6 @@ class VisionServer:
         
         return vis_frame
     
-    def _save_result_csv(self, camera_id: int, csv_path: Path):
-        """Save tracking results to CSV."""
-        try:
-            data_logger = self.data_loggers.get(camera_id)
-            if data_logger and hasattr(data_logger, 'export_to_csv'):
-                data_logger.export_to_csv(str(csv_path))
-                self.logger.info(f"Result CSV saved: {csv_path}")
-        except Exception as e:
-            self.logger.warning(f"Failed to save result CSV: {e}")
-    
     def _stop_all_cameras(self):
         """Stop all camera tracking."""
         self.logger.info("Stopping all cameras and tracking threads...")
@@ -1501,9 +1465,6 @@ class VisionServer:
         
         if camera_id in self.trackers:
             del self.trackers[camera_id]
-        
-        if camera_id in self.data_loggers:
-            del self.data_loggers[camera_id]
         
         self.camera_status[camera_id] = False
         # Note: NOTIFY_CONNECTION is sent in _stop_all_cameras before calling _stop_camera
