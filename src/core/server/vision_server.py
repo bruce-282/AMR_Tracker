@@ -15,6 +15,7 @@ from .model_config import ModelConfig
 from src.core.detection import YOLODetector, Detection
 from src.core.tracking import KalmanTracker, associate_detections_to_trackers
 from src.utils.sequence_loader import create_sequence_loader, BaseLoader
+from src.utils.trajectory_repeatability import TrajectoryRepeatability
 from config import SystemConfig
 
 # Import visualizer
@@ -91,7 +92,10 @@ class VisionServer:
         # Result file paths
         self.result_base_path = Path("C:/CMES_AI/Result")
         self.result_base_path.mkdir(parents=True, exist_ok=True)
-        
+
+        self.summary_base_path = Path("C:/CMES_AI/Summary")
+        self.summary_base_path.mkdir(parents=True, exist_ok=True)
+
         # Debug data path (separate from studio results)
         self.debug_base_path = Path("tracking_results")
         self.debug_base_path.mkdir(parents=True, exist_ok=True)
@@ -679,6 +683,7 @@ class VisionServer:
             self.vision_active = False
             self.logger.info("END VISION command received")
             self._stop_all_cameras()
+            self.camera_response_sent = {} 
             
             return self.protocol.create_response(
                 Command.END_VISION,  # cmd: 2
@@ -1284,30 +1289,88 @@ class VisionServer:
         }
     
     def _handle_calc_result(self, request: Dict[str, Any]) -> bytes:
-        """Handle CALC RESULT command."""
+        """Handle CALC RESULT command.
+        
+        Request format:
+        {
+            "cmd": 6,
+            "path_csv": "data/20251118-154122_zoom1_raw_data.csv"
+        }
+        
+        Response format:
+        {
+            "cmd": 6,
+            "success": bool,
+            "error_code": string (optional),
+            "error_desc": string (optional),
+            "data": {
+                "summary_csv": string,
+                "cam2_detailed_csv": string,
+                "cam1_measurements_csv": string,
+                "cam3_measurements_csv": string,
+                "analysis_image": string
+            }
+        }
+        """
         try:
-            # Calculate performance metrics for all active cameras
-            results = {}
+            # Get CSV path from request
+            path_csv = request.get("path_csv")
+            if not path_csv:
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="MISSING_PARAM",
+                    error_desc="path_csv parameter is required"
+                )
             
-            for camera_id in self.trackers.keys():
-                # Get tracking data
-                tracking_data = self._get_tracking_data(camera_id)
-                
-                # Save result image (overwrite existing file)
-                result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
-                self._save_result_image(camera_id, result_image_path)
-                
-                results[f"cam_{camera_id}"] = {
-                    "position": tracking_data,
-                    "result_image": str(result_image_path)
-                }
+            # Validate CSV file exists
+            csv_path = Path(path_csv)
+            if not csv_path.exists():
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="FILE_NOT_FOUND",
+                    error_desc=f"CSV file not found: {path_csv}"
+                )
+            
+            # Get sampling interval from request (optional, default 20.0)
+            #sampling_interval_mm = request.get("sampling_interval_mm", 20.0)
+            
+            # Use result_base_path as output directory
+            output_dir = str(self.summary_base_path)
+            
+            self.logger.info(f"Starting trajectory repeatability analysis: {path_csv}")
+            
+            # Initialize analyzer
+            analyzer = TrajectoryRepeatability(str(csv_path))
+            
+            # Run analysis
+            analyzer.run_analysis(sampling_interval_mm=20.0)
+            
+            # Save results to CSV
+            csv_paths = analyzer.save_results_to_csv(output_dir=output_dir)
+            
+            # Generate plot
+            analyzer.plot_results(output_dir=output_dir)
+            # analysis_image_path = str(Path(output_dir) / "repeatability_analysis.png")
+            
+            # self.logger.info(f"Trajectory repeatability analysis completed. Results saved to {output_dir}")
+            
+            # Prepare response data
+            response_data = {
+                "summary": None,
+            }
+            #response_data = {}
             
             return self.protocol.create_response(
                 Command.CALC_RESULT,
                 success=True,
-                data=results
+                data=response_data
             )
         except Exception as e:
+            self.logger.error(f"Error in trajectory repeatability analysis: {e}")
+            import traceback
+            traceback.print_exc()
             return self.protocol.create_response(
                 Command.CALC_RESULT,
                 success=False,

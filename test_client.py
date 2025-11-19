@@ -219,151 +219,158 @@ def main():
         
         # Test 1: START VISION (uses selected_model from model_config.json)
         use_area_scan = False  # Set use_area_scan mode
-        response = client.test_start_vision(use_area_scan=use_area_scan)
-        if not response.get("success"):
-            logger.error(f"START VISION failed: {response.get('error_desc')}")
-            return
-        
-        time.sleep(1)  # Wait for initialization
-        
-        if use_area_scan:
-            # use_area_scan=true: client sends requests
-            # Test 2: START CAM 1
-            response = client.test_start_cam(1)
-            if response.get("success"):
-                data = response.get("data", {})
-                logger.info(f"  [OK] Position: x={data.get('x', 0):.2f}mm, y={data.get('y', 0):.2f}mm, rz={data.get('rz', 0):.4f}rad")
-                if "result_image" in data:
-                    logger.info(f"  [OK] Result image: {data['result_image']}")
+        for i in range(2):
+            response = client.test_start_vision(use_area_scan=use_area_scan)
+            if not response.get("success"):
+                logger.error(f"START VISION failed: {response.get('error_desc')}")
+                return
+            
+            time.sleep(1)  # Wait for initialization
+            
+            if use_area_scan:
+                # use_area_scan=true: client sends requests
+                # Test 2: START CAM 1
+                response = client.test_start_cam(1)
+                if response.get("success"):
+                    data = response.get("data", {})
+                    logger.info(f"  [OK] Position: x={data.get('x', 0):.2f}mm, y={data.get('y', 0):.2f}mm, rz={data.get('rz', 0):.4f}rad")
+                    if "result_image" in data:
+                        logger.info(f"  [OK] Result image: {data['result_image']}")
+                else:
+                    logger.error(f"  [FAIL] Failed: {response.get('error_desc', 'Unknown error')}")
+                
+                time.sleep(3)  # Wait for tracking to process frames
+                
+                # Test 3: Get updated position
+                logger.info("\nGetting updated position...")
+                response = client.test_start_cam(1)
+                if response.get("success"):
+                    data = response.get("data", {})
+                    logger.info(f"  [OK] Updated Position: x={data.get('x', 0):.2f}mm, y={data.get('y', 0):.2f}mm, rz={data.get('rz', 0):.4f}rad")
+                else:
+                    logger.error(f"  [FAIL] Failed: {response.get('error_desc', 'Unknown error')}")
             else:
-                logger.error(f"  [FAIL] Failed: {response.get('error_desc', 'Unknown error')}")
-            
-            time.sleep(3)  # Wait for tracking to process frames
-            
-            # Test 3: Get updated position
-            logger.info("\nGetting updated position...")
-            response = client.test_start_cam(1)
-            if response.get("success"):
-                data = response.get("data", {})
-                logger.info(f"  [OK] Updated Position: x={data.get('x', 0):.2f}mm, y={data.get('y', 0):.2f}mm, rz={data.get('rz', 0):.4f}rad")
-            else:
-                logger.error(f"  [FAIL] Failed: {response.get('error_desc', 'Unknown error')}")
-        else:
-            # use_area_scan=false: client does NOT send requests, only waits for periodic responses
-            logger.info("\n[INFO] use_area_scan=false: Waiting for responses from server...")
-            logger.info("  [INFO] Server will send responses automatically (1→2→3→1→2→3...)")
-            logger.info("  [INFO] Waiting for 2 cycles, then sending END_VISION")
-            
-            # Wait for 2 cycles: 1→2→3→1→2→3
-            cycles_to_complete = 2
-            cycle_count = 0
-            response_count = {3: 0, 4: 0, 5: 0}  # Track responses for cmd 3, 4, 5
-            
-            client.socket.settimeout(None)  # No timeout
-            buffer = b""
-            
-            try:
-                while cycle_count < cycles_to_complete:
-                    chunk = client.socket.recv(4096)
-                    if not chunk:
-                        break
-                    buffer += chunk
-                    
-                    # Try to parse JSON
-                    try:
-                        text = buffer.decode('utf-8')
-                        # Find complete JSON object
-                        brace_count = 0
-                        json_start = -1
-                        json_end = -1
+                # use_area_scan=false: client does NOT send requests, only waits for periodic responses
+                logger.info("\n[INFO] use_area_scan=false: Waiting for responses from server...")
+                logger.info("  [INFO] Server will send responses automatically (1→2→3→1→2→3...)")
+                logger.info("  [INFO] Waiting for 2 cycles, then sending END_VISION")
+                
+                # Wait for 2 cycles: 1→2→3→1→2→3
+                cycles_to_complete = 2
+                cycle_count = 0
+                response_count = {3: 0, 4: 0, 5: 0}  # Track responses for cmd 3, 4, 5
+                
+                client.socket.settimeout(None)  # No timeout
+                buffer = b""
+                
+                try:
+                    while cycle_count < cycles_to_complete:
+                        chunk = client.socket.recv(4096)
+                        if not chunk:
+                            break
+                        buffer += chunk
                         
-                        for i, char in enumerate(text):
-                            if char == '{':
-                                if brace_count == 0:
-                                    json_start = i
-                                brace_count += 1
-                            elif char == '}':
-                                brace_count -= 1
-                                if brace_count == 0 and json_start >= 0:
-                                    json_end = i + 1
-                                    json_str = text[json_start:json_end]
-                                    response = json.loads(json_str)
-                                    
-                                    cmd = response.get("cmd")
-                                    
-                                    # Handle NOTIFY_CONNECTION (cmd: 7)
-                                    if cmd == 7:
-                                        # Log NOTIFY_CONNECTION message as-is
-                                        logger.info(f"[NOTIFY_CONNECTION] {json.dumps(response, indent=2)}")
+                        # Try to parse JSON
+                        try:
+                            text = buffer.decode('utf-8')
+                            # Find complete JSON object
+                            brace_count = 0
+                            json_start = -1
+                            json_end = -1
+                            
+                            for i, char in enumerate(text):
+                                if char == '{':
+                                    if brace_count == 0:
+                                        json_start = i
+                                    brace_count += 1
+                                elif char == '}':
+                                    brace_count -= 1
+                                    if brace_count == 0 and json_start >= 0:
+                                        json_end = i + 1
+                                        json_str = text[json_start:json_end]
+                                        response = json.loads(json_str)
                                         
-                                        # Remove processed JSON from buffer
-                                        buffer = text[json_end:].encode('utf-8')
+                                        cmd = response.get("cmd")
+                                        
+                                        # Handle NOTIFY_CONNECTION (cmd: 7)
+                                        if cmd == 7:
+                                            # Log NOTIFY_CONNECTION message as-is
+                                            logger.info(f"[NOTIFY_CONNECTION] {json.dumps(response, indent=2)}")
+                                            
+                                            # Remove processed JSON from buffer
+                                            buffer = text[json_end:].encode('utf-8')
+                                            json_start = -1
+                                            json_end = -1
+                                            continue
+                                        
+                                        # Handle camera responses (cmd: 3, 4, 5)
+                                        if cmd in [3, 4, 5] and response.get("success"):
+                                            # Log response in same format as send_request
+                                            logger.info(f"Response: {json.dumps(response, indent=2)}")
+                                            
+                                            response_count[cmd] += 1
+                                            
+                                            # if cmd == 3:  # Camera 1
+                                            #     data = response.get("data", {})
+                                            #     logger.info(f"  [OK] Camera 1 Response #{response_count[cmd]}: x={data.get('x', 0):.2f}mm, y={data.get('y', 0):.2f}mm, rz={data.get('rz', 0):.4f}rad")
+                                            #     if "result_image" in data:
+                                            #         logger.info(f"  [OK] Result image: {data['result_image']}")
+                                            
+                                            # elif cmd == 4:  # Camera 2
+                                            #     # Log entire response as-is (same as NOTIFY_CONNECTION)
+                                            #     logger.info(f"  [OK] Camera 2 Response #{response_count[cmd]}: {json.dumps(response, indent=2)}")
+                                            
+                                            # elif cmd == 5:  # Camera 3
+                                            #     data = response.get("data", {})
+                                            #     logger.info(f"  [OK] Camera 3 Response #{response_count[cmd]}: x={data.get('x', 0):.2f}mm, y={data.get('y', 0):.2f}mm, rz={data.get('rz', 0):.4f}rad")
+                                            #     if "result_image" in data:
+                                            #         logger.info(f"  [OK] Result image: {data['result_image']}")
+                                            
+                                            # Check if we completed a cycle (received 1, 2, 3 in sequence)
+                                            # A cycle is complete when we have equal counts for all cameras
+                                            min_count = min(response_count[3], response_count[4], response_count[5])
+                                            if min_count > cycle_count:
+                                                cycle_count = min_count
+                                                logger.info(f"\n[INFO] === Cycle {cycle_count}/{cycles_to_complete} completed ===")
+                                            
+                                            # Remove processed JSON from buffer
+                                            buffer = text[json_end:].encode('utf-8')
+                                            
+                                            if cycle_count >= cycles_to_complete:
+                                                break
+                                        
                                         json_start = -1
                                         json_end = -1
-                                        continue
-                                    
-                                    # Handle camera responses (cmd: 3, 4, 5)
-                                    if cmd in [3, 4, 5] and response.get("success"):
-                                        # Log response in same format as send_request
-                                        logger.info(f"Response: {json.dumps(response, indent=2)}")
-                                        
-                                        response_count[cmd] += 1
-                                        
-                                        # if cmd == 3:  # Camera 1
-                                        #     data = response.get("data", {})
-                                        #     logger.info(f"  [OK] Camera 1 Response #{response_count[cmd]}: x={data.get('x', 0):.2f}mm, y={data.get('y', 0):.2f}mm, rz={data.get('rz', 0):.4f}rad")
-                                        #     if "result_image" in data:
-                                        #         logger.info(f"  [OK] Result image: {data['result_image']}")
-                                        
-                                        # elif cmd == 4:  # Camera 2
-                                        #     # Log entire response as-is (same as NOTIFY_CONNECTION)
-                                        #     logger.info(f"  [OK] Camera 2 Response #{response_count[cmd]}: {json.dumps(response, indent=2)}")
-                                        
-                                        # elif cmd == 5:  # Camera 3
-                                        #     data = response.get("data", {})
-                                        #     logger.info(f"  [OK] Camera 3 Response #{response_count[cmd]}: x={data.get('x', 0):.2f}mm, y={data.get('y', 0):.2f}mm, rz={data.get('rz', 0):.4f}rad")
-                                        #     if "result_image" in data:
-                                        #         logger.info(f"  [OK] Result image: {data['result_image']}")
-                                        
-                                        # Check if we completed a cycle (received 1, 2, 3 in sequence)
-                                        # A cycle is complete when we have equal counts for all cameras
-                                        min_count = min(response_count[3], response_count[4], response_count[5])
-                                        if min_count > cycle_count:
-                                            cycle_count = min_count
-                                            logger.info(f"\n[INFO] === Cycle {cycle_count}/{cycles_to_complete} completed ===")
-                                        
-                                        # Remove processed JSON from buffer
-                                        buffer = text[json_end:].encode('utf-8')
-                                        
-                                        if cycle_count >= cycles_to_complete:
-                                            break
-                                    
-                                    json_start = -1
-                                    json_end = -1
-                        
-                        if cycle_count >= cycles_to_complete:
-                            break
-                    except (UnicodeDecodeError, json.JSONDecodeError):
-                        continue
-                
-                logger.info(f"\n[INFO] All {cycles_to_complete} cycles completed. Sending END_VISION...")
-            except KeyboardInterrupt:
-                logger.info("  [INFO] Interrupted by user")
-            except Exception as e:
-                logger.error(f"  [ERROR] Error during response wait: {e}")
-                import traceback
-                traceback.print_exc()
-        
-        # Test 4: CALC RESULT
-        #response = client.test_calc_result(path_csv="test_result.csv")
-        
-        # Test 5: END VISION
-        time.sleep(5)
-        client.test_end_vision()
-        
-        logger.info("\n" + "=" * 60)
-        logger.info("[OK] All tests completed")
-        logger.info("=" * 60)
+                            
+                            if cycle_count >= cycles_to_complete:
+                                break
+                        except (UnicodeDecodeError, json.JSONDecodeError):
+                            continue
+                    
+                    logger.info(f"\n[INFO] All {cycles_to_complete} cycles completed. Sending END_VISION...")
+                except KeyboardInterrupt:
+                    logger.info("  [INFO] Interrupted by user")
+                except Exception as e:
+                    logger.error(f"  [ERROR] Error during response wait: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # Test 4: CALC RESULT
+            
+            # Test 5: END VISION
+            time.sleep(3)
+            client.test_end_vision()
+
+            response = client.test_calc_result(path_csv="data/20251118-154122_zoom1_raw_data.csv")
+            if not response.get("success"):
+                logger.error(f"CALC RESULT failed: {response}")
+                return
+            else:
+                logger.info(f"CALC RESULT success: {response}")
+            
+            logger.info("\n" + "=" * 60)
+            logger.info("[OK] All tests completed")
+            logger.info("=" * 60)
         
     except ConnectionRefusedError:
         logger.error("Connection refused. Make sure server is running.")

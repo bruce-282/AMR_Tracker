@@ -1,5 +1,7 @@
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend (no GUI required)
 import matplotlib.pyplot as plt
 from scipy.interpolate import interp1d
 from typing import Tuple, List, Dict
