@@ -19,68 +19,24 @@
     "default_mode": "enhanced",
     "default_loader_mode": "sequence",
     "default_source": "data/0001_fixed",
-    "default_fps": 30,
-    "default_detector": "yolo",
-    "default_tracker": "kalman",
-    "stationary_mode": true,
     "presets": {
-      "enhanced_stationary": {
-        "mode": "enhanced",
-        "loader_mode": "sequence",
-        "source": "data/0001_fixed",
-        "fps": 30,
-        "detector": "yolo",
-        "tracker": "kalman",
-        "stationary_mode": true
-      },
-      "enhanced_camera_stationary": {
-        "mode": "enhanced",
+
+      "camera_tracking": {
         "loader_mode": "camera",
-        "source": 0,
-        "fps": 30,
-        "detector": "yolo",
-        "tracker": "kalman",
-        "stationary_mode": true
+        "source": "I3ZEB19D",
+        "config": "config/camera_config.json"
       },
-      "enhanced_video_tracking": {
-        "mode": "enhanced",
+      "video_tracking": {
         "loader_mode": "video",
         "source": "data/novitec_capture_20251110_150019.mp4",
-        "detector": "yolo",
-        "tracker": "kalman",
-        "fps": 30,
-        "stationary_mode": true
+        "config": "config/video_config.json"
       },
-      "enhanced_tracking": {
-        "mode": "enhanced",
+      "sequence_tracking": {
         "loader_mode": "sequence",
         "source": "data/0001_fixed",
-        "fps": 30,
-        "detector": "yolo",
-        "tracker": "kalman",
-        "stationary_mode": false
-      },
-      "basic_tracking": {
-        "mode": "basic",
-        "loader_mode": "sequence",
-        "source": "data/0001_fixed",
-        "fps": 30,
-        "stationary_mode": false
-      },
-      "basic_video_tracking": {
-        "mode": "basic",
-        "loader_mode": "video",
-        "source": "data/test6.mkv",
-        "fps": 30,
-        "stationary_mode": true
-      },
-      "camera_basic": {
-        "mode": "basic",
-        "loader_mode": "camera",
-        "source": 0,
-        "fps": 30,
-        "stationary_mode": false
+        "config": "config/sequence_config.json"
       }
+  
     }
   }
 }

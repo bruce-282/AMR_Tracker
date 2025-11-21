@@ -1,0 +1,14 @@
+{
+  "StreamAResolution": "3840x2160",
+  "StreamAEncodeMode": "MJPEG",
+  "Focus": "2m",
+  "FocusOffset": -120,
+  "Iris": 4,
+  "Zoom": 0,
+  "ExposureTime": 10000,
+  "Gain": 1.0,
+  "ExposureAuto": "Continuous",
+  "GainAuto": "Continuous",
+  "WhiteBalanceAuto": "Off"
+}
+
