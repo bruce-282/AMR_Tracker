@@ -1,17 +1,14 @@
+import argparse
+import json
+import logging
+import time
+from pathlib import Path
+from typing import Optional, Dict, List, Tuple
+
 import cv2
 import numpy as np
-from filterpy.kalman import KalmanFilter
-from collections import deque
-import time
-import argparse
-from typing import Optional, Dict, List, Tuple
-import json
-from pathlib import Path
-import glob
-import os
-import csv
-from datetime import datetime
-from scipy.optimize import linear_sum_assignment
+
+logger = logging.getLogger(__name__)
 from src.utils.sequence_loader import (
     BaseLoader,
     CameraDeviceLoader,
@@ -27,7 +24,7 @@ from src.utils.sequence_loader import (
 # Import config first (always available)
 from config import SystemConfig
 
-# Import new modules
+# Import tracking modules
 try:
     from src.core.detection import Detection, YOLODetector
     from src.core.measurement.size_measurement import SizeMeasurement
@@ -38,13 +35,10 @@ try:
         associate_detections_to_trackers,
     )
     from src.visualization.display import Visualizer
-
     ENHANCED_MODULES_AVAILABLE = True
 except ImportError:
     ENHANCED_MODULES_AVAILABLE = False
-    print(
-        "Warning: New AGV Measurement System modules not available. Using basic mode."
-    )
+    logger.warning("AGV Measurement System modules not available - using basic mode")
 
 
 class EnhancedAMRTracker:
@@ -95,28 +89,23 @@ class EnhancedAMRTracker:
 
     def _initialize_components(self):
         """Initialize all system components"""
-
-        print(f"Initializing Enhanced AMR System...")
-        print(f"Detector: {self.detector_type}")
-        print(f"Tracker: {self.tracker_type}")
+        logger.info(f"Initializing Enhanced AMR System (detector={self.detector_type}, tracker={self.tracker_type})")
 
         # Initialize detector
         if self.detector_type == "yolo":
             try:
-                # Check CUDA availability
                 import torch
-
                 device = "cuda" if torch.cuda.is_available() else "cpu"
-                print(f"Using device: {device}")
+                logger.info(f"Using device: {device}")
 
                 self.detector = YOLODetector(
                     "weights/zoom1/best.pt",
                     confidence_threshold=0.2,
-                    device=device,  # Auto-detect CUDA availability
+                    device=device,
                     imgsz=640,
-                    target_classes=[0, 1],  # Only detect class 0 (AGV)
+                    target_classes=[0, 1],
                 )
-                print("YOLO detector initialized")
+                logger.info("YOLO detector initialized")
             except ImportError:
                 raise ImportError("ultralytics module is not installed.")
             except FileNotFoundError:
@@ -126,17 +115,14 @@ class EnhancedAMRTracker:
                 f"Unsupported detector type: {self.detector_type}. Only 'yolo' is supported."
             )
 
-        if self.tracker_type == "speed":  # Speed tracker
+        if self.tracker_type == "speed":
             self.speed_tracker = SpeedTracker(max_history=30, max_tracking_distance=500)
-            print("Speed tracker initialized")
-            print(f"Debug - SpeedTracker created: {self.speed_tracker is not None}")
-        else:  # Kalman tracker
-            self.trackers = {}  # Multi-object detection, but track only the first one
+            logger.info("Speed tracker initialized")
+        else:
+            self.trackers = {}
             self.next_track_id = 0
-            self.primary_track_id = None  # Track ID of the first tracked object
-            print(
-                "Multi-object Kalman filter tracker initialized (tracking first object only)"
-            )
+            self.primary_track_id = None
+            logger.info("Multi-object Kalman filter tracker initialized")
 
         # Initialize additional components if using new modules
         if self.config:
@@ -152,29 +138,28 @@ class EnhancedAMRTracker:
                         # SystemConfig object
                         calibration_path = self.config.calibration.calibration_data_path
                 except (KeyError, AttributeError) as e:
-                    print(f"Error accessing calibration_data_path: {e}")
+                    logger.debug(f"Error accessing calibration_data_path: {e}")
                     calibration_path = None
                 if calibration_path and Path(calibration_path).exists():
                     with open(calibration_path, "r") as f:
                         calibration_data = json.load(f)
 
-                    # Always initialize size measurement and visualizer if calibration data exists
                     self.size_measurement = SizeMeasurement(
                         homography=np.array(calibration_data["homography"]),
                         camera_height=self.config.calibration.camera_height,
                         pixel_size=calibration_data.get("pixel_size", 1.0),
                         calibration_image_size=self.config.calibration.calibration_image_size,
                     )
-                    print("Size measurement initialized")
+                    logger.info("Size measurement initialized")
 
                     self.visualizer = Visualizer(
                         homography=np.array(calibration_data["homography"])
                     )
-                    print("Visualizer initialized")
+                    logger.info("Visualizer initialized")
                 else:
-                    print("No calibration data found. Size measurement disabled.")
+                    logger.info("No calibration data found - size measurement disabled")
             except Exception as e:
-                print(f"Error initializing new modules: {e}")
+                logger.warning(f"Error initializing modules: {e}")
 
     def _calculate_iou(self, box1, box2):
         """
@@ -380,14 +365,9 @@ class EnhancedAMRTracker:
                     )
 
             # Update speed tracker
-            print(f"Debug - measurements before speed tracker: {len(measurements)}")
-            for i, m in enumerate(measurements):
-                print(f"Debug - measurement {i}: {list(m.keys())}")
-
+            logger.debug(f"Speed tracker: {len(measurements)} measurements")
             results = self.speed_tracker.update(measurements)
-            print(f"Debug - speed tracker results: {len(results)}")
-            for i, r in enumerate(results):
-                print(f"Debug - result {i}: {list(r.keys())}")
+            logger.debug(f"Speed tracker: {len(results)} results")
 
         return results
 
@@ -403,19 +383,6 @@ class EnhancedAMRTracker:
                 vis_frame = self.visualizer.draw_detections(
                     frame, detection_objects, tracking_results
                 )
-                # Draw tracking results separately (yellow centers)
-                #vis_frame = self.visualizer.draw_tracking(vis_frame, tracking_results)
-
-                # Add summary information
-                # cv2.putText(
-                #     vis_frame,
-                #     f"Objects: {len(tracking_results)} (Enhanced)",
-                #     (10, vis_frame.shape[0] - 30),
-                #     cv2.FONT_HERSHEY_SIMPLEX,
-                #     0.7,
-                #     (255, 255, 255),
-                #     2,
-                # )
             else:
                 # Use basic AMR tracker visualization
                 vis_frame = frame.copy()
@@ -428,17 +395,6 @@ class EnhancedAMRTracker:
                         if tracker:
                             vis_frame = tracker.draw_visualization(vis_frame, result)
 
-                # Add summary information
-                # cv2.putText(
-                #     vis_frame,
-                #     f"Objects: {len(tracking_results)}",
-                #     (10, vis_frame.shape[0] - 30),
-                #     cv2.FONT_HERSHEY_SIMPLEX,
-                #     0.7,
-                #     (255, 255, 255),
-                #     2,
-                # )
-
             return vis_frame
 
         elif self.tracker_type == "speed" and ENHANCED_MODULES_AVAILABLE:
@@ -449,83 +405,21 @@ class EnhancedAMRTracker:
                     frame, detection_objects, tracking_results
                 )
             else:
-                # Fallback to basic visualization with speed info
                 vis_frame = frame.copy()
-                print("Debug - Using fallback visualization for SpeedTracker")
 
             # Add speed information overlay
             for result in tracking_results:
-                # 디버깅: 결과 정보 출력
-                print(f"Debug - tracking_result keys: {list(result.keys())}")
-                if "speed" in result:
-                    print(f"Debug - speed: {result['speed']}")
 
                 if "bbox" in result and "speed" in result:
                     bbox = result["bbox"]
                     x, y, w, h = map(int, bbox)
                     speed = result["speed"]
 
-                    # 이미지 크기에 따라 텍스트 크기 동적 조정
-                    height, width = vis_frame.shape[:2]
-                    font_scale = max(1.0, min(3.0, width / 400))  # 더 큰 텍스트
-                    thickness = max(2, int(font_scale * 3))
-
-                    # 속도 정보 표시
-                    speed_text = f"Speed: {speed:.1f}mm/s"
-                    # cv2.putText(
-                    #     vis_frame,
-                    #     speed_text,
-                    #     (x, y - int(30 * font_scale)),
-                    #     cv2.FONT_HERSHEY_SIMPLEX,
-                    #     font_scale,
-                    #     (0, 255, 255),  # 노란색
-                    #     thickness,
-                    # )
-                else:
-                    # bbox만 있는 경우 기본 정보 표시
-                    if "bbox" in result:
-                        bbox = result["bbox"]
-                        x, y, w, h = map(int, bbox)
-
-                        # 이미지 크기에 따라 텍스트 크기 동적 조정
-                        height, width = vis_frame.shape[:2]
-                        font_scale = max(1.0, min(3.0, width / 400))
-                        thickness = max(2, int(font_scale * 3))
-
-                        # 기본 정보 표시
-                        info_text = f"Track: {result.get('track_id', 'N/A')}"
-                        # cv2.putText(
-                        #     vis_frame,
-                        #     info_text,
-                        #     (x, y - int(30 * font_scale)),
-                        #     cv2.FONT_HERSHEY_SIMPLEX,
-                        #     font_scale,
-                        #     (255, 0, 0),  # 빨간색
-                        #     thickness,
-                        # )
-
             return vis_frame
 
         else:
             # Basic visualization
-            vis_frame = frame.copy()
-            for detection in detections:
-                x, y, w, h = map(int, detection.bbox)
-                # 이미지 크기에 따라 텍스트 크기 동적 조정
-                height, width = vis_frame.shape[:2]
-                font_scale = max(1.0, min(3.0, width / 400))  # 더 큰 텍스트
-                thickness = max(2, int(font_scale * 3))
-
-                # cv2.putText(
-                #     vis_frame,
-                #     f"Conf: {detection.confidence:.2f}",
-                #     (x, y - int(10 * font_scale)),
-                #     cv2.FONT_HERSHEY_SIMPLEX,
-                #     font_scale,
-                #     (0, 255, 0),
-                #     thickness,
-                # )
-            return vis_frame
+            return frame.copy()
 
 
 def load_execution_preset(config_path: str, preset_name: str) -> dict:
@@ -537,19 +431,17 @@ def load_execution_preset(config_path: str, preset_name: str) -> dict:
         if "execution" in config and "presets" in config["execution"]:
             presets = config["execution"]["presets"]
             if preset_name in presets:
-                print(f"✓ Loaded preset: {preset_name}")
+                logger.info(f"Loaded preset: {preset_name}")
                 return presets[preset_name]
             else:
                 available_presets = list(presets.keys())
-                print(
-                    f"⚠ Preset '{preset_name}' not found. Available presets: {available_presets}"
-                )
+                logger.warning(f"Preset '{preset_name}' not found. Available: {available_presets}")
                 return {}
         else:
-            print("⚠ No execution presets found in config file")
+            logger.warning("No execution presets found in config file")
             return {}
     except Exception as e:
-        print(f"⚠ Error loading preset: {e}")
+        logger.warning(f"Error loading preset: {e}")
         return {}
 
 
@@ -644,18 +536,15 @@ def main():
         try:
             config = SystemConfig.load(args.config)
         except Exception as e:
-            print(f"⚠ Error loading config, using default: {e}")
-            import traceback
-
-            traceback.print_exc()
+            logger.warning(f"Error loading config, using default: {e}")
             config = None
     else:
-        print(f"⚠ Config file not found: {args.config}")
+        logger.warning(f"Config file not found: {args.config}")
         config = None
 
     # Initialize system
     if args.mode == "basic":
-        print("Running in basic mode...")
+        logger.info("Running in basic mode...")
         if config:
             if isinstance(config, dict):
                 # dict object
@@ -673,32 +562,23 @@ def main():
         )
     elif args.mode == "enhanced":
         if not ENHANCED_MODULES_AVAILABLE:
-            print("Error: Enhanced mode requires AGV Measurement System modules.")
-            print("Please install the required modules or use basic mode.")
+            logger.error("Enhanced mode requires AGV Measurement System modules")
             return
-        print("Running in enhanced mode...")
+        logger.info("Running in enhanced mode...")
         if config:
-            print(f"Debug - config type: {type(config)}")
-            print(f"Debug - config is dict: {isinstance(config, dict)}")
             try:
                 if isinstance(config, dict):
-                    # dict object
                     pixel_size = config["measurement"]["pixel_size"]
-                elif hasattr(config, "measurement") and hasattr(
-                    config.measurement, "pixel_size"
-                ):
-                    # SystemConfig object
+                elif hasattr(config, "measurement") and hasattr(config.measurement, "pixel_size"):
                     pixel_size = config.measurement.pixel_size
                 else:
-                    print(
-                        "⚠ Config object doesn't have expected structure, using default pixel_size"
-                    )
+                    logger.warning("Config object doesn't have expected structure, using default pixel_size")
                     pixel_size = 1.0
             except (KeyError, AttributeError) as e:
-                print(f"⚠ Error accessing pixel_size: {e}")
+                logger.warning(f"Error accessing pixel_size: {e}")
                 pixel_size = 1.0
         else:
-            print("⚠ No config loaded, using default pixel_size")
+            logger.warning("No config loaded, using default pixel_size")
             pixel_size = 1.0
         run_enhanced_mode(
             args,
@@ -708,7 +588,7 @@ def main():
             pixel_size,
         )
     else:
-        print(f"Error: Unknown mode '{args.mode}'")
+        logger.error(f"Unknown mode: {args.mode}")
         return
 
 
@@ -722,10 +602,10 @@ def run_basic_mode(
     import ultralytics
 
     detector = ultralytics.YOLO("weights/zoom1/best.pt")
-    trackers = {}  # Dictionary to store multiple trackers
+    trackers = {}
     next_track_id = 0
     data_logger = TrackingDataLogger()
-    print("Basic multi-object AMR tracker initialized")
+    logger.info("Basic multi-object AMR tracker initialized")
 
     # Create sequence loader based on mode
     if mode == "camera":
@@ -738,15 +618,13 @@ def run_basic_mode(
         cap = create_sequence_loader(video_source, fps)
 
     if cap is None:
-        print("Error: Cannot create sequence loader")
+        logger.error("Cannot create sequence loader")
         return
 
     frame_number = 0
-    print(f"Processing frames... Press 'q' to quit, 's' to save snapshot")
+    logger.info("Processing frames... Press 'q' to quit, 's' to save snapshot")
 
     classes = range(0, 90, 1)
-
-    # print(classes)
 
     while True:
         ret, frame = cap.read()
@@ -772,7 +650,7 @@ def run_basic_mode(
                 class_id = int(results[0].boxes.cls[i].cpu().numpy())
 
                 class_name = detector.names[class_id]
-                print(f"Class ID: {class_id} Class Name: {class_name}")
+                logger.debug(f"Detected class {class_id}: {class_name}")
                 from src.core.detection import Detection
 
                 detections.append(
@@ -884,7 +762,7 @@ def run_basic_mode(
                 trackers_to_remove.append(track_id)
 
         for track_id in trackers_to_remove:
-            print(f"Removing lost tracker ID: {track_id}")
+            logger.debug(f"Removing lost tracker ID: {track_id}")
             del trackers[track_id]
 
         # Log tracking data
@@ -907,16 +785,15 @@ def run_basic_mode(
             font_scale = max(0.5, min(2.0, width / 800))  # 800px 기준으로 스케일링
             thickness = max(1, int(font_scale * 2))
 
-        # Print results
-        if tracking_results:
-            print(f"Frame {frame_number}: {len(tracking_results)} objects tracked")
+        # Log results
+        if tracking_results and logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Frame {frame_number}: {len(tracking_results)} objects tracked")
             for result in tracking_results:
                 track_id = result.get("track_id", "Unknown")
-            print(
-                f"  ID {track_id}: Position ({result['position']['x']:.1f}, {result['position']['y']:.1f}), "
-                f"Speed: {result['velocity']['linear_speed_mm_per_sec']:.2f} mm/s, "
-                f"Orientation: {result['orientation']['theta_normalized_deg']:.1f}°"
-            )
+                logger.debug(
+                    f"  ID {track_id}: Position ({result['position']['x']:.1f}, {result['position']['y']:.1f}), "
+                    f"Speed: {result['velocity']['linear_speed_mm_per_sec']:.2f} mm/s"
+                )
 
         # 창 크기 조절 (화면이 너무 클 때)
         height, width = vis_frame.shape[:2]
@@ -934,13 +811,13 @@ def run_basic_mode(
             break
         elif key == ord("s"):
             cv2.imwrite(f"snapshot_{frame_number:06d}.png", vis_frame)
-            print(f"Snapshot saved: snapshot_{frame_number:06d}.png")
+            logger.info(f"Snapshot saved: snapshot_{frame_number:06d}.png")
 
         frame_number += 1
 
     cap.release()
     cv2.destroyAllWindows()
-    print(f"\n✓ Processed {frame_number} frames")
+    logger.info(f"Processed {frame_number} frames")
 
 
 def run_enhanced_mode(args, video_source, fps=30, mode="auto", pixel_size=1.0):
@@ -950,9 +827,9 @@ def run_enhanced_mode(args, video_source, fps=30, mode="auto", pixel_size=1.0):
     if Path(args.config).exists():
         try:
             config = SystemConfig.load(args.config)
-            print(f"✓ Configuration loaded from {args.config}")
+            logger.info(f"Configuration loaded from {args.config}")
         except Exception as e:
-            print(f"⚠ Error loading config: {e}")
+            logger.warning(f"Error loading config: {e}")
 
     # Initialize enhanced system
     amr_tracker = EnhancedAMRTracker(
@@ -973,12 +850,11 @@ def run_enhanced_mode(args, video_source, fps=30, mode="auto", pixel_size=1.0):
         cap = create_sequence_loader(video_source, fps)
 
     if cap is None:
-        print("Error: Cannot create sequence loader")
+        logger.error("Cannot create sequence loader")
         return
 
     frame_number = 0
-    print(f"\nEnhanced AMR System running...")
-    print(f"Press 'q' to quit, 's' to save snapshot")
+    logger.info("Enhanced AMR System running... Press 'q' to quit, 's' to save snapshot")
 
     while True:
         ret, frame = cap.read()
@@ -1024,13 +900,13 @@ def run_enhanced_mode(args, video_source, fps=30, mode="auto", pixel_size=1.0):
             break
         elif key == ord("s"):
             cv2.imwrite(f"snapshot_{frame_number:06d}.png", vis_frame)
-            print(f"Snapshot saved: snapshot_{frame_number:06d}.png")
+            logger.info(f"Snapshot saved: snapshot_{frame_number:06d}.png")
 
         frame_number += 1
 
     cap.release()
     cv2.destroyAllWindows()
-    print(f"\n✓ Enhanced AMR System completed. Processed {frame_number} frames")
+    logger.info(f"Enhanced AMR System completed. Processed {frame_number} frames")
 
 
 if __name__ == "__main__":

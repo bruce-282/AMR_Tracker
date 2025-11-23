@@ -4,27 +4,31 @@ Novitec Camera를 위한 로더 클래스
 이 모듈은 Novitec Camera SDK를 사용하여 카메라에서 프레임을 가져오는 기능을 제공합니다.
 """
 
-import sys
+import logging
 import os
+import sys
 import time
-import numpy as np
-import cv2
-from typing import Optional, Tuple, Union
 from pathlib import Path
+from typing import Optional, Tuple
 
-# test_camera_connect.py와 동일한 방식으로 경로 설정
+import cv2
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+# Novitec 카메라 모듈 경로 설정
 current_dir = Path(__file__).parent
 novitec_path = current_dir.parent.parent / "submodules" / "novitec_camera_module"
 sys.path.insert(0, str(novitec_path))
 
-# test_camera_connect.py와 동일한 방식으로 import
+# Novitec SDK import
 try:
     import novitec_camera as nvt
-
     NOVITEC_AVAILABLE = True
 except ImportError:
     NOVITEC_AVAILABLE = False
-    print("Warning: Novitec Camera module not available")
+    nvt = None
+    logger.warning("Novitec Camera module not available")
 
 
 class NovitecCameraLoader:
@@ -63,61 +67,45 @@ class NovitecCameraLoader:
             bool: 초기화 성공 여부
         """
         try:
-
             self.manager = nvt.DeviceManager()
             err = self.manager.Update()
-            print(f"DeviceManager Update 결과: {err.GetType()}, {err.GetDescription()}")
+            logger.debug(f"DeviceManager Update: {err.GetType()}, {err.GetDescription()}")
 
-            # if err != nvt.NVT_OK:
-            #     print(f"DeviceManager Update 실패: {err}")
-            #     return False
-            # else:
-            #     print("DeviceManager Update 성공!")
-
-            # 2. 카메라 수 확인 (test_camera_connect.py와 동일)
+            # 카메라 수 확인
             num_cameras = self.manager.GetNumberOfCamerasDirect()
-            print(f"감지된 카메라 수: {num_cameras}")
+            logger.info(f"Detected {num_cameras} camera(s)")
 
             if num_cameras == 0:
-                print("감지된 카메라가 없습니다")
+                logger.error("No cameras detected")
                 return False
 
             if self.camera_index >= num_cameras:
-                print(
-                    f"카메라 인덱스 {self.camera_index}가 범위를 벗어났습니다 (0-{num_cameras-1})"
-                )
+                logger.error(f"Camera index {self.camera_index} out of range (0-{num_cameras-1})")
                 return False
 
-            # 3. 카메라 핸들 획득 (test_camera_connect.py와 동일)
+            # 카메라 핸들 획득
             self.handle = self.manager.GetCameraHandleDirect(self.camera_index)
-            print(f"카메라 핸들 획득: {self.handle}")
+            logger.debug(f"Camera handle acquired: {self.handle}")
 
-            # 4. Camera 객체 생성 (test_camera_connect.py와 동일)
+            # Camera 객체 생성
             self.camera = nvt.Camera()
-            print(f"Camera 객체: {self.camera}")
 
-            # 5. 카메라 연결 (test_camera_connect.py와 동일)
+            # 카메라 연결
             err = self.camera.Connect(self.handle, nvt.AM_CONTROL)
-            print(f"Connect 결과: {err}")
-
             if err != nvt.NVT_OK:
-                print(f"카메라 연결 실패: {err}")
+                logger.error(f"Camera connection failed: {err}")
                 return False
 
-            print("카메라 연결 성공!")
+            logger.info("Camera connected successfully")
 
-            # 6. 연결 상태 확인 (test_camera_connect.py와 동일)
+            # 연결 상태 확인
             self.connected = self.camera.IsConnected()
-            print(f"연결 상태: {self.connected}")
-
             if not self.connected:
-                print("카메라가 연결되지 않았습니다")
+                logger.error("Camera connection verification failed")
                 self.camera.Disconnect()
                 return False
 
-            print("카메라가 연결되었습니다!")
-
-            # 7. GenICam 인터페이스 설정 (test_camera_connect.py와 동일)
+            # GenICam 인터페이스 설정
             try:
                 self.interface = nvt.GenICam(self.camera)
 
@@ -127,37 +115,35 @@ class NovitecCameraLoader:
                         "ImageCompressionMode"
                     )
                     compression_enum.SetSymbolicValue("JPEG")
-                    print("이미지 압축 모드를 JPEG로 설정했습니다")
-                except:
-                    print("이미지 압축 모드 설정을 건너뜁니다")
+                    logger.debug("Image compression mode set to JPEG")
+                except (AttributeError, RuntimeError) as e:
+                    logger.debug(f"Skipping image compression mode setting: {e}")
 
                 # 픽셀 포맷 확인
                 try:
                     pixel_format = self.interface.GetFeature_IEnumeration(
                         "PixelFormat"
                     ).GetSymbolicValue()
-                    print(f"픽셀 포맷: {pixel_format}")
-                except:
-                    print("픽셀 포맷 확인을 건너뜁니다")
+                    logger.debug(f"Pixel format: {pixel_format}")
+                except (AttributeError, RuntimeError) as e:
+                    logger.debug(f"Skipping pixel format check: {e}")
 
             except Exception as e:
-                print(f"GenICam 설정 중 오류: {e}")
+                logger.warning(f"GenICam interface setup error: {e}")
                 self.interface = None
 
-            # 8. 이미지 획득 시작 (test_camera_connect.py와 동일)
+            # 이미지 획득 시작
             err = self.camera.Start()
             if err != nvt.NVT_OK:
-                print(f"이미지 획득 시작 실패: {err}")
+                logger.error(f"Image acquisition start failed: {err}")
                 self.camera.Disconnect()
                 return False
 
-            print("이미지 획득 시작 성공!")
-
-            print(f"Novitec 카메라 {self.camera_index} 초기화 완료")
+            logger.info(f"Novitec camera {self.camera_index} initialized successfully")
             return True
 
         except Exception as e:
-            print(f"카메라 초기화 중 오류: {e}")
+            logger.error(f"Camera initialization error: {e}")
             return False
 
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
@@ -171,30 +157,22 @@ class NovitecCameraLoader:
             return False, None
 
         try:
-            # 이미지 객체 생성 (test_camera_connect.py와 동일)
             image = nvt.Image()
-
-            # 이미지 획득 (test_camera_connect.py와 동일)
             err = self.camera.GetImage(image, self.timeout)
 
             if err == nvt.NVT_OK:
-                print(
-                    f"이미지 획득 성공! 크기: {image.width} x {image.height}, 데이터 크기: {image.dataSize}"
-                )
-
-                # 이미지 데이터를 NumPy 배열로 변환
+                logger.debug(f"Image acquired: {image.width}x{image.height}, size={image.dataSize}")
                 frame = self._convert_to_opencv(image)
                 if frame is not None:
                     self.current_frame += 1
                     return True, frame
-                else:
-                    return False, None
+                return False, None
             else:
-                print(f"이미지 획득 실패: {err}")
+                logger.warning(f"Image acquisition failed: {err}")
                 return False, None
 
         except Exception as e:
-            print(f"프레임 읽기 중 오류: {e}")
+            logger.error(f"Frame read error: {e}")
             return False, None
 
     def _convert_to_opencv(self, image) -> Optional[np.ndarray]:
@@ -208,79 +186,54 @@ class NovitecCameraLoader:
             Optional[np.ndarray]: OpenCV 형식의 이미지 배열
         """
         try:
-            # 파일 저장 없이 직접 데이터 접근 시도
-            try:
-                # 이미지 데이터를 직접 NumPy 배열로 변환 시도
-                if (
-                    hasattr(image, "data")
-                    and hasattr(image, "width")
-                    and hasattr(image, "height")
-                ):
-                    # 이미지 데이터를 직접 읽기
-                    data = image.data
-                    width = image.width
-                    height = image.height
+            # 직접 데이터 접근 시도
+            if hasattr(image, "data") and hasattr(image, "width") and hasattr(image, "height"):
+                data = image.data
+                width = image.width
+                height = image.height
 
-                    if data and width > 0 and height > 0:
-                        # 데이터를 NumPy 배열로 변환
-                        if hasattr(data, "__len__"):
-                            # 데이터 길이 확인
-                            expected_size = width * height * 3  # RGB
-                            if len(data) >= expected_size:
-                                # RGB 형식으로 변환
-                                img_array = np.frombuffer(data, dtype=np.uint8)
-                                if len(img_array) >= expected_size:
-                                    img_array = img_array[:expected_size]
-                                    frame = img_array.reshape((height, width, 3))
-                                    return frame
+                if data and width > 0 and height > 0 and hasattr(data, "__len__"):
+                    # RGB 형식 처리
+                    expected_size = width * height * 3
+                    if len(data) >= expected_size:
+                        img_array = np.frombuffer(data, dtype=np.uint8)
+                        if len(img_array) >= expected_size:
+                            frame = img_array[:expected_size].reshape((height, width, 3))
+                            return frame
 
-                            # YUV420_NV12 형식 처리
-                            expected_size_yuv = width * height * 3 // 2  # YUV420_NV12
-                            if len(data) >= expected_size_yuv:
-                                img_array = np.frombuffer(data, dtype=np.uint8)
-                                if len(img_array) >= expected_size_yuv:
-                                    img_array = img_array[:expected_size_yuv]
-                                    # YUV420_NV12를 RGB로 변환
-                                    yuv_frame = img_array.reshape(
-                                        (height * 3 // 2, width)
-                                    )
-                                    frame = cv2.cvtColor(
-                                        yuv_frame, cv2.COLOR_YUV2BGR_NV12
-                                    )
-                                    return frame
+                    # YUV420_NV12 형식 처리
+                    expected_size_yuv = width * height * 3 // 2
+                    if len(data) >= expected_size_yuv:
+                        img_array = np.frombuffer(data, dtype=np.uint8)
+                        if len(img_array) >= expected_size_yuv:
+                            yuv_frame = img_array[:expected_size_yuv].reshape((height * 3 // 2, width))
+                            return cv2.cvtColor(yuv_frame, cv2.COLOR_YUV2BGR_NV12)
 
-                print("직접 데이터 접근 실패, 파일 저장 방식으로 폴백")
+            logger.debug("Direct data access failed, falling back to file save")
 
-            except Exception as e:
-                print(f"직접 데이터 접근 중 오류: {e}")
-
-            # 폴백: JPEG만 시도 (가장 성공률이 높음)
+            # 폴백: JPEG 파일 저장 방식
             temp_filename = f"temp_novitec_{self.current_frame}.jpg"
-
             try:
                 err = image.Save(temp_filename, nvt.JPEG)
                 if err == nvt.NVT_OK:
-                    # OpenCV로 읽기
                     frame = cv2.imread(temp_filename)
+                    try:
+                        os.remove(temp_filename)
+                    except OSError:
+                        pass
                     if frame is not None:
-                        # 임시 파일 삭제
-                        try:
-                            os.remove(temp_filename)
-                        except:
-                            pass
                         return frame
-                    else:
-                        print("OpenCV로 JPEG 읽기 실패")
+                    logger.warning("Failed to read JPEG with OpenCV")
                 else:
-                    print(f"JPEG 저장 실패: {err}")
-            except Exception as e:
-                print(f"JPEG 저장 중 오류: {e}")
+                    logger.warning(f"JPEG save failed: {err}")
+            except (IOError, RuntimeError) as e:
+                logger.warning(f"JPEG save error: {e}")
 
-            print("모든 변환 방법 실패")
+            logger.warning("All image conversion methods failed")
             return None
 
         except Exception as e:
-            print(f"이미지 변환 중 오류: {e}")
+            logger.error(f"Image conversion error: {e}")
             return None
 
     def get_total_frames(self) -> int:
@@ -320,11 +273,10 @@ class NovitecCameraLoader:
             self.interface = None
             self.handle = None
             self.connected = False
-
-            print("Novitec 카메라 리소스 해제 완료")
+            logger.info("Novitec camera resources released")
 
         except Exception as e:
-            print(f"리소스 해제 중 오류: {e}")
+            logger.error(f"Resource release error: {e}")
 
     def __enter__(self):
         """Context manager entry"""
@@ -353,7 +305,7 @@ class NovitecCameraLoader:
                 "connected": self.connected,
             }
         except Exception as e:
-            print(f"카메라 정보 획득 중 오류: {e}")
+            logger.error(f"Failed to get camera info: {e}")
             return {}
 
 
@@ -371,7 +323,7 @@ def create_novitec_camera_loader(
         Optional[NovitecCameraLoader]: 로더 객체 또는 None
     """
     if not NOVITEC_AVAILABLE:
-        print("Novitec Camera module is not available")
+        logger.warning("Novitec Camera module is not available")
         return None
 
     try:
@@ -382,7 +334,7 @@ def create_novitec_camera_loader(
             loader.release()
             return None
     except Exception as e:
-        print(f"Novitec Camera 로더 생성 실패: {e}")
+        logger.error(f"Failed to create Novitec Camera loader: {e}")
         return None
 
 
@@ -408,70 +360,62 @@ def list_novitec_cameras() -> list:
         for i in range(num_cameras):
             try:
                 camera_info = manager.GetCameraInfoDirect(i)
-                cameras.append(
-                    {
-                        "index": i,
-                        "model_name": camera_info.GetModelName(),
-                        "serial_number": camera_info.GetSerialNumber(),
-                    }
-                )
+                cameras.append({
+                    "index": i,
+                    "model_name": camera_info.GetModelName(),
+                    "serial_number": camera_info.GetSerialNumber(),
+                })
             except Exception as e:
-                print(f"카메라 {i} 정보 획득 실패: {e}")
+                logger.warning(f"Failed to get camera {i} info: {e}")
 
         return cameras
 
     except Exception as e:
-        print(f"카메라 목록 획득 실패: {e}")
+        logger.error(f"Failed to get camera list: {e}")
         return []
 
 
-# 테스트 함수
 def test_novitec_camera():
     """Novitec 카메라 테스트"""
-    print("=== Novitec Camera 테스트 ===")
+    logger.info("=== Novitec Camera Test ===")
 
-    # 사용 가능한 카메라 목록
     cameras = list_novitec_cameras()
-    print(f"감지된 카메라 수: {len(cameras)}")
+    logger.info(f"Detected {len(cameras)} camera(s)")
 
     for camera in cameras:
-        print(
-            f"  {camera['index']}: {camera['model_name']} - {camera['serial_number']}"
-        )
+        logger.info(f"  {camera['index']}: {camera['model_name']} - {camera['serial_number']}")
 
     if not cameras:
-        print("사용 가능한 카메라가 없습니다")
+        logger.warning("No cameras available")
         return
 
-    # 첫 번째 카메라로 테스트
     camera_index = cameras[0]["index"]
-    print(f"\n카메라 {camera_index}로 테스트 시작...")
+    logger.info(f"Testing camera {camera_index}...")
 
     loader = create_novitec_camera_loader(camera_index)
     if loader is None:
-        print("카메라 로더 생성 실패")
+        logger.error("Failed to create camera loader")
         return
 
     try:
-        # 카메라 정보 출력
         info = loader.get_camera_info()
-        print(f"카메라 정보: {info}")
+        logger.info(f"Camera info: {info}")
 
-        # 몇 개의 프레임 테스트
-        print("\n프레임 테스트 (5개)...")
+        logger.info("Testing 5 frames...")
         for i in range(5):
             ret, frame = loader.read()
             if ret and frame is not None:
-                print(f"  프레임 {i+1}: {frame.shape}")
+                logger.info(f"  Frame {i+1}: {frame.shape}")
             else:
-                print(f"  프레임 {i+1}: 실패")
+                logger.warning(f"  Frame {i+1}: failed")
             time.sleep(0.1)
 
-        print("테스트 완료")
+        logger.info("Test completed")
 
     finally:
         loader.release()
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     test_novitec_camera()

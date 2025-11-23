@@ -6,25 +6,31 @@ This module provides classes for loading different types of video sequences.
 
 import cv2
 import glob
+import logging
 import os
 from pathlib import Path
 from typing import Optional, Union, List
 from enum import Enum
 import time
 
+logger = logging.getLogger(__name__)
+
 # Try to import Novitec camera module
 try:
-    from .novitec_camera_loader import NOVITEC_AVAILABLE, nvt
-
+    from .novitec_camera_loader import (
+        NOVITEC_AVAILABLE,
+        NovitecCameraLoader,
+        create_novitec_camera_loader,
+        list_novitec_cameras
+    )
     if NOVITEC_AVAILABLE:
-        print("[OK] Novitec Camera Module available")
+        from .novitec_camera_loader import nvt
+        logger.info("Novitec Camera Module available")
     else:
-        print("[WARN] Novitec Camera Module not available")
-        print("  Using fallback camera loader")
+        logger.warning("Novitec Camera Module not available - using fallback camera loader")
 except ImportError as e:
     NOVITEC_AVAILABLE = False
-    print(f"[WARN] Novitec Camera Module not available: {e}")
-    print("  Using fallback camera loader")
+    logger.warning(f"Novitec Camera Module not available: {e} - using fallback camera loader")
 
 
 class LoaderMode(Enum):
@@ -71,7 +77,7 @@ class CameraDeviceLoader(BaseLoader):
             raise RuntimeError(f"Cannot open camera {device_id}")
 
         self.is_connected = True
-        print(f"[OK] Camera device {device_id} opened")
+        logger.info(f"Camera device {device_id} opened")
 
     def read(self):
         ret, frame = self.cap.read()
@@ -102,8 +108,7 @@ class VideoFileLoader(BaseLoader):
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.is_connected = True
 
-        print(f"[OK] Video file opened: {file_path}")
-        print(f"  Total frames: {self.total_frames}, FPS: {self.fps:.2f}")
+        logger.info(f"Video file opened: {file_path} (frames={self.total_frames}, fps={self.fps:.2f})")
 
     def read(self):
         ret, frame = self.cap.read()
@@ -145,8 +150,7 @@ class ImageSequenceLoader(BaseLoader):
         self.last_frame_time = time.time()
         self.is_connected = True
 
-        print(f"[OK] Image sequence opened: {sequence_path}")
-        print(f"  Found {len(self.image_files)} images, FPS: {fps}")
+        logger.info(f"Image sequence opened: {sequence_path} (images={len(self.image_files)}, fps={fps})")
 
     def read(self):
         if self.current_index >= len(self.image_files):
@@ -162,7 +166,7 @@ class ImageSequenceLoader(BaseLoader):
         frame = cv2.imread(image_path)
 
         if frame is None:
-            print(f"Warning: Could not load image: {image_path}")
+            logger.warning(f"Could not load image: {image_path}")
             self.current_index += 1
             return False, None
 
@@ -177,166 +181,6 @@ class ImageSequenceLoader(BaseLoader):
 
     def is_opened(self):
         return self.current_index < len(self.image_files)
-
-
-class NovitecCameraLoader(BaseLoader):
-    """Loader for Novitec industrial cameras"""
-
-    def __init__(self, device_id: int = 0):
-        super().__init__()
-        if not NOVITEC_AVAILABLE:
-            raise RuntimeError("Novitec Camera Module not available")
-
-        self.device_id = device_id
-        self.device_manager = None
-        self.camera = None
-        self.initialized = False
-
-        self._initialize()
-
-    def _initialize(self):
-        """Initialize Novitec camera"""
-        try:
-            # Initialize device manager
-            self.device_manager = nvt.DeviceManager()
-            print("[OK] Novitec DeviceManager initialized")
-
-            # Update device list
-            err = self.device_manager.Update()
-            if err != nvt.NVT_OK:
-                print(f"DeviceManager Update 실패: {err}")
-                raise RuntimeError(f"Failed to update device list: {err}")
-            print("[OK] DeviceManager updated successfully")
-
-            # Get available devices
-            device_count = self.device_manager.GetDeviceCount()
-            print(f"[OK] Found {device_count} Novitec devices")
-
-            if device_count == 0:
-                raise RuntimeError("No Novitec devices found")
-
-            # Connect to first available device
-            self.camera = self.device_manager.GetDevice(0)
-            if self.camera is None:
-                raise RuntimeError("Failed to get camera device")
-
-            # Connect to camera
-            err = self.camera.Connect()
-            if err != nvt.NVT_OK:
-                print(f"Camera Connect 실패: {err}")
-                raise RuntimeError(f"Failed to connect to camera: {err}")
-            print("[OK] Novitec camera connected")
-
-            self.initialized = True
-            self.is_connected = True
-
-        except Exception as e:
-            print(f"Novitec camera initialization failed: {e}")
-            raise
-
-    def read(self):
-        """Read frame from Novitec camera"""
-        if not self.initialized:
-            return False, None
-
-        try:
-            # Capture image
-            image = self.camera.CaptureImage()
-            if image is None:
-                print("Failed to capture image from Novitec camera")
-                return False, None
-
-            # Convert to OpenCV format
-            frame = self._convert_to_opencv(image)
-            if frame is None:
-                print("Failed to convert Novitec image to OpenCV format")
-                return False, None
-
-            self.frame_number += 1
-            return True, frame
-
-        except Exception as e:
-            print(f"Error reading from Novitec camera: {e}")
-            return False, None
-
-    def _convert_to_opencv(self, image):
-        """Convert Novitec image to OpenCV format"""
-        try:
-            # Try direct data access first
-            if hasattr(image, "data") and image.data is not None:
-                # Get image properties
-                width = image.GetWidth()
-                height = image.GetHeight()
-                format_type = image.GetFormat()
-
-                print(
-                    f"이미지 획득 성공! 크기: {width} x {height}, 포맷: {format_type}"
-                )
-
-                # Try to access image data directly
-                try:
-                    import numpy as np
-
-                    # Convert based on format
-                    if format_type == nvt.NVT_IMAGE_FORMAT_RGB24:
-                        # RGB24 format
-                        data = np.frombuffer(image.data, dtype=np.uint8)
-                        if len(data) >= width * height * 3:
-                            frame = data[: width * height * 3].reshape(
-                                (height, width, 3)
-                            )
-                            # Convert RGB to BGR for OpenCV
-                            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                            return frame
-                    elif format_type == nvt.NVT_IMAGE_FORMAT_YUV420_NV12:
-                        # YUV420_NV12 format
-                        data = np.frombuffer(image.data, dtype=np.uint8)
-                        if len(data) >= width * height * 3 // 2:
-                            # Convert YUV to BGR
-                            yuv = data[: width * height * 3 // 2].reshape(
-                                (height * 3 // 2, width)
-                            )
-                            frame = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_NV12)
-                            return frame
-
-                except Exception as e:
-                    print(f"직접 데이터 접근 실패: {e}")
-                    print("파일 저장 방식으로 폴백")
-
-            # Fallback: Save as JPEG and reload
-            temp_path = "temp_novitec_image.jpg"
-            err = image.SaveAsJPEG(temp_path)
-            if err == nvt.NVT_OK:
-                frame = cv2.imread(temp_path)
-                # Clean up temp file
-                try:
-                    os.remove(temp_path)
-                except:
-                    pass
-                return frame
-            else:
-                print(f"JPEG 저장 실패: {err}")
-                return None
-
-        except Exception as e:
-            print(f"이미지 변환 실패: {e}")
-            return None
-
-    def release(self):
-        """Release Novitec camera resources"""
-        try:
-            if self.camera:
-                self.camera.Disconnect()
-                print("[OK] Novitec camera disconnected")
-            if self.device_manager:
-                self.device_manager = None
-                print("[OK] Novitec DeviceManager released")
-            print("Novitec 카메라 리소스 해제 완료")
-        except Exception as e:
-            print(f"Error releasing Novitec camera: {e}")
-
-    def is_opened(self):
-        return self.initialized and self.camera is not None
 
 
 def create_sequence_loader(
@@ -367,10 +211,10 @@ def create_sequence_loader(
                     # Directory path - try image sequence
                     return create_image_sequence_loader(source, fps)
                 else:
-                    print(f"Error: Source path does not exist: {source}")
+                    logger.error(f"Source path does not exist: {source}")
                     return None
             else:
-                print(f"Error: Invalid source type: {type(source)}")
+                logger.error(f"Invalid source type: {type(source)}")
                 return None
 
         elif loader_mode == "camera_device":
@@ -380,11 +224,11 @@ def create_sequence_loader(
         elif loader_mode == "image_sequence":
             return create_image_sequence_loader(str(source), fps)
         else:
-            print(f"Error: Unknown loader mode: {loader_mode}")
+            logger.error(f"Unknown loader mode: {loader_mode}")
             return None
 
     except Exception as e:
-        print(f"Error creating sequence loader: {e}")
+        logger.error(f"Error creating sequence loader: {e}")
         return None
 
 
@@ -394,17 +238,22 @@ def create_camera_device_loader(device_id: int = 0) -> Optional[BaseLoader]:
         # Try Novitec camera first
         if NOVITEC_AVAILABLE:
             try:
-                loader = NovitecCameraLoader(device_id)
-                print("[OK] Novitec camera loader created")
-                return loader
+                loader = create_novitec_camera_loader(device_id)
+                if loader:
+                    logger.info("Novitec camera loader created")
+                    return loader
+                else:
+                    logger.warning("Novitec camera initialization failed, falling back to standard camera")
             except Exception as e:
-                print(f"Novitec 카메라 실패, 일반 카메라로 폴백: {e}")
+                logger.warning(f"Novitec camera failed, falling back to standard camera: {e}")
 
-        else:
-            raise RuntimeError("Novitec Camera Module not available")
+        # Fallback to standard OpenCV camera
+        loader = CameraDeviceLoader(device_id)
+        logger.info("Standard camera loader created")
+        return loader
 
     except Exception as e:
-        print(f"Error creating camera device loader: {e}")
+        logger.error(f"Error creating camera device loader: {e}")
         return None
 
 
@@ -412,10 +261,10 @@ def create_video_file_loader(file_path: str) -> Optional[BaseLoader]:
     """Create video file loader"""
     try:
         loader = VideoFileLoader(file_path)
-        print("[OK] Video file loader created")
+        logger.info("Video file loader created")
         return loader
     except Exception as e:
-        print(f"Error creating video file loader: {e}")
+        logger.error(f"Error creating video file loader: {e}")
         return None
 
 
@@ -425,10 +274,10 @@ def create_image_sequence_loader(
     """Create image sequence loader"""
     try:
         loader = ImageSequenceLoader(sequence_path, fps)
-        print("[OK] Image sequence loader created")
+        logger.info("Image sequence loader created")
         return loader
     except Exception as e:
-        print(f"Error creating image sequence loader: {e}")
+        logger.error(f"Error creating image sequence loader: {e}")
         return None
 
 

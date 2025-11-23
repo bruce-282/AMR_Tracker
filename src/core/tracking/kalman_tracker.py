@@ -5,10 +5,14 @@ This module provides a Kalman filter-based tracker for tracking objects
 with position, velocity, and orientation.
 """
 
-import cv2
-import numpy as np
+import logging
 from collections import deque
 from typing import List, Optional, Dict, Tuple
+
+import cv2
+import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class KalmanTracker:
@@ -149,9 +153,7 @@ class KalmanTracker:
             # Initialize last center for jump detection
             self.last_center = (cx, cy)
 
-            cx_mm = cx * self.pixel_size
-            cy_mm = cy * self.pixel_size
-            print(f"[INIT] Track {self.track_id} - INITIALIZED at pos=({cx:.1f}, {cy:.1f}) / ({cx_mm:.1f}mm, {cy_mm:.1f}mm)")
+            logger.debug(f"Track {self.track_id} initialized at ({cx:.1f}, {cy:.1f}) px")
 
     def update(
         self,
@@ -180,19 +182,7 @@ class KalmanTracker:
         # Prediction step
         self.kf.predict()
 
-        # DEBUG: Monitor prediction state
         state_pre = self.kf.statePre.flatten()
-        # Calculate mm values for display only
-        pos_x_mm = state_pre[0] * self.pixel_size
-        pos_y_mm = state_pre[1] * self.pixel_size
-        vel_x_mm = state_pre[3] * self.pixel_size
-        vel_y_mm = state_pre[4] * self.pixel_size
-        # print(
-        #     f"[PRED] Track {self.track_id} - PREDICTION: pos=({state_pre[0]:.1f}, {state_pre[1]:.1f}) / ({pos_x_mm:.1f}mm, {pos_y_mm:.1f}mm), "
-        #     f"vel=({state_pre[3]:.1f}, {state_pre[4]:.1f}) / ({vel_x_mm:.2f}mm/f, {vel_y_mm:.2f}mm/f), theta={state_pre[2]:.1f}"
-        # )
-
-        # Initialize oriented_bbox
         oriented_bbox = None
 
         if bbox is not None:
@@ -229,10 +219,9 @@ class KalmanTracker:
             if self.last_center is not None:
                 # Check if measured center jumped too much from predicted position
                 if center_jump_distance > jump_threshold:
-                    print(
-                        f"[WARN] Track {self.track_id} - Center jump detected: "
-                        f"distance={center_jump_distance:.1f}px > threshold={jump_threshold:.1f}px "
-                        f"(bbox_size={bbox_size:.1f}px). Using prediction only for this frame."
+                    logger.warning(
+                        f"Track {self.track_id}: Center jump detected "
+                        f"({center_jump_distance:.1f}px > {jump_threshold:.1f}px), using prediction only"
                     )
                     use_measurement = False
                     self.use_prediction_only = True
@@ -247,15 +236,8 @@ class KalmanTracker:
             
             # Use velocity-based corrected position if measurement is unreliable
             if not use_measurement:
-                # Use predicted position (already includes velocity-based prediction)
-                # This frame only - next frame will re-evaluate
                 cx = predicted_cx
                 cy = predicted_cy
-                # print(
-                #     f"[PRED] Track {self.track_id} - Using predicted position: "
-                #     f"({cx:.1f}, {cy:.1f}) with velocity ({predicted_vx:.1f}, {predicted_vy:.1f})"
-                # )
-                # Don't update last_center when using prediction - keep previous valid center
             else:
                 # Use measured position (from mask-based oriented_box_info)
                 # This is a valid detection - update last_center and return to normal mode
@@ -301,27 +283,8 @@ class KalmanTracker:
                     # This maintains prediction-only mode
                     self.kf.statePost = self.kf.statePre.copy()
 
-                # DEBUG: Monitor correction state
-                state_post = self.kf.statePost.flatten()
-                # Calculate mm values for display only
-                pos_x_mm = state_post[0] * self.pixel_size
-                pos_y_mm = state_post[1] * self.pixel_size
-                vel_x_mm = state_post[3] * self.pixel_size
-                vel_y_mm = state_post[4] * self.pixel_size
-                # mode_str = "PREDICTION-ONLY" if not use_measurement else "CORRECTION"
-                # print(
-                #     f"Track {self.track_id} - {mode_str}: pos=({state_post[0]:.1f}, {state_post[1]:.1f}) / ({pos_x_mm:.1f}mm, {pos_y_mm:.1f}mm), "
-                #     f"vel=({state_post[3]:.1f}, {state_post[4]:.1f}) / ({vel_x_mm:.2f}mm/f, {vel_y_mm:.2f}mm/f), theta={state_post[2]:.1f}"
-                # )
-                if use_measurement:
-                    measured_cx_mm = measured_cx * self.pixel_size
-                    measured_cy_mm = measured_cy * self.pixel_size
-                    # print(
-                    #     f"Track {self.track_id} - MEASUREMENT: pos=({measured_cx:.1f}, {measured_cy:.1f}) / ({measured_cx_mm:.1f}mm, {measured_cy_mm:.1f}mm), theta={theta:.1f}"
-                    # )
-
             except cv2.error as e:
-                print(f"[WARN] Kalman filter correction failed: {e}")
+                logger.warning(f"Kalman filter correction failed: {e}")
                 # Skip this update if correction fails
 
             # Apply velocity damping when position is nearly stationary
@@ -365,16 +328,9 @@ class KalmanTracker:
             # No detection, increment frames since detection
             self.frames_since_detection += 1
 
-            # DEBUG: Monitor prediction-only state
             state_post = self.kf.statePost.flatten()
-            # Calculate mm values for display only
-            pos_x_mm = state_post[0] * self.pixel_size
-            pos_y_mm = state_post[1] * self.pixel_size
-            vel_x_mm = state_post[3] * self.pixel_size
-            vel_y_mm = state_post[4] * self.pixel_size
-            print(
-                f"Track {self.track_id} - PREDICTION ONLY: pos=({state_post[0]:.1f}, {state_post[1]:.1f}) / ({pos_x_mm:.1f}mm, {pos_y_mm:.1f}mm), "
-                f"vel=({state_post[3]:.1f}, {state_post[4]:.1f}) / ({vel_x_mm:.2f}mm/f, {vel_y_mm:.2f}mm/f), theta={state_post[2]:.1f}"
+            logger.debug(
+                f"Track {self.track_id} prediction only: pos=({state_post[0]:.1f}, {state_post[1]:.1f})"
             )
 
         # Extract state
@@ -502,7 +458,7 @@ class KalmanTracker:
             return angle
 
         except Exception as e:
-            print(f"Orientation detection failed: {e}")
+            logger.warning(f"Orientation detection failed: {e}")
             return None
 
     def handle_angle_continuity(self, new_angle):
@@ -630,18 +586,6 @@ class KalmanTracker:
                                 2,
                                 tipLength=0.2,
                             )
-
-                            # Show detected angle
-                            detected_text = f"Det: {detected_angle_deg:.1f}°"
-                            # cv2.putText(
-                            #     img_copy,
-                            #     detected_text,
-                            #     (cx + 20, cy + 40),
-                            #     cv2.FONT_HERSHEY_SIMPLEX,
-                            #     font_scale * 0.6,
-                            #     (0, 0, 255),
-                            #     thickness,
-                            # )
                 except Exception as e:
                     pass  # Skip if detection fails
 
@@ -650,59 +594,6 @@ class KalmanTracker:
             pos_x = results["position"]["x"]
             pos_y = results["position"]["y"]
             track_id = results.get("track_id", "?")
-
-            # Create multi-line display
-            display_text = f"ID:{track_id} ({pos_x:.0f},{pos_y:.0f})"
-            speed_text = f"Speed: {speed_mms:.1f}mm/s"
-            
-            # font_scale and thickness are already calculated at the beginning of the method
-
-            # Draw main info (ID and position)
-            # cv2.putText(
-            #     img_copy,
-            #     display_text,
-            #     (x, y - int(50 * font_scale)),
-            #     cv2.FONT_HERSHEY_SIMPLEX,
-            #     font_scale,
-            #     self.color,
-            #     thickness,
-            # )
-
-            # # Draw speed info below
-            # cv2.putText(
-            #     img_copy,
-            #     speed_text,
-            #     (x, y - int(25 * font_scale)),
-            #     cv2.FONT_HERSHEY_SIMPLEX,
-            #     font_scale,
-            #     self.color,
-            #     thickness,
-            # )
-
-            # # 클래스 이름 표시 (추적 결과에서 클래스 정보 가져오기)
-            # if "class_name" in results:
-            #     class_text = f"Class: {results['class_name']}"
-            #     cv2.putText(
-            #         img_copy,
-            #         class_text,
-            #         (x, y - int(60 * font_scale)),
-            #         cv2.FONT_HERSHEY_SIMPLEX,
-            #         font_scale,
-            #         (0, 255, 255),  # 노란색
-            #         thickness,
-            #     )
-            # else:
-            #     # 디버깅용 - 클래스 정보가 없는 경우
-            #     debug_text = "Class: N/A"
-            #     cv2.putText(
-            #         img_copy,
-            #         debug_text,
-            #         (x, y - int(60 * font_scale)),
-            #         cv2.FONT_HERSHEY_SIMPLEX,
-            #         font_scale,
-            #         (0, 0, 255),  # 빨간색
-            #         thickness,
-            #     )
 
         return img_copy
 

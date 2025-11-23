@@ -30,7 +30,34 @@ class MeasurementConfig:
     pixel_size: float = 1.0  # pixel size in mm
 
     # AGV types and their known heights
-    agv_heights = {"small": 200, "medium": 300, "large": 400}  # mm  # mm  # mm
+    agv_heights = {"small": 200, "medium": 300, "large": 400}  # mm
+
+
+@dataclass
+class TrackingConfig:
+    """Tracking configuration parameters."""
+
+    # Speed thresholds
+    speed_threshold_pix_per_frame: float = 5.0  # tracking stops when speed exceeds this
+    speed_near_zero_threshold: float = 3.0  # speed considered near zero below this
+    speed_zero_frames_threshold: int = 10  # frames before sending response when speed is near zero
+
+    # Detection thresholds
+    detection_loss_threshold_frames: int = 30  # frames before tracker is considered lost
+    max_frames_lost: int = 500  # frames before removing tracker
+
+    # Trajectory settings
+    trajectory_max_frames: int = 100  # trajectory history buffer size
+    camera2_trajectory_max_frames: int = 50  # trajectory frames for camera 2
+
+    # Kalman filter parameters
+    velocity_damping_threshold: float = 0.5  # pixels - threshold for velocity damping
+    velocity_damping_factor: float = 0.9  # damping factor when stationary
+    velocity_damping_max: float = 5.0  # only damp velocities below this
+
+    # Visualization
+    arrow_length: int = 50  # pixels for orientation arrow
+    base_reference_width: int = 1920  # reference width for font scaling
 
 
 @dataclass
@@ -39,6 +66,7 @@ class SystemConfig:
 
     calibration: CalibrationConfig = None
     measurement: MeasurementConfig = None
+    tracking: TrackingConfig = None
 
     # Display settings
     display_scale: float = 0.5  # scale factor for display window
@@ -53,6 +81,8 @@ class SystemConfig:
             self.calibration = CalibrationConfig()
         if self.measurement is None:
             self.measurement = MeasurementConfig()
+        if self.tracking is None:
+            self.tracking = TrackingConfig()
 
     def save(self, filepath: str):
         """Save configuration to JSON file."""
@@ -68,13 +98,16 @@ class SystemConfig:
         # Create nested objects
         calibration_data = data.get("calibration", {})
         measurement_data = data.get("measurement", {})
+        tracking_data = data.get("tracking", {})
 
         calibration = CalibrationConfig(**calibration_data)
         measurement = MeasurementConfig(**measurement_data)
+        tracking = TrackingConfig(**tracking_data)
 
         return cls(
             calibration=calibration,
             measurement=measurement,
+            tracking=tracking,
             display_scale=data.get("display_scale", 0.5),
             record_video=data.get("record_video", False),
             output_video_path=data.get("output_video_path", "output.mp4"),

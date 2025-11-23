@@ -133,7 +133,6 @@ class VisionServer:
                 
                 if calibration_path and Path(calibration_path).exists():
                     with open(calibration_path, "r") as f:
-                        import json
                         calibration_data = json.load(f)
                     
                     # Initialize size measurement and visualizer if calibration data exists
@@ -417,7 +416,7 @@ class VisionServer:
                         try:
                             response_dict = json.loads(response.decode('utf-8'))
                             self.logger.info(f"Response: {json.dumps(response_dict, indent=2)}")
-                        except:
+                        except (json.JSONDecodeError, UnicodeDecodeError):
                             pass  # If response is not JSON, skip logging
                     except (ConnectionError, OSError) as e:
                         self.logger.warning(f"Connection error while sending response: {e}")
@@ -439,7 +438,7 @@ class VisionServer:
             
             try:
                 client_socket.close()
-            except:
+            except OSError:
                 pass
             self.client_socket = None
             self.client_address = None
@@ -1212,7 +1211,7 @@ class VisionServer:
         window_name = f"Camera {camera_id} - AMR Tracking"
         try:
             cv2.destroyWindow(window_name)
-        except:
+        except cv2.error:
             pass  # Window may not exist
     
     def _start_camera_tracking(self, camera_id: int):
