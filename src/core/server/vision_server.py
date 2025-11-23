@@ -5,6 +5,7 @@ import threading
 import json
 import time
 import logging
+from collections import deque
 from typing import Dict, Optional, Any, Callable, Tuple, List, Union
 from pathlib import Path
 import cv2
@@ -12,11 +13,12 @@ import numpy as np
 
 from .protocol import ProtocolHandler, Command
 from .model_config import ModelConfig
+from .camera_state import CameraState, CameraStateManager
 from src.core.detection import YOLODetector, Detection
 from src.core.tracking import KalmanTracker, associate_detections_to_trackers
 from src.utils.sequence_loader import create_sequence_loader, BaseLoader
 from src.utils.trajectory_repeatability import TrajectoryRepeatability
-from config import SystemConfig
+from config import SystemConfig, TrackingConfig
 
 # Import visualizer
 try:
@@ -34,11 +36,8 @@ LOADER_MODE_MAP = {
     "camera": "camera_device"
 }
 
-SPEED_THRESHOLD_PIX_PER_FRAME = 5.0  # pixels/frame (속도가 이 값보다 크면 tracking loop 종료)
-DETECTION_LOSS_THRESHOLD_FRAMES = 30
-CAMERA2_TRAJECTORY_MAX_FRAMES = 50
-SPEED_NEAR_ZERO_THRESHOLD = 3.0  # pixels/frame (속도가 이 값 이하면 0에 가까운 것으로 간주)
-SPEED_ZERO_FRAMES_THRESHOLD = 10  # 프레임 수 (이 프레임 수 동안 속도가 0에 가까우면 response 전송)
+# Default tracking config (used when config file not loaded)
+DEFAULT_TRACKING_CONFIG = TrackingConfig()
 
 
 class VisionServer:
@@ -153,18 +152,15 @@ class VisionServer:
             except Exception as e:
                 self.logger.warning(f"Error initializing visualization components: {e}")
         
-        # For camera 2: store all frame positions
-        self.camera2_trajectory = []  # List of {"track_idx": int, "x": float, "y": float, "rz": float}
+        # Camera state manager - centralized state management for all cameras
+        self.camera_state_manager = CameraStateManager()
+
+        # Tracking configuration
+        self.tracking_config = self.config.tracking if self.config and self.config.tracking else DEFAULT_TRACKING_CONFIG
+
+        # For camera 2: store all frame positions (using deque for automatic size limit)
+        self.camera2_trajectory = deque(maxlen=self.tracking_config.camera2_trajectory_max_frames * 2)
         self.camera2_trajectory_sent = False  # Flag to prevent duplicate sends in the same cycle
-        
-        # For cameras 1, 3: track speed and detection loss
-        self.camera_speed_history = {}  # camera_id -> list of speeds (mm/s)
-        self.camera_detection_loss_frames = {}  # camera_id -> frames since last detection
-        self.camera_has_reached_speed_threshold = {}  # camera_id -> bool (speed > 1 mm/s)
-        self.camera_speed_near_zero_frames = {}  # camera_id -> frames with speed near zero (for response condition)
-        
-        # Track if response has been sent for cameras 1, 3 (to avoid sending twice)
-        self.camera_response_sent = {}  # {camera_id: bool}
         
         # Camera connection status
         self.camera_status = {1: False, 2: False, 3: False}
@@ -212,14 +208,10 @@ class VisionServer:
         """Reset camera state for restart (cameras 1, 3)."""
         if camera_id in self.latest_detections:
             del self.latest_detections[camera_id]
-        if camera_id in self.camera_speed_history:
-            self.camera_speed_history[camera_id] = []
-        if camera_id in self.camera_detection_loss_frames:
-            self.camera_detection_loss_frames[camera_id] = 0
-        if camera_id in self.camera_speed_near_zero_frames:
-            self.camera_speed_near_zero_frames[camera_id] = 0
-        if camera_id in self.camera_response_sent:
-            del self.camera_response_sent[camera_id]
+        # Reset state via CameraStateManager
+        state = self.camera_state_manager.get(camera_id)
+        if state:
+            state.reset()
     
     def _send_response_to_client(self, cmd: int, success: bool, 
                                   data: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
@@ -248,17 +240,16 @@ class VisionServer:
             self.trackers[camera_id] = {}
             self.next_track_ids[camera_id] = track_id + 1
             self.frame_numbers[camera_id] = 0
-        
+
         tracker = self._create_tracker(camera_id, track_id, fps)
         self.trackers[camera_id][track_id] = tracker
-        
-        # Initialize speed tracking for cameras 1, 3
-        if camera_id in [1, 3]:
-            self.camera_speed_history[camera_id] = []
-            self.camera_detection_loss_frames[camera_id] = 0
-            self.camera_has_reached_speed_threshold[camera_id] = False
-            self.camera_speed_near_zero_frames[camera_id] = 0
-        
+
+        # Initialize camera state via CameraStateManager
+        state = self.camera_state_manager.get_or_create(camera_id)
+        state.tracker = tracker
+        state.next_track_id = track_id + 1
+        state.reset()  # Clear any previous state
+
         self.logger.info(
             f"Camera {camera_id}: Tracker created (track_id={track_id}, "
             f"fps={fps:.2f}, pixel_size={self._get_pixel_size()})"
@@ -291,10 +282,311 @@ class VisionServer:
         vy = state[4]  # velocity y (pixels/frame)
         # Return speed in pixels/frame (no fps multiplication)
         return np.sqrt(vx**2 + vy**2)
-    
+
+    def _update_trackers(
+        self,
+        camera_id: int,
+        trackers: Dict[int, KalmanTracker],
+        detections: List[Detection],
+        frame: np.ndarray,
+        frame_number: int,
+        frame_timestamp: float,
+        loader: BaseLoader
+    ) -> List[Dict]:
+        """Update existing trackers and create new ones for unassigned detections.
+
+        Returns:
+            List of tracking results for this frame.
+        """
+        tracking_results = []
+        used_detections = set()
+        max_association_distance = 500  # pixels
+
+        # Update existing trackers with best matching detections
+        for track_id, tracker in list(trackers.items()):
+            best_detection_idx = None
+            best_distance = float('inf')
+
+            # Find best matching detection for this tracker
+            tracker_state = tracker.kf.statePost.flatten()
+            tracker_pos = np.array([tracker_state[0], tracker_state[1]])
+
+            for i, detection in enumerate(detections):
+                if i in used_detections:
+                    continue
+
+                detection_center = np.array(detection.get_center())
+                distance = np.linalg.norm(tracker_pos - detection_center)
+
+                if distance < best_distance and distance < max_association_distance:
+                    best_distance = distance
+                    best_detection_idx = i
+
+            if best_detection_idx is not None:
+                detection = detections[best_detection_idx]
+                tracking_result = tracker.update(
+                    frame,
+                    detection.bbox,
+                    frame_number=frame_number,
+                    orientation=detection.get_orientation(),
+                    timestamp=frame_timestamp,
+                )
+                tracking_result["track_id"] = track_id
+                tracking_result["class_name"] = getattr(detection, "class_name", "Unknown")
+                tracking_results.append(tracking_result)
+                used_detections.add(best_detection_idx)
+            else:
+                # No detection found, predict only
+                tracking_result = tracker.update(
+                    frame,
+                    None,
+                    frame_number=frame_number,
+                    timestamp=frame_timestamp
+                )
+                tracking_result["track_id"] = track_id
+                tracking_results.append(tracking_result)
+
+        # Create new trackers for unassigned detections
+        for i, detection in enumerate(detections):
+            if i in used_detections:
+                continue
+
+            # Look for uninitialized tracker (state at origin)
+            tracker = None
+            track_id = None
+            for existing_track_id, existing_tracker in trackers.items():
+                state = existing_tracker.kf.statePost.flatten()
+                if state[0] == 0.0 and state[1] == 0.0 and state[2] == 0.0:
+                    tracker = existing_tracker
+                    track_id = existing_track_id
+                    break
+
+            # Create new tracker if no uninitialized one found
+            if tracker is None:
+                track_id = self.next_track_ids[camera_id]
+                self.next_track_ids[camera_id] += 1
+                fps = self._get_fps_from_loader(loader)
+                tracker = self._create_tracker(camera_id, track_id, fps)
+                trackers[track_id] = tracker
+
+            # Initialize tracker with detection
+            tracker.initialize_with_detection(detection.bbox)
+
+            # Update with orientation if available
+            if detection.get_orientation() is not None:
+                state = tracker.kf.statePost.flatten()
+                state[2] = detection.get_orientation()
+                tracker.kf.statePost = state.reshape(-1, 1)
+
+            tracking_result = tracker.update(
+                frame,
+                detection.bbox,
+                frame_number=frame_number,
+                orientation=detection.get_orientation(),
+                timestamp=frame_timestamp,
+            )
+            tracking_result["track_id"] = track_id
+            tracking_result["class_name"] = getattr(detection, "class_name", "Unknown")
+            tracking_results.append(tracking_result)
+
+        return tracking_results
+
+    def _handle_camera_1_3_tracking(
+        self,
+        camera_id: int,
+        trackers: Dict[int, KalmanTracker],
+        detections: List[Detection],
+        tracking_results: List[Dict],
+        frame: np.ndarray,
+        cam_state: CameraState
+    ) -> bool:
+        """Handle camera 1, 3 specific tracking logic.
+
+        Returns:
+            True if tracking should continue, False if should break.
+        """
+        # Store detection
+        if detections:
+            self.latest_detections[camera_id] = detections[0]
+
+        # Get tracking config thresholds
+        speed_near_zero_thresh = self.tracking_config.speed_near_zero_threshold
+        speed_zero_frames_thresh = self.tracking_config.speed_zero_frames_threshold
+        speed_thresh = self.tracking_config.speed_threshold_pix_per_frame
+
+        if not tracking_results:
+            return True
+
+        tracker = next(iter(trackers.values())) if trackers else None
+        if not tracker:
+            return True
+
+        speed_pix_per_frame = self._calculate_speed_pix_per_frame(tracker)
+        cam_state.update_speed(speed_pix_per_frame)
+
+        self.logger.info(
+            f"Camera {camera_id}: Speed near zero check - "
+            f"speed={abs(speed_pix_per_frame):.3f} pix/frame, "
+            f"threshold={speed_near_zero_thresh}, "
+            f"count={cam_state.speed_near_zero_frames}/{speed_zero_frames_thresh}, "
+            f"response_sent={cam_state.response_sent}, "
+            f"has_detection={camera_id in self.latest_detections}"
+        )
+
+        # Check if speed is near zero
+        if abs(speed_pix_per_frame) <= speed_near_zero_thresh:
+            cam_state.speed_near_zero_frames += 1
+
+            # Send response if speed has been near zero for threshold frames
+            if (cam_state.speed_near_zero_frames >= speed_zero_frames_thresh and
+                not cam_state.response_sent and
+                camera_id in self.latest_detections):
+                self.logger.info(
+                    f"Camera {camera_id}: Sending first detection response - "
+                    f"speed={speed_pix_per_frame:.3f} pix/frame, "
+                    f"count={cam_state.speed_near_zero_frames}"
+                )
+                self._send_first_detection_response(camera_id, self.latest_detections[camera_id], frame)
+                cam_state.speed_near_zero_frames = 0
+        else:
+            if cam_state.speed_near_zero_frames > 0:
+                self.logger.debug(
+                    f"Camera {camera_id}: Speed not near zero - "
+                    f"speed={speed_pix_per_frame:.3f} pix/frame > threshold={speed_near_zero_thresh}, "
+                    f"resetting count from {cam_state.speed_near_zero_frames}"
+                )
+            cam_state.speed_near_zero_frames = 0
+
+        # Check if speed threshold reached (for stopping tracking)
+        if abs(speed_pix_per_frame) > speed_thresh and cam_state.response_sent:
+            self.logger.info(
+                f"Camera {camera_id}: Speed threshold reached "
+                f"({speed_pix_per_frame:.3f} pix/frame > {speed_thresh} pix/frame). "
+                f"Stopping camera {camera_id} tracking loop."
+            )
+            self._start_next_camera_after_1_3(camera_id)
+            return False  # Break tracking loop
+
+        return True  # Continue tracking
+
+    def _start_next_camera_after_1_3(self, camera_id: int):
+        """Start next camera after camera 1 or 3 finishes tracking."""
+        if camera_id == 1:
+            # Camera 1 -> Start camera 2
+            self.logger.info("Camera 1: Starting camera 2 tracking loop.")
+            if 2 not in self.tracking_threads or not self.tracking_threads[2].is_alive():
+                product_model_name = self.model_config.get_selected_model()
+                if self._ensure_camera_initialized(2, product_model_name):
+                    self.camera2_trajectory.clear()
+                    cam2_state = self.camera_state_manager.get_or_create(2)
+                    cam2_state.reset_detection_loss()
+                    self.camera2_trajectory_sent = False
+                    if self.visualizer is not None and 0 in self.visualizer.track_trajs:
+                        self.visualizer.track_trajs[0] = []
+                    self._start_camera_tracking(2)
+                    self.logger.info("Camera 2 tracking thread started")
+        elif camera_id == 3:
+            # Camera 3 -> Start camera 1 (cycle)
+            self.logger.info("Camera 3: Starting camera 1 tracking loop again (infinite cycle).")
+            self._reset_camera_state(1)
+            if self.visualizer is not None and 0 in self.visualizer.track_trajs:
+                self.visualizer.track_trajs[0] = []
+            if 1 not in self.tracking_threads or not self.tracking_threads[1].is_alive():
+                if 1 in self.camera_loaders and 1 in self.trackers:
+                    self._start_camera_tracking(1)
+                    self.logger.info("Camera 1 tracking thread started (cycle restarted)")
+                else:
+                    self.logger.warning("Camera 1 not initialized, cannot start tracking")
+
+    def _handle_camera_2_tracking(
+        self,
+        camera_id: int,
+        trackers: Dict[int, KalmanTracker],
+        tracking_results: List[Dict],
+        has_detection: bool,
+        vis_frame_original: np.ndarray,
+        detections: List[Detection],
+        cam_state: CameraState
+    ) -> bool:
+        """Handle camera 2 specific tracking logic.
+
+        Returns:
+            True if tracking should continue, False if should break.
+        """
+        detection_loss_thresh = self.tracking_config.detection_loss_threshold_frames
+        trajectory_max_frames = self.tracking_config.camera2_trajectory_max_frames
+
+        if tracking_results:
+            tracker = next(iter(trackers.values())) if trackers else None
+            if tracker:
+                kf_state = tracker.kf.statePost.flatten()
+                pixel_size = self.config.measurement.pixel_size if self.config else 1.0
+                x_mm = kf_state[0] * pixel_size
+                y_mm = kf_state[1] * pixel_size
+                rz_deg = kf_state[2]
+
+                trajectory_index = len(self.camera2_trajectory)
+                self.camera2_trajectory.append({
+                    "track_idx": trajectory_index,
+                    "x": round(float(x_mm), 3),
+                    "y": round(float(y_mm), 3),
+                    "rz": round(float(rz_deg), 3)
+                })
+
+        # Check if detection lost
+        if not has_detection:
+            cam_state.increment_detection_loss()
+
+        # Check if should send trajectory data
+        should_send_trajectory = False
+        reason = ""
+        if not has_detection and cam_state.detection_loss_frames >= detection_loss_thresh:
+            should_send_trajectory = True
+            reason = f"detection lost for {detection_loss_thresh}+ frames"
+        elif len(self.camera2_trajectory) >= trajectory_max_frames:
+            should_send_trajectory = True
+            reason = f"trajectory reached {len(self.camera2_trajectory)} frames (>= {trajectory_max_frames})"
+
+        if should_send_trajectory and len(self.camera2_trajectory) > 0 and not self.camera2_trajectory_sent:
+            self.camera2_trajectory_sent = True
+            self.logger.info(f"Camera 2: {reason}. Sending trajectory data to client ({len(self.camera2_trajectory)} frames).")
+
+            result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
+            self._save_result_image(camera_id, result_image_path, frame=vis_frame_original, detections=detections, tracking_results=tracking_results)
+
+            trajectory_data = list(self.camera2_trajectory)
+            cmd = Command.START_CAM_2
+            if self._send_response_to_client(cmd, success=True, data=trajectory_data):
+                self.logger.info(f"Camera 2 trajectory data sent ({len(trajectory_data)} frames) with result_image")
+
+            self.camera2_trajectory.clear()
+            cam_state.reset_detection_loss()
+
+            # Start camera 3
+            if not self.use_area_scan:
+                self._start_camera_3_after_2()
+
+            self.logger.info("Camera 2: Tracking loop exiting after sending trajectory.")
+            return False  # Break tracking loop
+
+        return True  # Continue tracking
+
+    def _start_camera_3_after_2(self):
+        """Start camera 3 after camera 2 finishes tracking."""
+        self.logger.info("Camera 2: Starting camera 3 tracking loop.")
+        if 3 not in self.tracking_threads or not self.tracking_threads[3].is_alive():
+            self._reset_camera_state(3)
+            if self.visualizer is not None and 0 in self.visualizer.track_trajs:
+                self.visualizer.track_trajs[0] = []
+            if 3 in self.camera_loaders and 3 in self.trackers:
+                self._start_camera_tracking(3)
+            else:
+                self.logger.warning("Camera 3 not initialized, cannot start tracking")
+
     def _send_first_detection_response(self, camera_id: int, detection: Detection, frame: np.ndarray):
         """Send first detection response for cameras 1, 3 (use_area_scan=false)."""
-        if camera_id in self.camera_response_sent:
+        cam_state = self.camera_state_manager.get(camera_id)
+        if cam_state and cam_state.response_sent:
             return  # Already sent
         
         # Get detection data (use detection center, not tracker position, for cameras 1, 3)
@@ -320,7 +612,8 @@ class VisionServer:
             
             # For cameras 1, 3: draw only current point, not trajectory
             draw_trajectory = camera_id not in [1, 3]
-            frame_with_results = self.visualize_results(camera_id, frame.copy(), [detection], tracking_results, draw_trajectory=draw_trajectory)
+            # Note: visualize_results internally copies frame via Visualizer.draw_detections
+            frame_with_results = self.visualize_results(camera_id, frame, [detection], tracking_results, draw_trajectory=draw_trajectory)
             cv2.imwrite(str(result_image_path), frame_with_results)
         except Exception as e:
             self.logger.warning(f"Failed to save result image for camera {camera_id}: {e}")
@@ -336,7 +629,8 @@ class VisionServer:
         cmd = Command.START_CAM_1 + camera_id - 1
         if self._send_response_to_client(cmd, success=True, data=response_data):
             self.logger.info(f"Camera {camera_id}: First detection response sent")
-            self.camera_response_sent[camera_id] = True
+            if cam_state:
+                cam_state.response_sent = True
     
     def start(self):
         """Start the TCP/IP server."""
@@ -682,8 +976,9 @@ class VisionServer:
             self.vision_active = False
             self.logger.info("END VISION command received")
             self._stop_all_cameras()
-            self.camera_response_sent = {} 
-            
+            # Reset all camera states
+            self.camera_state_manager.reset_all()
+
             return self.protocol.create_response(
                 Command.END_VISION,  # cmd: 2
                 success=True
@@ -822,172 +1117,77 @@ class VisionServer:
         # Client can check camera status via START CAM response
     
     def _tracking_loop(self, camera_id: int):
-        """Main tracking loop for camera."""
+        """Main tracking loop for camera.
+
+        Refactored to use helper methods for better readability and maintainability.
+        """
         loader = self.camera_loaders.get(camera_id)
         if not loader:
             return
-        
+
         trackers = self.trackers[camera_id]
         frame_number = 0
-        
+
         self.logger.info(f"Camera {camera_id} tracking started")
-        
+
         while self.vision_active and camera_id in self.camera_loaders:
             try:
                 ret, frame = loader.read()
                 if not ret:
                     time.sleep(0.1)
                     continue
-                
+
                 frame_number += 1
                 self.frame_numbers[camera_id] = frame_number
-                
-                # Get frame timestamp (use current time, or from loader if available)
+
+                # Get frame timestamp
                 frame_timestamp = time.time()
                 if hasattr(loader, 'get_timestamp'):
                     loader_timestamp = loader.get_timestamp()
                     if loader_timestamp is not None:
                         frame_timestamp = loader_timestamp
-                
+
                 # Detect objects
                 detections = self.detector.detect(
                     frame,
                     frame_number=frame_number,
                     timestamp=frame_timestamp
                 )
-                
-                # Store latest detection (for cameras 1 and 3, or when tracker not initialized)
-                # Note: For cameras 1, 3 with use_area_scan=false, this is handled in camera-specific logic below
+
                 has_detection = len(detections) > 0
+                cam_state = self.camera_state_manager.get_or_create(camera_id)
+
+                # Update detection state
                 if has_detection:
-                    # Only update if not already handled in camera-specific logic
                     if not (not self.use_area_scan and camera_id in [1, 3]):
-                        self.latest_detections[camera_id] = detections[0]  # Use first detection
-                    # Reset detection loss counter
+                        self.latest_detections[camera_id] = detections[0]
                     if camera_id in [1, 3] and not self.use_area_scan:
-                        self.camera_detection_loss_frames[camera_id] = 0
+                        cam_state.reset_detection_loss()
                 else:
-                    # Increment detection loss counter for cameras 1, 3
                     if camera_id in [1, 3] and not self.use_area_scan:
-                        if camera_id not in self.camera_detection_loss_frames:
-                            self.camera_detection_loss_frames[camera_id] = 0
-                        self.camera_detection_loss_frames[camera_id] += 1
-                
-                # Track objects
-                tracking_results = []
-                used_detections = set()
-                
-                # Update existing trackers
-                for track_id, tracker in list(trackers.items()):
-                    # Find best matching detection
-                    best_detection_idx = None
-                    best_distance = float('inf')
-                    
-                    for i, detection in enumerate(detections):
-                        if i in used_detections:
-                            continue
-                        
-                        # Calculate distance
-                        tracker_state = tracker.kf.statePost.flatten()
-                        tracker_pos = (tracker_state[0], tracker_state[1])
-                        detection_center = detection.get_center()
-                        distance = np.sqrt(
-                            (tracker_pos[0] - detection_center[0]) ** 2 +
-                            (tracker_pos[1] - detection_center[1]) ** 2
-                        )
-                        
-                        if distance < best_distance and distance < 500:  # Max association distance
-                            best_distance = distance
-                            best_detection_idx = i
-                    
-                    if best_detection_idx is not None:
-                        detection = detections[best_detection_idx]
-                        tracking_result = tracker.update(
-                            frame,
-                            detection.bbox,
-                            frame_number=frame_number,
-                            orientation=detection.get_orientation(),
-                            timestamp=frame_timestamp,  # Pass timestamp
-                        )
-                        tracking_result["track_id"] = track_id
-                        tracking_result["class_name"] = getattr(detection, "class_name", "Unknown")
-                        tracking_results.append(tracking_result)
-                        used_detections.add(best_detection_idx)
-                    else:
-                        # No detection found, predict only
-                        tracking_result = tracker.update(
-                            frame, 
-                            None, 
-                            frame_number=frame_number,
-                            timestamp=frame_timestamp  # Pass timestamp
-                        )
-                        tracking_result["track_id"] = track_id
-                        tracking_results.append(tracking_result)
-                
-                # Create new trackers for unassigned detections
-                for i, detection in enumerate(detections):
-                    if i not in used_detections:
-                        # Check if there's an uninitialized tracker (track_id=0 with state at origin)
-                        tracker = None
-                        track_id = None
-                        
-                        # Look for uninitialized tracker (state is all zeros)
-                        for existing_track_id, existing_tracker in trackers.items():
-                            state = existing_tracker.kf.statePost.flatten()
-                            # Check if tracker is uninitialized (position is at origin)
-                            if state[0] == 0.0 and state[1] == 0.0 and state[2] == 0.0:
-                                tracker = existing_tracker
-                                track_id = existing_track_id
-                                break
-                        
-                        # If no uninitialized tracker found, create new one
-                        if tracker is None:
-                            track_id = self.next_track_ids[camera_id]
-                            self.next_track_ids[camera_id] += 1
-                            
-                            fps = self._get_fps_from_loader(loader)
-                            tracker = self._create_tracker(camera_id, track_id, fps)
-                            trackers[track_id] = tracker
-                        
-                        # Initialize tracker with detection
-                        tracker.initialize_with_detection(detection.bbox)
-                        
-                        # Update with orientation if available
-                        if detection.get_orientation() is not None:
-                            state = tracker.kf.statePost.flatten()
-                            state[2] = detection.get_orientation()
-                            tracker.kf.statePost = state.reshape(-1, 1)
-                        
-                        tracking_result = tracker.update(
-                            frame,
-                            detection.bbox,
-                            frame_number=frame_number,
-                            orientation=detection.get_orientation(),
-                            timestamp=frame_timestamp,  # Pass timestamp
-                        )
-                        tracking_result["track_id"] = track_id
-                        tracking_result["class_name"] = getattr(detection, "class_name", "Unknown")
-                        tracking_results.append(tracking_result)
-                
-                # Visualize and display tracking window
+                        cam_state.increment_detection_loss()
+
+                # Update trackers using helper method
+                tracking_results = self._update_trackers(
+                    camera_id, trackers, detections, frame,
+                    frame_number, frame_timestamp, loader
+                )
+
+                # Visualize results
                 vis_frame = self.visualize_results(camera_id, frame, detections, tracking_results)
-                
-                # Store original vis_frame before resize (for saving image)
-                vis_frame_original = vis_frame.copy()
-                
-                # Resize window if too large (same as main.py)
+                vis_frame_original = vis_frame  # Keep reference for camera 2
+
+                # Resize for display if needed
                 height, width = vis_frame.shape[:2]
                 if width > 1280 or height > 720:
                     scale = min(1280 / width, 720 / height)
-                    new_width = int(width * scale)
-                    new_height = int(height * scale)
-                    vis_frame = cv2.resize(vis_frame, (new_width, new_height))
-                
+                    vis_frame = cv2.resize(vis_frame, (int(width * scale), int(height * scale)))
+
                 # Show tracking window
                 window_name = f"Camera {camera_id} - AMR Tracking"
                 cv2.imshow(window_name, vis_frame)
-                
-                # Handle key press (non-blocking)
+
+                # Handle key press
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     self.logger.info(f"Camera {camera_id}: 'q' pressed, stopping tracking")
@@ -997,203 +1197,25 @@ class VisionServer:
                     cv2.imwrite(snapshot_path, vis_frame)
                     self.logger.info(f"Camera {camera_id}: Snapshot saved: {snapshot_path}")
                 
-                # Camera-specific logic
+                # Camera-specific logic using helper methods
                 if not self.use_area_scan:
-                    # Cameras 1, 3: track speed and handle detection loss
                     if camera_id in [1, 3]:
-                        # Store detection
-                        if detections:
-                            self.latest_detections[camera_id] = detections[0]
-                        
-                        # Check speed and send response when speed is near zero for threshold frames
-                        if tracking_results:
-                            tracker = next(iter(trackers.values())) if trackers else None
-                            if tracker:
-                                speed_pix_per_frame = self._calculate_speed_pix_per_frame(tracker)
-                                
-                                # Track speed history
-                                if camera_id not in self.camera_speed_history:
-                                    self.camera_speed_history[camera_id] = []
-                                self.camera_speed_history[camera_id].append(speed_pix_per_frame)
-                                if len(self.camera_speed_history[camera_id]) > 10:
-                                    self.camera_speed_history[camera_id].pop(0)
-                                
-                                self.logger.info(
-                                        f"Camera {camera_id}: Speed near zero check - "
-                                        f"speed={abs(speed_pix_per_frame):.3f} pix/frame, "
-                                        f"threshold={SPEED_NEAR_ZERO_THRESHOLD}, "
-                                        f"count={self.camera_speed_near_zero_frames[camera_id]}/{SPEED_ZERO_FRAMES_THRESHOLD}, "
-                                        f"response_sent={camera_id in self.camera_response_sent}, "
-                                        f"has_detection={camera_id in self.latest_detections}"
-                                )
-                                    
-                                # Check if speed is near zero (in pixels/frame)
-                                if abs(speed_pix_per_frame) <= SPEED_NEAR_ZERO_THRESHOLD:
-                                    # Initialize counter if not exists
-                                    if camera_id not in self.camera_speed_near_zero_frames:
-                                        self.camera_speed_near_zero_frames[camera_id] = 0
-                                    self.camera_speed_near_zero_frames[camera_id] += 1
-                                    
-                         
-                                    # Send response if speed has been near zero for threshold frames
-                                    if (self.camera_speed_near_zero_frames[camera_id] >= SPEED_ZERO_FRAMES_THRESHOLD and
-                                        camera_id not in self.camera_response_sent and
-                                        camera_id in self.latest_detections):
-                                        self.logger.info(
-                                            f"Camera {camera_id}: Sending first detection response - "
-                                            f"speed={speed_pix_per_frame:.3f} pix/frame, "
-                                            f"count={self.camera_speed_near_zero_frames[camera_id]}"
-                                        )
-                                        self._send_first_detection_response(camera_id, self.latest_detections[camera_id], frame)
-                                        self.camera_speed_near_zero_frames[camera_id] = 0
-                                else:
-                                    # Reset counter if speed is not near zero
-                                    if camera_id in self.camera_speed_near_zero_frames:
-                                        if self.camera_speed_near_zero_frames[camera_id] > 0:
-                                            self.logger.debug(
-                                                f"Camera {camera_id}: Speed not near zero - "
-                                                f"speed={speed_pix_per_frame:.3f} pix/frame > "
-                                                f"threshold={SPEED_NEAR_ZERO_THRESHOLD}, "
-                                                f"resetting count from {self.camera_speed_near_zero_frames[camera_id]}"
-                                            )
-                                        self.camera_speed_near_zero_frames[camera_id] = 0
-                                
-                                # Check if speed threshold reached (for stopping tracking)
-                                # Only check if response has already been sent
-                                if (abs(speed_pix_per_frame) > SPEED_THRESHOLD_PIX_PER_FRAME and
-                                    camera_id in self.camera_response_sent):
-                                    self.logger.info(f"Camera {camera_id}: Speed threshold reached ({speed_pix_per_frame:.3f} pix/frame > {SPEED_THRESHOLD_PIX_PER_FRAME} pix/frame). Stopping camera {camera_id} tracking loop.")
-                                    
-                                    # Cameras 1, 3: Response already sent on first detection, no need to send again
-                                    
-                                    # Stop this camera's tracking thread (but keep loader for reuse)
-                                    
-                                    # Camera 1: Start camera 2 tracking immediately
-                                    if camera_id == 1:
-                                        self.logger.info("Camera 1: Starting camera 2 tracking loop.")
-                                        if 2 not in self.tracking_threads or not self.tracking_threads[2].is_alive():
-                                            product_model_name = self.model_config.get_selected_model()
-                                            if self._ensure_camera_initialized(2, product_model_name):
-                                                # Clear camera 2 trajectory before starting
-                                                self.camera2_trajectory = []
-                                                self.camera_detection_loss_frames[2] = 0
-                                                self.camera2_trajectory_sent = False  # Reset flag for new cycle
-                                                # Clear visualizer trajectory for camera 2 (remove previous camera's trajectory)
-                                                if self.visualizer is not None:
-                                                    track_id = 0
-                                                    if track_id in self.visualizer.track_trajs:
-                                                        self.visualizer.track_trajs[track_id] = []
-                                                self._start_camera_tracking(2)
-                                                self.logger.info("Camera 2 tracking thread started")
-                                    
-                                    # Camera 3: Start camera 1 tracking again (infinite loop: 1→2→3→1→...)
-                                    elif camera_id == 3:
-                                        self.logger.info("Camera 3: Starting camera 1 tracking loop again (infinite cycle).")
-                                        # Camera 1 is already initialized from START_VISION
-                                        # Just clear state and start tracking thread
-                                        self._reset_camera_state(1)
-                                        # Clear visualizer trajectory for camera 1 (remove previous camera's trajectory)
-                                        if self.visualizer is not None:
-                                            track_id = 0
-                                            if track_id in self.visualizer.track_trajs:
-                                                self.visualizer.track_trajs[track_id] = []
-                                        if 1 not in self.tracking_threads or not self.tracking_threads[1].is_alive():
-                                            if 1 in self.camera_loaders and 1 in self.trackers:
-                                                self._start_camera_tracking(1)
-                                                self.logger.info("Camera 1 tracking thread started (cycle restarted)")
-                                            else:
-                                                self.logger.warning("Camera 1 not initialized, cannot start tracking")
-                                    
-                                    # Exit tracking loop for this camera
-                                    break
-                    
-                    # Camera 2: store all frame positions
+                        if not self._handle_camera_1_3_tracking(
+                            camera_id, trackers, detections, tracking_results, frame, cam_state
+                        ):
+                            break  # Stop tracking loop
                     elif camera_id == 2:
-                        if tracking_results:
-                            tracker = next(iter(trackers.values())) if trackers else None
-                            if tracker:
-                                state = tracker.kf.statePost.flatten()
-                                pixel_size = self.config.measurement.pixel_size if self.config else 1.0
-                                x_mm = state[0] * pixel_size
-                                y_mm = state[1] * pixel_size
-                                rz_deg = state[2]  # Already in degrees
-                                
-                                # Store trajectory with index (round to 3 decimal places)
-                                trajectory_index = len(self.camera2_trajectory)
-                                self.camera2_trajectory.append({
-                                    "track_idx": trajectory_index,
-                                    "x": round(float(x_mm), 3),
-                                    "y": round(float(y_mm), 3),
-                                    "rz": round(float(rz_deg), 3)  # in degrees
-                                })
-                        
-                        # Check if detection lost for camera 2
-                        if not has_detection:
-                            if camera_id not in self.camera_detection_loss_frames:
-                                self.camera_detection_loss_frames[camera_id] = 0
-                            self.camera_detection_loss_frames[camera_id] += 1
-                        
-                        # Check if should send trajectory data and exit:
-                        # Condition 1: Detection lost for threshold frames
-                        # Condition 2: OR trajectory has max frames
-                        should_send_trajectory = False
-                        if not has_detection and self.camera_detection_loss_frames.get(camera_id, 0) >= DETECTION_LOSS_THRESHOLD_FRAMES:
-                            should_send_trajectory = True
-                            reason = f"detection lost for {DETECTION_LOSS_THRESHOLD_FRAMES}+ frames"
-                        elif len(self.camera2_trajectory) >= CAMERA2_TRAJECTORY_MAX_FRAMES:
-                            should_send_trajectory = True
-                            reason = f"trajectory reached {len(self.camera2_trajectory)} frames (>= {CAMERA2_TRAJECTORY_MAX_FRAMES})"
-                        
-                        if should_send_trajectory and len(self.camera2_trajectory) > 0 and not self.camera2_trajectory_sent:
-                            # Set flag IMMEDIATELY to prevent duplicate sends (even within same frame)
-                            self.camera2_trajectory_sent = True
-                            
-                            self.logger.info(f"Camera 2: {reason}. Sending trajectory data to client ({len(self.camera2_trajectory)} frames).")
-                            
-                            # Save result image at the last frame before sending trajectory data
-                            # Use original vis_frame (before resize) to match camera 1, 3 image size
-                            result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
-                            self._save_result_image(camera_id, result_image_path, frame=vis_frame_original, detections=detections, tracking_results=tracking_results)
-                            
-                            # Send trajectory data directly from tracking loop
-                            # Protocol: {cmd: 4, success: bool, data: array<object>}
-                            trajectory_data = self.camera2_trajectory.copy()
-                            cmd = Command.START_CAM_2  # cmd: 4 for camera 2
-                            
-                            # Send trajectory array directly (without trajectory key wrapper)
-                            # result_image is saved but not included in response (as per protocol)
-                            if self._send_response_to_client(cmd, success=True, data=trajectory_data):
-                                self.logger.info(f"Camera 2 trajectory data sent ({len(trajectory_data)} frames) with result_image")
-                            
-                            # Clear trajectory after sending
-                            self.camera2_trajectory = []
-                            self.camera_detection_loss_frames[camera_id] = 0
-                            
-                            # Start camera 3 tracking after camera 2 exits (only when use_area_scan=false)
-                            if not self.use_area_scan:
-                                self.logger.info("Camera 2: Starting camera 3 tracking loop.")
-                                if 3 not in self.tracking_threads or not self.tracking_threads[3].is_alive():
-                                    self._reset_camera_state(3)
-                                    # Clear visualizer trajectory for camera 3 (remove previous camera's trajectory)
-                                    if self.visualizer is not None:
-                                        track_id = 0
-                                        if track_id in self.visualizer.track_trajs:
-                                            self.visualizer.track_trajs[track_id] = []
-                                    if 3 in self.camera_loaders and 3 in self.trackers:
-                                        self._start_camera_tracking(3)
-                                    else:
-                                        self.logger.warning("Camera 3 not initialized, cannot start tracking")
-                            
-                            # Exit tracking loop immediately after sending trajectory
-                            # This prevents duplicate sends in the same cycle
-                            self.logger.info(f"Camera 2: Tracking loop exiting after sending trajectory.")
-                            break
+                        if not self._handle_camera_2_tracking(
+                            camera_id, trackers, tracking_results, has_detection,
+                            vis_frame_original, detections, cam_state
+                        ):
+                            break  # Stop tracking loop
                 
                 # Clean up lost trackers
-                trackers_to_remove = []
-                for track_id, tracker in trackers.items():
-                    if tracker.is_lost(max_frames_lost=30):
-                        trackers_to_remove.append(track_id)
+                trackers_to_remove = [
+                    track_id for track_id, tracker in trackers.items()
+                    if tracker.is_lost(max_frames_lost=self.tracking_config.detection_loss_threshold_frames)
+                ]
                 
                 for track_id in trackers_to_remove:
                     del trackers[track_id]
@@ -1413,7 +1435,8 @@ class VisionServer:
             # Draw tracking results on frame using visualize_results
             # For cameras 1, 3: draw only current point, not trajectory
             draw_trajectory = camera_id not in [1, 3]
-            frame_with_results = self.visualize_results(camera_id, frame.copy(), detections, tracking_results, draw_trajectory=draw_trajectory)
+            # Note: visualize_results internally copies frame via Visualizer.draw_detections
+            frame_with_results = self.visualize_results(camera_id, frame, detections, tracking_results, draw_trajectory=draw_trajectory)
             cv2.imwrite(str(image_path), frame_with_results)
             self.logger.info(f"Result image saved: {image_path}")
         except Exception as e:
