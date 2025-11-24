@@ -331,7 +331,7 @@ class EnhancedAMRTracker:
 
                         # Clean up if tracker is lost
                         if primary_tracker.is_lost(max_frames_lost=500):
-                            print(
+                            logger.info(
                                 f"Removing lost primary tracker ID: {self.primary_track_id}"
                             )
                             del self.trackers[self.primary_track_id]
