@@ -50,9 +50,9 @@ class Detection:
         if xywhr is not None:
             self.oriented_box_info = self._extract_box_from_xywhr(xywhr)
         
-        # If no xywhr, try to extract from mask
         if self.oriented_box_info is None and masks is not None and image_size is not None:
             self.oriented_box_info = self._extract_box_from_mask(image_size)
+            self.logger.info(f"Extracted oriented box from mask: {self.oriented_box_info}")
         
         # Use oriented box if available, otherwise use original bbox
         if self.oriented_box_info is not None:

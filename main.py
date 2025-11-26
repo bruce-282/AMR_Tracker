@@ -76,7 +76,7 @@ class EnhancedAMRTracker:
         )
 
         # Initialize data logger
-        self.data_logger = TrackingDataLogger()
+        #self.data_logger = TrackingDataLogger()
 
         # Initialize components
         self.detector = None
@@ -100,7 +100,7 @@ class EnhancedAMRTracker:
 
                 self.detector = YOLODetector(
                     "weights/zoom1/best.pt",
-                    confidence_threshold=0.2,
+                    confidence_threshold=0.3,
                     device=device,
                     imgsz=640,
                     target_classes=[0, 1],
@@ -121,7 +121,7 @@ class EnhancedAMRTracker:
         else:
             self.trackers = {}
             self.next_track_id = 0
-            self.primary_track_id = None
+            self.track_id = None
             logger.info("Multi-object Kalman filter tracker initialized")
 
         # Initialize additional components if using new modules
@@ -204,11 +204,11 @@ class EnhancedAMRTracker:
             timestamp = time.time()
 
         detections = []
-        if self.detector_type == "yolo":
-            # YOLO detection using YOLODetector
-            detections = self.detector.detect(
+
+        # YOLO detection using YOLODetector
+        detections = self.detector.detect(
                 image=frame, frame_number=frame_number, timestamp=timestamp
-            )
+        )
         return detections
 
     def track_objects(
@@ -221,25 +221,25 @@ class EnhancedAMRTracker:
             # Multi-object detection, but track only the first tracked object
             if len(detections) > 0:
                 # If no primary tracker exists, create one with the best detection
-                if self.primary_track_id is None:
+                if self.track_id is None:
                     # Select the best detection (largest area or highest confidence)
                     best_detection = max(
                         detections, key=lambda d: d.get_area() * d.confidence
                     )
 
                     # Create primary tracker
-                    self.primary_track_id = self.next_track_id
-                    primary_tracker = KalmanTracker(
+                    self.track_id = self.next_track_id
+                    tracker = KalmanTracker(
                         fps=30,
                         pixel_size=self.pixel_size,
-                        track_id=self.primary_track_id,
+                        track_id=self.track_id,
                     )
-                    primary_tracker.initialize_with_detection(best_detection.bbox)
-                    self.trackers[self.primary_track_id] = primary_tracker
+                    tracker.initialize_with_detection(best_detection.bbox)
+                    self.trackers[self.track_id] = tracker
                     self.next_track_id += 1
 
                     # Update with first detection
-                    tracking_result = primary_tracker.update(
+                    tracking_result = tracker.update(
                         frame=frame,
                         bbox=best_detection.bbox,
                         frame_number=best_detection.frame_number,
@@ -248,25 +248,25 @@ class EnhancedAMRTracker:
                     tracking_result["detection_type"] = getattr(
                         best_detection, "class_name", "unknown"
                     )
-                    tracking_result["track_id"] = self.primary_track_id
-                    tracking_result["color"] = primary_tracker.color
+                    tracking_result["track_id"] = self.track_id
+                    tracking_result["color"] = tracker.color
 
                     # Add size measurement if available (only store initial size)
                     if self.size_measurement:
                         size_measurement = self.size_measurement.measure(best_detection)
                         tracking_result["size_measurement"] = size_measurement
-                        primary_tracker.last_size_measurement = size_measurement
-                        primary_tracker.initial_size_measurement = (
+                        tracker.last_size_measurement = size_measurement
+                        tracker.initial_size_measurement = (
                             size_measurement  # Store initial size
                         )
 
                     results.append(tracking_result)
                 else:
                     # Primary tracker exists - use association to match it with a detection
-                    primary_tracker = self.trackers.get(self.primary_track_id)
-                    if primary_tracker is None:
+                    tracker = self.trackers.get(self.track_id)
+                    if tracker is None:
                         # Primary tracker was lost, reset
-                        self.primary_track_id = None
+                        self.track_id = None
                         return results
 
                     # Use IoU + Hungarian algorithm for optimal association
@@ -274,7 +274,7 @@ class EnhancedAMRTracker:
                     matches, unmatched_detections, unmatched_trackers = (
                         associate_detections_to_trackers(
                             detections,
-                            {self.primary_track_id: primary_tracker},
+                            {self.track_id: tracker},
                             iou_threshold=0.3,
                         )
                     )
@@ -282,9 +282,9 @@ class EnhancedAMRTracker:
                     # Update matched tracker (should be primary tracker)
                     matched = False
                     for detection_idx, tracker_id in matches:
-                        if tracker_id == self.primary_track_id:
+                        if tracker_id == self.track_id:
                             detection = detections[detection_idx]
-                            tracking_result = primary_tracker.update(
+                            tracking_result = tracker.update(
                                 frame=frame,
                                 bbox=detection.bbox,
                                 frame_number=detection.frame_number,
@@ -293,13 +293,13 @@ class EnhancedAMRTracker:
                             tracking_result["detection_type"] = getattr(
                                 detection, "class_name", "unknown"
                             )
-                            tracking_result["track_id"] = self.primary_track_id
-                            tracking_result["color"] = primary_tracker.color
+                            tracking_result["track_id"] = self.track_id
+                            tracking_result["color"] = tracker.color
 
                             # Use initial size measurement (don't update)
-                            if primary_tracker.initial_size_measurement is not None:
+                            if tracker.initial_size_measurement is not None:
                                 tracking_result["size_measurement"] = (
-                                    primary_tracker.initial_size_measurement
+                                    tracker.initial_size_measurement
                                 )
 
                             results.append(tracking_result)
@@ -308,34 +308,34 @@ class EnhancedAMRTracker:
 
                     # If no match, predict only (don't create new trackers)
                     if not matched:
-                        tracking_result = primary_tracker.update(
+                        tracking_result = tracker.update(
                             frame=frame, bbox=None, frame_number=frame_number
                         )
                         tracking_result["detection_type"] = "predicted"
-                        tracking_result["track_id"] = self.primary_track_id
-                        tracking_result["color"] = primary_tracker.color
+                        tracking_result["track_id"] = self.track_id
+                        tracking_result["color"] = tracker.color
                         results.append(tracking_result)
 
             else:
                 # No detections: predict with primary tracker
-                if self.primary_track_id is not None:
-                    primary_tracker = self.trackers.get(self.primary_track_id)
-                    if primary_tracker is not None:
-                        tracking_result = primary_tracker.update(
+                if self.track_id is not None:
+                    tracker = self.trackers.get(self.track_id)
+                    if tracker is not None:
+                        tracking_result = tracker.update(
                             frame=frame, bbox=None, frame_number=frame_number
                         )
                         tracking_result["detection_type"] = "predicted"
-                        tracking_result["track_id"] = self.primary_track_id
-                        tracking_result["color"] = primary_tracker.color
+                        tracking_result["track_id"] = self.track_id
+                        tracking_result["color"] = tracker.color
                         results.append(tracking_result)
 
                         # Clean up if tracker is lost
-                        if primary_tracker.is_lost(max_frames_lost=500):
+                        if tracker.is_lost(max_frames_lost=500):
                             logger.info(
-                                f"Removing lost primary tracker ID: {self.primary_track_id}"
+                                f"Removing lost primary tracker ID: {self.track_id}"
                             )
-                            del self.trackers[self.primary_track_id]
-                            self.primary_track_id = None
+                            del self.trackers[self.track_id]
+                            self.track_id = None
 
         elif self.tracker_type == "speed" and ENHANCED_MODULES_AVAILABLE:
             # Use speed tracker (multiple objects)
@@ -501,13 +501,8 @@ def main():
         "--mode",
         type=str,
         choices=["basic", "enhanced"],
-        default="basic",
+        default="enhanced",
         help="System mode: basic (AMR tracker only) or enhanced (AGV measurement system)",
-    )
-    parser.add_argument(
-        "--stationary-mode",
-        action="store_true",
-        help="Stationary mode: only measure position and orientation, skip velocity calculations",
     )
     parser.add_argument(
         "--loader-mode",
@@ -522,8 +517,24 @@ def main():
         default=30,
         help="Frame rate for image sequences (default: 30)",
     )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+        help="Set logging level (default: INFO)",
+    )
 
     args = parser.parse_args()
+    
+    # 로깅 설정 (명령줄 인자로 레벨 설정)
+    log_level = getattr(logging, args.log_level.upper(), logging.INFO)
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    logger.setLevel(log_level)
 
     # Load preset if provided
     if args.preset:
@@ -543,24 +554,24 @@ def main():
         config = None
 
     # Initialize system
-    if args.mode == "basic":
-        logger.info("Running in basic mode...")
-        if config:
-            if isinstance(config, dict):
-                # dict object
-                pixel_size = config["measurement"]["pixel_size"]
-            else:
-                # SystemConfig object
-                pixel_size = config.measurement.pixel_size
-        else:
-            pixel_size = 1.0
-        run_basic_mode(
-            args.source,
-            args.fps,
-            args.loader_mode,
-            pixel_size,
-        )
-    elif args.mode == "enhanced":
+    # if args.mode == "basic":
+    #     logger.info("Running in basic mode...")
+    #     if config:
+    #         if isinstance(config, dict):
+    #             # dict object
+    #             pixel_size = config["measurement"]["pixel_size"]
+    #         else:
+    #             # SystemConfig object
+    #             pixel_size = config.measurement.pixel_size
+    #     else:
+    #         pixel_size = 1.0
+    #     run_basic_mode(
+    #         args.source,
+    #         args.fps,
+    #         args.loader_mode,
+    #         pixel_size,
+    #     )
+    if args.mode == "enhanced":
         if not ENHANCED_MODULES_AVAILABLE:
             logger.error("Enhanced mode requires AGV Measurement System modules")
             return
@@ -592,235 +603,235 @@ def main():
         return
 
 
-def run_basic_mode(
-    video_source,
-    fps=30,
-    mode="auto",
-    pixel_size=1.0,
-):
-    """Run basic multi-object AMR tracker"""
-    import ultralytics
+# def run_basic_mode(
+#     video_source,
+#     fps=30,
+#     mode="auto",
+#     pixel_size=1.0,
+# ):
+#     """Run basic multi-object AMR tracker"""
+#     import ultralytics
 
-    detector = ultralytics.YOLO("weights/zoom1/best.pt")
-    trackers = {}
-    next_track_id = 0
-    data_logger = TrackingDataLogger()
-    logger.info("Basic multi-object AMR tracker initialized")
+#     detector = ultralytics.YOLO("weights/zoom1/best.pt")
+#     trackers = {}
+#     next_track_id = 0
+#     #data_logger = TrackingDataLogger()
+#     logger.info("Basic multi-object AMR tracker initialized")
 
-    # Create sequence loader based on mode
-    if mode == "camera":
-        cap = create_camera_device_loader(int(video_source))
-    elif mode == "video":
-        cap = create_video_file_loader(video_source)
-    elif mode == "sequence":
-        cap = create_image_sequence_loader(video_source, fps)
-    else:  # auto mode
-        cap = create_sequence_loader(video_source, fps)
+#     # Create sequence loader based on mode
+#     if mode == "camera":
+#         cap = create_camera_device_loader(int(video_source))
+#     elif mode == "video":
+#         cap = create_video_file_loader(video_source)
+#     elif mode == "sequence":
+#         cap = create_image_sequence_loader(video_source, fps)
+#     else:  # auto mode
+#         cap = create_sequence_loader(video_source, fps)
 
-    if cap is None:
-        logger.error("Cannot create sequence loader")
-        return
+#     if cap is None:
+#         logger.error("Cannot create sequence loader")
+#         return
 
-    frame_number = 0
-    logger.info("Processing frames... Press 'q' to quit, 's' to save snapshot")
+#     frame_number = 0
+#     logger.info("Processing frames... Press 'q' to quit, 's' to save snapshot")
 
-    classes = range(0, 90, 1)
+#     classes = range(0, 90, 1)
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+#     while True:
+#         ret, frame = cap.read()
+#         if not ret:
+#             break
 
-        # Detection - filter only cars and trucks
-        # COCO class IDs: car=2, truck=7, bus=5
+#         # Detection - filter only cars and trucks
+#         # COCO class IDs: car=2, truck=7, bus=5
 
-        results = detector(
-            frame, classes=[1], imgsz=768, conf=0.88, retina_masks=True, class_id=1
-        )  # Only detect cars and trucks
+#         results = detector(
+#             frame, classes=[0], imgsz=640, conf=0.3, retina_masks=True
+#         )  # Only detect cars and trucks
 
-        # Get all detections
-        detections = []
-        if len(results[0].boxes) > 0:
-            for i, box in enumerate(results[0].boxes.xyxy):
-                x1, y1, x2, y2 = box.cpu().numpy()
-                bbox = [x1, y1, x2 - x1, y2 - y1]
-                confidence = results[0].boxes.conf[i].cpu().numpy()
+#         # Get all detections
+#         detections = []
+#         if len(results[0].boxes) > 0:
+#             for i, box in enumerate(results[0].boxes.xyxy):
+#                 x1, y1, x2, y2 = box.cpu().numpy()
+#                 bbox = [x1, y1, x2 - x1, y2 - y1]
+#                 confidence = results[0].boxes.conf[i].cpu().numpy()
 
-                # 클래스 이름 가져오기
-                class_id = int(results[0].boxes.cls[i].cpu().numpy())
+#                 # 클래스 이름 가져오기
+#                 class_id = int(results[0].boxes.cls[i].cpu().numpy())
 
-                class_name = detector.names[class_id]
-                logger.debug(f"Detected class {class_id}: {class_name}")
-                from src.core.detection import Detection
+#                 class_name = detector.names[class_id]
+#                 logger.debug(f"Detected class {class_id}: {class_name}")
+#                 from src.core.detection import Detection
 
-                detections.append(
-                    Detection(
-                        bbox=bbox,
-                        confidence=float(confidence),
-                        class_id=class_id,
-                        class_name=class_name,
-                        timestamp=time.time(),
-                    )
-                )
+#                 detections.append(
+#                     Detection(
+#                         bbox=bbox,
+#                         confidence=float(confidence),
+#                         class_id=class_id,
+#                         class_name=class_name,
+#                         timestamp=time.time(),
+#                     )
+#                 )
 
-        # Multi-object tracking
-        tracking_results = []
-        used_detections = set()
+#         # Multi-object tracking
+#         tracking_results = []
+#         used_detections = set()
 
-        # Update existing trackers
-        for track_id, tracker in list(trackers.items()):
-            if not detections:
-                break
+#         # Update existing trackers
+#         for track_id, tracker in list(trackers.items()):
+#             if not detections:
+#                 break
 
-            # Find closest detection
-            best_detection_idx = None
-            best_distance = float("inf")
+#             # Find closest detection
+#             best_detection_idx = None
+#             best_distance = float("inf")
 
-            for i, detection in enumerate(detections):
-                if i in used_detections:
-                    continue
+#             for i, detection in enumerate(detections):
+#                 if i in used_detections:
+#                     continue
 
-                bbox = detection.bbox
-                cx, cy = detection.get_center()
+#                 bbox = detection.bbox
+#                 cx, cy = detection.get_center()
 
-                # Get tracker's last position
-                tracker_pos = tracker.kf.statePost[:2].flatten()
-                distance = np.sqrt(
-                    (cx - tracker_pos[0]) ** 2 + (cy - tracker_pos[1]) ** 2
-                )
+#                 # Get tracker's last position
+#                 tracker_pos = tracker.kf.statePost[:2].flatten()
+#                 distance = np.sqrt(
+#                     (cx - tracker_pos[0]) ** 2 + (cy - tracker_pos[1]) ** 2
+#                 )
 
-                if (
-                    distance < best_distance and distance < 100
-                ):  # Max association distance
-                    best_distance = distance
-                    best_detection_idx = i
+#                 if (
+#                     distance < best_distance and distance < 100
+#                 ):  # Max association distance
+#                     best_distance = distance
+#                     best_detection_idx = i
 
-            if best_detection_idx is not None:
-                detection = detections[best_detection_idx]
-                tracking_result = tracker.update(
-                    frame,
-                    detection.bbox,
-                    frame_number=frame_number,
-                    orientation=detection.get_orientation(),
-                )
-                tracking_result["detection_type"] = getattr(
-                    detection, "class_name", "unknown"
-                )
-                tracking_result["track_id"] = track_id
-                tracking_result["color"] = tracker.color
-                # 클래스 정보 추가
-                tracking_result["class_name"] = getattr(
-                    detection, "class_name", "Unknown"
-                )
-                tracking_result["class_id"] = getattr(detection, "class_id", -1)
-                tracking_results.append(tracking_result)
-                used_detections.add(best_detection_idx)
-            else:
-                # No detection found, predict only
-                tracking_result = tracker.update(frame, None, frame_number=frame_number)
-                tracking_result["detection_type"] = "predicted"
-                tracking_result["track_id"] = track_id
-                tracking_result["color"] = tracker.color
-                tracking_results.append(tracking_result)
+#             if best_detection_idx is not None:
+#                 detection = detections[best_detection_idx]
+#                 tracking_result = tracker.update(
+#                     frame,
+#                     detection.bbox,
+#                     frame_number=frame_number,
+#                     orientation=detection.get_orientation(),
+#                 )
+#                 tracking_result["detection_type"] = getattr(
+#                     detection, "class_name", "unknown"
+#                 )
+#                 tracking_result["track_id"] = track_id
+#                 tracking_result["color"] = tracker.color
+#                 # 클래스 정보 추가
+#                 tracking_result["class_name"] = getattr(
+#                     detection, "class_name", "Unknown"
+#                 )
+#                 tracking_result["class_id"] = getattr(detection, "class_id", -1)
+#                 tracking_results.append(tracking_result)
+#                 used_detections.add(best_detection_idx)
+#             else:
+#                 # No detection found, predict only
+#                 tracking_result = tracker.update(frame, None, frame_number=frame_number)
+#                 tracking_result["detection_type"] = "predicted"
+#                 tracking_result["track_id"] = track_id
+#                 tracking_result["color"] = tracker.color
+#                 tracking_results.append(tracking_result)
 
-        # Create new trackers for unassigned detections
-        for i, detection in enumerate(detections):
-            if i not in used_detections:
+#         # Create new trackers for unassigned detections
+#         for i, detection in enumerate(detections):
+#             if i not in used_detections:
 
-                new_tracker = KalmanTracker(
-                    fps=fps,
-                    pixel_size=pixel_size,  # mm 단위로 직접 전달
-                    track_id=next_track_id,
-                )
-                trackers[next_track_id] = new_tracker
+#                 new_tracker = KalmanTracker(
+#                     fps=fps,
+#                     pixel_size=pixel_size,  # mm 단위로 직접 전달
+#                     track_id=next_track_id,
+#                 )
+#                 trackers[next_track_id] = new_tracker
 
-                tracking_result = new_tracker.update(
-                    frame,
-                    detection.bbox,
-                    frame_number=frame_number,
-                    orientation=detection.get_orientation(),
-                )
-                tracking_result["detection_type"] = getattr(
-                    detection, "class_name", "unknown"
-                )
-                tracking_result["track_id"] = next_track_id
-                tracking_result["color"] = new_tracker.color
-                # 클래스 정보 추가
-                tracking_result["class_name"] = getattr(
-                    detection, "class_name", "Unknown"
-                )
-                tracking_result["class_id"] = getattr(detection, "class_id", -1)
-                tracking_results.append(tracking_result)
+#                 tracking_result = new_tracker.update(
+#                     frame,
+#                     detection.bbox,
+#                     frame_number=frame_number,
+#                     orientation=detection.get_orientation(),
+#                 )
+#                 tracking_result["detection_type"] = getattr(
+#                     detection, "class_name", "unknown"
+#                 )
+#                 tracking_result["track_id"] = next_track_id
+#                 tracking_result["color"] = new_tracker.color
+#                 # 클래스 정보 추가
+#                 tracking_result["class_name"] = getattr(
+#                     detection, "class_name", "Unknown"
+#                 )
+#                 tracking_result["class_id"] = getattr(detection, "class_id", -1)
+#                 tracking_results.append(tracking_result)
 
-                next_track_id += 1
+#                 next_track_id += 1
 
-                # Clean up lost trackers (더 관대한 설정)
-        trackers_to_remove = []
-        max_frames_lost = 30  # 30프레임까지 기다림 (약 1초)
-        for track_id, tracker in trackers.items():
-            if tracker.is_lost(max_frames_lost=max_frames_lost):
-                trackers_to_remove.append(track_id)
+#                 # Clean up lost trackers (더 관대한 설정)
+#         trackers_to_remove = []
+#         max_frames_lost = 30  # 30프레임까지 기다림 (약 1초)
+#         for track_id, tracker in trackers.items():
+#             if tracker.is_lost(max_frames_lost=max_frames_lost):
+#                 trackers_to_remove.append(track_id)
 
-        for track_id in trackers_to_remove:
-            logger.debug(f"Removing lost tracker ID: {track_id}")
-            del trackers[track_id]
+#         for track_id in trackers_to_remove:
+#             logger.debug(f"Removing lost tracker ID: {track_id}")
+#             del trackers[track_id]
 
-        # Log tracking data
-        for result in tracking_results:
-            data_logger.log_tracking_result(frame_number, result)
+#         # Log tracking data
+#         # for result in tracking_results:
+#         #     data_logger.log_tracking_result(frame_number, result)
 
-        # Visualize all tracking results
-        vis_frame = frame.copy()
-        for result in tracking_results:
-            if "track_id" in result:
-                track_id = result["track_id"]
-                tracker = trackers.get(track_id)
-                if tracker:
-                    vis_frame = tracker.draw_visualization(vis_frame, result)
+#         # Visualize all tracking results
+#         vis_frame = frame.copy()
+#         for result in tracking_results:
+#             if "track_id" in result:
+#                 track_id = result["track_id"]
+#                 tracker = trackers.get(track_id)
+#                 if tracker:
+#                     vis_frame = tracker.draw_visualization(vis_frame, result)
 
-        # Add frame info
-        if hasattr(cap.loader, "frame_number"):  # Image sequence
-            # 이미지 크기에 따라 텍스트 크기 동적 조정
-            height, width = vis_frame.shape[:2]
-            font_scale = max(0.5, min(2.0, width / 800))  # 800px 기준으로 스케일링
-            thickness = max(1, int(font_scale * 2))
+#         # Add frame info
+#         if hasattr(cap.loader, "frame_number"):  # Image sequence
+#             # 이미지 크기에 따라 텍스트 크기 동적 조정
+#             height, width = vis_frame.shape[:2]
+#             font_scale = max(0.5, min(2.0, width / 800))  # 800px 기준으로 스케일링
+#             thickness = max(1, int(font_scale * 2))
 
-        # Log results
-        if tracking_results and logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f"Frame {frame_number}: {len(tracking_results)} objects tracked")
-            for result in tracking_results:
-                track_id = result.get("track_id", "Unknown")
-                logger.debug(
-                    f"  ID {track_id}: Position ({result['position']['x']:.1f}, {result['position']['y']:.1f}), "
-                    f"Speed: {result['velocity']['linear_speed_mm_per_sec']:.2f} mm/s"
-                )
+#         # Log results
+#         if tracking_results and logger.isEnabledFor(logging.DEBUG):
+#             logger.debug(f"Frame {frame_number}: {len(tracking_results)} objects tracked")
+#             for result in tracking_results:
+#                 track_id = result.get("track_id", "Unknown")
+#                 logger.debug(
+#                     f"  ID {track_id}: Position ({result['position']['x']:.1f}, {result['position']['y']:.1f}), "
+#                     f"Speed: {result['velocity']['linear_speed_mm_per_sec']:.2f} mm/s"
+#                 )
 
-        # 창 크기 조절 (화면이 너무 클 때)
-        height, width = vis_frame.shape[:2]
-        if width > 1280 or height > 720:
-            scale = min(1280 / width, 720 / height)
-            new_width = int(width * scale)
-            new_height = int(height * scale)
-            vis_frame = cv2.resize(vis_frame, (new_width, new_height))
+#         # 창 크기 조절 (화면이 너무 클 때)
+#         height, width = vis_frame.shape[:2]
+#         if width > 1280 or height > 720:
+#             scale = min(1280 / width, 720 / height)
+#             new_width = int(width * scale)
+#             new_height = int(height * scale)
+#             vis_frame = cv2.resize(vis_frame, (new_width, new_height))
 
-        cv2.imshow("AMR Tracking (Basic)", vis_frame)
+#         cv2.imshow("AMR Tracking (Basic)", vis_frame)
 
-        # Handle key press
-        key = cv2.waitKey(1)
-        if key == ord("q"):
-            break
-        elif key == ord("s"):
-            cv2.imwrite(f"snapshot_{frame_number:06d}.png", vis_frame)
-            logger.info(f"Snapshot saved: snapshot_{frame_number:06d}.png")
+#         # Handle key press
+#         key = cv2.waitKey(1)
+#         if key == ord("q"):
+#             break
+#         elif key == ord("s"):
+#             cv2.imwrite(f"snapshot_{frame_number:06d}.png", vis_frame)
+#             logger.info(f"Snapshot saved: snapshot_{frame_number:06d}.png")
 
-        frame_number += 1
+#         frame_number += 1
 
-    cap.release()
-    cv2.destroyAllWindows()
-    logger.info(f"Processed {frame_number} frames")
+#     cap.release()
+#     cv2.destroyAllWindows()
+#     logger.info(f"Processed {frame_number} frames")
 
 
-def run_enhanced_mode(args, video_source, fps=30, mode="auto", pixel_size=1.0):
+def run_enhanced_mode(args, loader_source, fps=30, loader_mode="auto", pixel_size=1.0):
     """Run enhanced AMR system"""
     # Load configuration
     config = None
@@ -840,21 +851,21 @@ def run_enhanced_mode(args, video_source, fps=30, mode="auto", pixel_size=1.0):
     )
 
     # Create sequence loader based on mode
-    if mode == "camera":
-        cap = create_camera_device_loader(int(video_source))
-    elif mode == "video":
-        cap = create_video_file_loader(video_source)
-    elif mode == "sequence":
-        cap = create_image_sequence_loader(video_source, fps)
+    if loader_mode == "camera":
+        cap = create_camera_device_loader(loader_source)
+    elif loader_mode == "video":
+        cap = create_video_file_loader(loader_source)
+    elif loader_mode == "sequence":
+        cap = create_image_sequence_loader(loader_source, fps)
     else:  # auto mode
-        cap = create_sequence_loader(video_source, fps)
+        cap = create_sequence_loader(loader_source, fps)
 
     if cap is None:
         logger.error("Cannot create sequence loader")
         return
 
     frame_number = 0
-    logger.info("Enhanced AMR System running... Press 'q' to quit, 's' to save snapshot")
+    logger.info("AMR System running... Press 'q' to quit, 's' to save snapshot")
 
     while True:
         ret, frame = cap.read()
@@ -870,8 +881,8 @@ def run_enhanced_mode(args, video_source, fps=30, mode="auto", pixel_size=1.0):
         tracking_results = amr_tracker.track_objects(frame, detections, frame_number)
 
         # Log tracking data
-        for result in tracking_results:
-            amr_tracker.data_logger.log_tracking_result(frame_number, result)
+        # for result in tracking_results:
+        #     amr_tracker.data_logger.log_tracking_result(frame_number, result)
 
         # Visualize results
         vis_frame = amr_tracker.visualize_results(frame, detections, tracking_results)
@@ -892,7 +903,7 @@ def run_enhanced_mode(args, video_source, fps=30, mode="auto", pixel_size=1.0):
             vis_frame_window = cv2.resize(vis_frame, (new_width, new_height))
 
         # Show results
-        cv2.imshow("Enhanced AMR Tracking", vis_frame_window)
+        cv2.imshow("AMR Tracking", vis_frame_window)
 
         # Handle key press
         key = cv2.waitKey(1)
@@ -906,7 +917,7 @@ def run_enhanced_mode(args, video_source, fps=30, mode="auto", pixel_size=1.0):
 
     cap.release()
     cv2.destroyAllWindows()
-    logger.info(f"Enhanced AMR System completed. Processed {frame_number} frames")
+    logger.info(f"AMR System completed. Processed {frame_number} frames")
 
 
 if __name__ == "__main__":

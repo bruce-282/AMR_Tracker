@@ -64,35 +64,6 @@ class BaseLoader:
         """Check if loader is connected"""
         return self.is_connected
 
-
-class CameraDeviceLoader(BaseLoader):
-    """Loader for camera devices (webcam, USB camera, etc.)"""
-
-    def __init__(self, device_id: int = 0):
-        super().__init__()
-        self.device_id = device_id
-        self.cap = cv2.VideoCapture(device_id)
-
-        if not self.cap.isOpened():
-            raise RuntimeError(f"Cannot open camera {device_id}")
-
-        self.is_connected = True
-        logger.info(f"Camera device {device_id} opened")
-
-    def read(self):
-        ret, frame = self.cap.read()
-        if ret:
-            self.frame_number += 1
-        return ret, frame
-
-    def release(self):
-        if self.cap:
-            self.cap.release()
-
-    def is_opened(self):
-        return self.cap and self.cap.isOpened()
-
-
 class VideoFileLoader(BaseLoader):
     """Loader for video files"""
 
@@ -248,7 +219,7 @@ def create_camera_device_loader(device_id: int = 0) -> Optional[BaseLoader]:
                 logger.warning(f"Novitec camera failed, falling back to standard camera: {e}")
 
         # Fallback to standard OpenCV camera
-        loader = CameraDeviceLoader(device_id)
+        loader = NovitecCameraLoader(device_id)
         logger.info("Standard camera loader created")
         return loader
 
