@@ -6,31 +6,34 @@ This module provides classes for loading different types of video sequences.
 
 import cv2
 import glob
-import logging
 import os
+import sys
 from pathlib import Path
 from typing import Optional, Union, List
 from enum import Enum
 import time
 
-logger = logging.getLogger(__name__)
-
-# Try to import Novitec camera module
+# Novitec Camera import
 try:
-    from .novitec_camera_loader import (
-        NOVITEC_AVAILABLE,
-        NovitecCameraLoader,
-        create_novitec_camera_loader,
-        list_novitec_cameras
-    )
-    if NOVITEC_AVAILABLE:
-        from .novitec_camera_loader import nvt
-        logger.info("Novitec Camera Module available")
+    # submodule 경로 설정
+    current_file = Path(__file__).resolve()
+    project_root = current_file.parent.parent.parent
+    novitec_src_path = project_root / "submodules" / "novitec_camera_module" / "src"
+
+    if novitec_src_path.exists():
+        novitec_src_str = str(novitec_src_path.resolve())
+        if novitec_src_str not in sys.path:
+            sys.path.insert(0, novitec_src_str)
+
+        from crp_camera.cam.novitec.novitec_camera import NovitecCamera
+
+        NOVITEC_AVAILABLE = True
     else:
-        logger.warning("Novitec Camera Module not available - using fallback camera loader")
-except ImportError as e:
+        NovitecCamera = None
+        NOVITEC_AVAILABLE = False
+except ImportError:
+    NovitecCamera = None
     NOVITEC_AVAILABLE = False
-    logger.warning(f"Novitec Camera Module not available: {e} - using fallback camera loader")
 
 
 class LoaderMode(Enum):
@@ -59,10 +62,14 @@ class BaseLoader:
     def is_opened(self):
         """Check if loader is opened"""
         raise NotImplementedError
-    
+
     def check_connection(self) -> bool:
         """Check if loader is connected"""
         return self.is_connected
+
+    def get_frame_number(self):
+        return self.frame_number
+
 
 class VideoFileLoader(BaseLoader):
     """Loader for video files"""
@@ -79,7 +86,8 @@ class VideoFileLoader(BaseLoader):
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.is_connected = True
 
-        logger.info(f"Video file opened: {file_path} (frames={self.total_frames}, fps={self.fps:.2f})")
+        print(f"[OK] Video file opened: {file_path}")
+        print(f"  Total frames: {self.total_frames}, FPS: {self.fps:.2f}")
 
     def read(self):
         ret, frame = self.cap.read()
@@ -93,6 +101,12 @@ class VideoFileLoader(BaseLoader):
 
     def is_opened(self):
         return self.cap and self.cap.isOpened()
+
+    def get_fps(self):
+        return self.fps
+
+    def get_total_frames(self):
+        return self.total_frames
 
 
 class ImageSequenceLoader(BaseLoader):
@@ -121,7 +135,8 @@ class ImageSequenceLoader(BaseLoader):
         self.last_frame_time = time.time()
         self.is_connected = True
 
-        logger.info(f"Image sequence opened: {sequence_path} (images={len(self.image_files)}, fps={fps})")
+        print(f"[OK] Image sequence opened: {sequence_path}")
+        print(f"  Found {len(self.image_files)} images, FPS: {fps}")
 
     def read(self):
         if self.current_index >= len(self.image_files):
@@ -137,7 +152,7 @@ class ImageSequenceLoader(BaseLoader):
         frame = cv2.imread(image_path)
 
         if frame is None:
-            logger.warning(f"Could not load image: {image_path}")
+            print(f"Warning: Could not load image: {image_path}")
             self.current_index += 1
             return False, None
 
@@ -152,6 +167,112 @@ class ImageSequenceLoader(BaseLoader):
 
     def is_opened(self):
         return self.current_index < len(self.image_files)
+
+    def get_fps(self):
+        return self.fps
+
+    def get_total_frames(self):
+        return len(self.image_files)
+
+
+class NovitecCameraLoader(BaseLoader):
+    """Loader for Novitec industrial cameras"""
+
+    def __init__(self, device_id: str, config: Optional[dict] = None):
+        """
+        Initialize Novitec camera loader.
+
+        Args:
+            device_id: Device ID - serial number of the camera
+            config: Optional configuration dictionary for camera parameters
+        """
+        super().__init__()
+
+        if not NOVITEC_AVAILABLE:
+            raise RuntimeError(
+                "Novitec Camera Module not available. Please ensure submodule is initialized."
+            )
+
+        self.device_id = device_id
+        self.config = config or {}
+        self.camera: Optional[NovitecCamera] = None
+        self.initialized = False
+
+        self._initialize()
+
+    def _initialize(self):
+        """Initialize Novitec camera"""
+
+        # Create NovitecCamera instance
+        self.camera = NovitecCamera(
+            device_id=self.device_id,
+            device_ip=None,  # Not used by Novitec
+            config=self.config,
+        )
+        if not self.camera:
+            raise RuntimeError(f"Failed to create Novitec camera: {self.device_id}")
+
+        # Connect to camera
+        if not self.camera.connect():
+            raise RuntimeError(f"Failed to connect to Novitec camera: {self.device_id}")
+
+        self.initialized = True
+        self.is_connected = True
+        print(f"[OK] Novitec camera initialized and streaming: {self.device_id}")
+
+    def read(self):
+        """
+        Read frame from Novitec camera.
+
+        Returns:
+            tuple: (ret, frame) where ret is bool and frame is numpy array (BGR format)
+        """
+        if not self.initialized or not self.camera:
+            return False, None
+
+        try:
+            # Capture image using NovitecCamera API
+            data = self.camera.capture(output_formats=["image"])
+
+            if not data or "image" not in data:
+                return False, None
+
+            frame = data["image"]
+
+            # Ensure frame is in correct format (BGR for OpenCV)
+            if frame is not None and len(frame.shape) == 3:
+                self.frame_number += 1
+                return True, frame
+            else:
+                return False, None
+
+        except Exception as e:
+            print(f"Error reading from Novitec camera: {e}")
+            return False, None
+
+    def release(self):
+        """Release Novitec camera resources"""
+        try:
+            if self.camera:
+                # Stop stream if running
+                if self.camera._is_streaming:
+                    self.camera.stop_stream()
+                # Disconnect
+                self.camera.disconnect()
+                self.camera = None
+                print("[OK] Novitec camera released")
+
+            self.initialized = False
+            self.is_connected = False
+
+        except Exception as e:
+            print(f"Error releasing Novitec camera: {e}")
+
+    def is_opened(self):
+        """Check if camera is opened and connected"""
+        if not self.camera:
+            return False
+        return self.initialized and self.camera.check_connection()
 
 
 def create_sequence_loader(
@@ -169,90 +290,56 @@ def create_sequence_loader(
         Appropriate loader instance or None if failed
     """
     try:
-        if loader_mode == "auto":
-            # Auto-detect based on source type
-            if isinstance(source, int):
-                # Integer source - try camera device
-                return create_camera_device_loader(source)
-            elif isinstance(source, str):
-                if os.path.isfile(source):
-                    # File path - try video file
-                    return create_video_file_loader(source)
-                elif os.path.isdir(source):
-                    # Directory path - try image sequence
-                    return create_image_sequence_loader(source, fps)
-                else:
-                    logger.error(f"Source path does not exist: {source}")
-                    return None
-            else:
-                logger.error(f"Invalid source type: {type(source)}")
-                return None
+      
 
-        elif loader_mode == "camera_device":
-            return create_camera_device_loader(int(source))
-        elif loader_mode == "video_file":
-            return create_video_file_loader(str(source))
-        elif loader_mode == "image_sequence":
-            return create_image_sequence_loader(str(source), fps)
+        if loader_mode == "camera":
+            return create_camera_device_loader()
+        elif loader_mode == "video":
+            return create_video_file_loader(source=source)
+        elif loader_mode == "sequence":
+            return create_image_sequence_loader(source=source, fps=fps)
         else:
-            logger.error(f"Unknown loader mode: {loader_mode}")
+            print(f"Error: Unknown loader mode: {loader_mode}")
             return None
 
     except Exception as e:
-        logger.error(f"Error creating sequence loader: {e}")
+        print(f"Error creating sequence loader: {e}")
         return None
 
 
-def create_camera_device_loader(device_id: int = 0) -> Optional[BaseLoader]:
+def create_camera_device_loader(
+    source: str, config: Optional[dict] = None
+) -> Optional[BaseLoader]:
     """Create camera device loader with Novitec fallback"""
+
     try:
-        # Try Novitec camera first
-        if NOVITEC_AVAILABLE:
-            try:
-                loader = create_novitec_camera_loader(device_id)
-                if loader:
-                    logger.info("Novitec camera loader created")
-                    return loader
-                else:
-                    logger.warning("Novitec camera initialization failed, falling back to standard camera")
-            except Exception as e:
-                logger.warning(f"Novitec camera failed, falling back to standard camera: {e}")
-
-        # Fallback to standard OpenCV camera
-        loader = NovitecCameraLoader(device_id)
-        logger.info("Standard camera loader created")
+        loader = NovitecCameraLoader(device_id=source, config=config)
+        print("[OK] Novitec camera loader created")
         return loader
-
     except Exception as e:
-        logger.error(f"Error creating camera device loader: {e}")
+        print(f"Novitec camera loader failed: {e}")
         return None
 
 
-def create_video_file_loader(file_path: str) -> Optional[BaseLoader]:
+def create_video_file_loader(source: str) -> Optional[BaseLoader]:
     """Create video file loader"""
     try:
-        loader = VideoFileLoader(file_path)
-        logger.info("Video file loader created")
+        loader = VideoFileLoader(file_path=source)
+        print("[OK] Video file loader created")
         return loader
     except Exception as e:
-        logger.error(f"Error creating video file loader: {e}")
+        print(f"Novitec camera loader failed: {e}")
         return None
 
-
 def create_image_sequence_loader(
-    sequence_path: str, fps: float = 30.0
+    source: str, fps: float = 30.0
 ) -> Optional[BaseLoader]:
     """Create image sequence loader"""
     try:
-        loader = ImageSequenceLoader(sequence_path, fps)
-        logger.info("Image sequence loader created")
+        loader = ImageSequenceLoader(sequence_path=source, fps=fps)
+        print("[OK] Image sequence loader created")
         return loader
     except Exception as e:
-        logger.error(f"Error creating image sequence loader: {e}")
+        print(f"Error creating image sequence loader: {e}")
         return None
 
-
-# Legacy function names for backward compatibility
-def create_sequence_loader_legacy(source, fps=30, mode="auto"):
-    """Legacy function for backward compatibility"""
-    return create_sequence_loader(source, fps, mode)

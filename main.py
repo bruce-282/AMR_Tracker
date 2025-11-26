@@ -10,15 +10,10 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 from src.utils.sequence_loader import (
-    BaseLoader,
-    CameraDeviceLoader,
-    VideoFileLoader,
-    ImageSequenceLoader,
     create_sequence_loader,
     create_camera_device_loader,
     create_video_file_loader,
     create_image_sequence_loader,
-    LoaderMode,
 )
 
 # Import config first (always available)
@@ -31,7 +26,6 @@ try:
     from src.core.tracking import (
         SpeedTracker,
         KalmanTracker,
-        TrackingDataLogger,
         associate_detections_to_trackers,
     )
     from src.visualization.display import Visualizer
@@ -100,10 +94,10 @@ class EnhancedAMRTracker:
 
                 self.detector = YOLODetector(
                     "weights/zoom1/best.pt",
-                    confidence_threshold=0.3,
+                    confidence_threshold=0.5,
                     device=device,
-                    imgsz=640,
-                    target_classes=[0, 1],
+                    imgsz=1536,
+                    target_classes=[0],
                 )
                 logger.info("YOLO detector initialized")
             except ImportError:

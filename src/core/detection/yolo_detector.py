@@ -90,8 +90,8 @@ class YOLODetector:
             detections = []
             for result in results:
                 # Check if OBB (Oriented Bounding Box) is available
-                has_obb = result.obb is not None
-                
+                #has_obb = result.obb is not None
+                has_obb = False
                 if has_obb:
                     # OBB model: use xywhr format
                     try:
@@ -135,11 +135,16 @@ class YOLODetector:
                         has_obb = False  # Fallback to regular boxes
                 
                 # Regular detection (boxes + masks)
-                if not has_obb and result.boxes is not None:
+                
+                else :
+                    if result.boxes is None or result.masks is None:
+                        raise ValueError("boxes or masks is None")
+                        
                     masks = result.masks
                     boxes = result.boxes.xyxy.cpu().numpy()  # x1, y1, x2, y2
                     confidences = result.boxes.conf.cpu().numpy()
                     class_ids = result.boxes.cls.cpu().numpy().astype(int)
+                    
 
                     for i, (box, conf, class_id) in enumerate(
                         zip(boxes, confidences, class_ids)
