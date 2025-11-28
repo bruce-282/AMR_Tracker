@@ -25,14 +25,14 @@
     "arrow_length": 50
   },
   "execution": {
-
+    "visualize_stream": true,
     "presets": {
 
       "camera_tracking": {
         "loader_mode": "camera",
         "camera_1": {
           "id": "I3ZEB19D",
-          "config": "config/camera_config.json",
+          "config": "config/camera1_config.json",
           "measurement": {
               "min_agv_area": 1000,
               "fps": 30,
@@ -41,7 +41,7 @@
         },
         "camera_2": {
           "id": "I3ZEB19D",
-          "config": "config/camera_config.json",
+          "config": "config/camera2_config.json",
           "measurement": {
               "min_agv_area": 1000,
               "fps": 30,
@@ -50,7 +50,7 @@
         },
         "camera_3": {
           "id": "I3ZEB19D",
-          "config": "config/camera_config.json",
+          "config": "config/camera3_config.json",
           "measurement": {
               "min_agv_area": 1000,
               "fps": 30,
@@ -66,7 +66,7 @@
           "measurement": {
               "min_agv_area": 1000,
               "fps": 30,
-              "pixel_size": 0.4455786347389221
+              "pixel_size": 1.0
             }
         },
         "camera_2": {
@@ -75,7 +75,7 @@
           "measurement": {
               "min_agv_area": 1000,
               "fps": 30,
-              "pixel_size": 0.4455786347389221
+              "pixel_size": 1.0
             }
         },
         "camera_3": {
@@ -84,7 +84,7 @@
           "measurement": {
               "min_agv_area": 1000,
               "fps": 30,
-              "pixel_size": 0.4455786347389221
+              "pixel_size": 1.0
             }
         }
       },

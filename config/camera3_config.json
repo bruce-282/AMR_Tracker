@@ -1,0 +1,22 @@
+{
+  "StreamAResolution": "3840x2160",
+  "StreamAEncodeMode": "MJPEG",
+  "Focus": "2m",
+  "FocusOffset": -120,
+  "Iris": 4,
+  "Zoom": 0,
+  "ExposureTime": 10000,
+  "Gain": 1.0,
+  "ExposureAuto": "Continuous",
+  "GainAuto": "Continuous",
+  "WhiteBalanceAuto": "Off",
+  "calibration": {
+    "CameraMatrix": [
+      [1000.0,    0.0, 640.0],
+      [   0.0, 1000.0, 480.0],
+      [   0.0,    0.0,   1.0]
+    ],
+    "DistortionCoefficients": [0.0, 0.0, 0.0, 0.0, 0.0]
+  }
+}
+

@@ -127,6 +127,7 @@ class VisionServer:
         # Visualization components (same as main.py)
         self.visualizer = None
         self.size_measurement = None
+        self.visualize_stream = True  # Enable/disable visualization stream (cv2.imshow)
         if ENHANCED_VISUALIZATION_AVAILABLE and self.config:
             try:
                 # Load calibration data if available (same as main.py)
@@ -599,16 +600,16 @@ class VisionServer:
         )
 
         # Check if should send trajectory data
-        should_send_trajectory = False
+        end_tracking = False
         reason = ""
         if not has_detection and cam_state.detection_loss_frames >= detection_loss_thresh and len(self.camera2_trajectory) > 0:
-            should_send_trajectory = True
+            end_tracking = True
             reason = f"detection lost for {cam_state.detection_loss_frames} frames (>= {detection_loss_thresh})"
         elif len(self.camera2_trajectory) >= camera2_trajectory_max_frames:
-            should_send_trajectory = True
+            end_tracking = True
             reason = f"trajectory reached {len(self.camera2_trajectory)} frames (>= {camera2_trajectory_max_frames})"
 
-        if should_send_trajectory:
+        if end_tracking:
             if self._send_camera2_trajectory(
                 camera_id, 
                 frame=vis_frame_original, 
@@ -986,6 +987,18 @@ class VisionServer:
             preset_name = self.preset_name or exec_config.get("use_preset")
             self._load_camera_pixel_sizes(preset_name, product_model_name)
             
+            # Load visualize_stream from product model config (execution.visualize_stream)
+            product_model_config = load_product_model_config(product_model_name)
+            if product_model_config and "execution" in product_model_config:
+                exec_config_from_product = product_model_config["execution"]
+                if "visualize_stream" in exec_config_from_product:
+                    self.visualize_stream = exec_config_from_product["visualize_stream"]
+                    self.logger.info(f"visualize_stream set to {self.visualize_stream} from {product_model_name}.json")
+                else:
+                    self.logger.debug(f"visualize_stream not found in {product_model_name}.json, using default: {self.visualize_stream}")
+            else:
+                self.logger.debug(f"execution config not found in {product_model_name}.json, using default: {self.visualize_stream}")
+            
             # Initialize all 3 cameras and initialize trackers (without starting tracking threads)
             for cam_id in [1, 2, 3]:
                 try:
@@ -1307,29 +1320,32 @@ class VisionServer:
                     frame_number, frame_timestamp, loader
                 )
 
-                # Visualize results
+                # Visualize results (always generate for camera 2 trajectory image, but only display if visualize_stream is True)
                 vis_frame = self.visualize_results(camera_id, frame, detections, tracking_results)
                 vis_frame_original = vis_frame  # Keep reference for camera 2
+                
+                if self.visualize_stream:
+                    # Resize for display if needed
+                    height, width = vis_frame.shape[:2]
+                    if width > 1920 or height > 1080:
+                        scale = min(1920 / width, 1080 / height)
+                        vis_frame = cv2.resize(vis_frame, (int(width * scale), int(height * scale)))
 
-                # Resize for display if needed
-                height, width = vis_frame.shape[:2]
-                if width > 1280 or height > 720:
-                    scale = min(1280 / width, 720 / height)
-                    vis_frame = cv2.resize(vis_frame, (int(width * scale), int(height * scale)))
-
-                # Show tracking window
-                window_name = f"Camera {camera_id} - AMR Tracking"
-                cv2.imshow(window_name, vis_frame)
+                    # Show tracking window
+                    window_name = f"Camera {camera_id} - AMR Tracking"
+                    cv2.imshow(window_name, vis_frame)
+                    # cv2.waitKey is required for cv2.imshow to update the window
+                    cv2.waitKey(1)
 
                 # Handle key press
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord("q"):
-                    self.logger.info(f"Camera {camera_id}: 'q' pressed, stopping tracking")
-                    break
-                elif key == ord("s"):
-                    snapshot_path = f"snapshot_cam{camera_id}_{frame_number:06d}.jpg"
-                    cv2.imwrite(snapshot_path, vis_frame)
-                    self.logger.info(f"Camera {camera_id}: Snapshot saved: {snapshot_path}")
+                # key = cv2.waitKey(1) & 0xFF
+                # if key == ord("q"):
+                #     self.logger.info(f"Camera {camera_id}: 'q' pressed, stopping tracking")
+                #     break
+                # elif key == ord("s"):
+                #     snapshot_path = f"snapshot_cam{camera_id}_{frame_number:06d}.jpg"
+                #     cv2.imwrite(snapshot_path, vis_frame)
+                #     self.logger.info(f"Camera {camera_id}: Snapshot saved: {snapshot_path}")
                 
                 # Camera-specific logic using helper methods
                 if not self.use_area_scan:
