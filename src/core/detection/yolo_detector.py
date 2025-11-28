@@ -162,6 +162,7 @@ class YOLODetector:
 
                         # Prepare polygon mask per detection if available
                         poly_xy = None
+                        mask_area = None
                         try:
                             if (
                                 masks is not None
@@ -169,12 +170,34 @@ class YOLODetector:
                                 and masks.xy is not None
                             ):
                                 poly_xy = masks.xy[i]  # Nx2 numpy array (float)
+                                
+                                # Calculate area from polygon using cv2.contourArea
+                                # 또는 ultralytics가 제공하는 area 속성 사용
+                                if poly_xy is not None and len(poly_xy) >= 3:
+                                    # Method 1: Try ultralytics masks.area if available
+                                    if hasattr(masks, "area") and masks.area is not None:
+                                        try:
+                                            mask_area = float(masks.area[i])
+                                        except (IndexError, TypeError):
+                                            # Method 2: Fallback to cv2.contourArea
+                                            contour = poly_xy.reshape((-1, 1, 2)).astype(np.int32)
+                                            mask_area = cv2.contourArea(contour)
+                                    else:
+                                        # Method 2: Use cv2.contourArea
+                                        contour = poly_xy.reshape((-1, 1, 2)).astype(np.int32)
+                                        mask_area = cv2.contourArea(contour)
                         except Exception:
                             poly_xy = None
+                            mask_area = None
 
                         # Get image size for mask processing
                         image_size = (image.shape[1], image.shape[0])  # (width, height)
+                        img_w, img_h = image.shape[1], image.shape[0]
                         
+                        # Validate bbox bounds
+                        if x < 0 or y < 0 or w < 0 or h < 0 or x + w > img_w or y + h > img_h:
+                            continue
+
                         # Create Detection object (no xywhr, will use mask if available)
                         detection = Detection(
                             bbox=[x, y, w, h],
@@ -187,6 +210,14 @@ class YOLODetector:
                             image_size=image_size,
                             xywhr=None,  # No xywhr for regular detection
                         )
+                        if detection.get_area() < 1000:
+                            continue
+                        width_height_ratio = detection.get_width() / detection.get_height()
+                        if width_height_ratio < 0.8 or width_height_ratio > 1.2:
+                            continue
+                        if mask_area < detection.get_area() * 0.9:
+                            continue
+                        
                         detections.append(detection)
 
             return detections

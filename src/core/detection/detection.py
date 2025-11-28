@@ -196,6 +196,18 @@ class Detection:
             return self.oriented_box_info["center"]
         x, y, w, h = self.bbox
         return (x + w / 2, y + h / 2)
+    def get_width(self) -> float:
+        """Get width of bounding box (from mask if available, otherwise from bbox)."""
+        if self.oriented_box_info is not None:
+            return self.oriented_box_info["width"]
+        _, _, w, _ = self.bbox
+        return w
+    def get_height(self) -> float:
+        """Get height of bounding box (from mask if available, otherwise from bbox)."""
+        if self.oriented_box_info is not None:
+            return self.oriented_box_info["height"]
+        _, _, _, h = self.bbox
+        return h
 
     def get_area(self) -> float:
         """Get area of bounding box (from mask if available, otherwise from bbox)."""

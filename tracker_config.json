@@ -23,12 +23,16 @@
 
       "camera_tracking": {
         "loader_mode": "camera",
-        "source": "I3ZEB19D",
+        "source1": "I3ZEB19D",
+        "source2": "I3ZEB19D",
+        "source3": "I3ZEB19D",
         "config": "config/camera_config.json"
       },
       "video_tracking": {
         "loader_mode": "video",
-        "source": "data/novitec_capture_20251110_150019.mp4",
+        "source1": "data/round_course.mp4",
+        "source2": "data/round_course.mp4",
+        "source3": "data/round_course.mp4",
         "config": "config/video_config.json"
       },
       "sequence_tracking": {

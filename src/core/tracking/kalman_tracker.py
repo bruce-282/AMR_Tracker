@@ -8,12 +8,71 @@ with position, velocity, and orientation.
 import logging
 from collections import deque
 from typing import List, Optional, Dict, Tuple
-
+#from sklearn.utils.linear_assignment_ import linear_assignment
 import cv2
 import numpy as np
 
+MAX_FRAMES_LOST = 10
+
 logger = logging.getLogger(__name__)
 
+from numba import jit
+
+@jit
+def iou(bb_test, bb_gt):
+    """
+    Computes IUO between two bboxes in the form [x1,y1,x2,y2]
+    """
+    xx1 = np.maximum(bb_test[0], bb_gt[0])
+    yy1 = np.maximum(bb_test[1], bb_gt[1])
+    xx2 = np.minimum(bb_test[2], bb_gt[2])
+    yy2 = np.minimum(bb_test[3], bb_gt[3])
+    w = np.maximum(0., xx2 - xx1)
+    h = np.maximum(0., yy2 - yy1)
+    wh = w * h
+    o = wh / ((bb_test[2]-bb_test[0])*(bb_test[3]-bb_test[1])
+        + (bb_gt[2]-bb_gt[0])*(bb_gt[3]-bb_gt[1]) - wh)
+    return(o)
+
+
+# def associate_detections_to_trackers(detections, trackers, iou_threshold=0.3):
+#     """
+#     Assigns detections to tracked object (both represented as bounding boxes)
+
+#     Returns 3 lists of matches, unmatched_detections and unmatched_trackers
+#     """
+#     if(len(trackers)==0):
+#         return np.empty((0,2),dtype=int), np.arange(len(detections)), np.empty((0,5),dtype=int)
+#     iou_matrix = np.zeros((len(detections),len(trackers)),dtype=np.float32)
+
+#     for d,det in enumerate(detections):
+#         for t,trk in enumerate(trackers):
+#             iou_matrix[d,t] = iou(det,trk)
+#     matched_indices = linear_assignment(-iou_matrix)
+
+#     unmatched_detections = []
+#     for d,det in enumerate(detections):
+#         if(d not in matched_indices[:,0]):
+#             unmatched_detections.append(d)
+#     unmatched_trackers = []
+#     for t,trk in enumerate(trackers):
+#         if(t not in matched_indices[:,1]):
+#             unmatched_trackers.append(t)
+
+#     #filter out matched with low IOU
+#     matches = []
+#     for m in matched_indices:
+#         if(iou_matrix[m[0],m[1]]<iou_threshold):
+#             unmatched_detections.append(m[0])
+#             unmatched_trackers.append(m[1])
+#         else:
+#             matches.append(m.reshape(1,2))
+#     if(len(matches)==0):
+#         matches = np.empty((0,2),dtype=int)
+#     else:
+#         matches = np.concatenate(matches,axis=0)
+
+#     return matches, np.array(unmatched_detections), np.array(unmatched_trackers)
 
 class KalmanTracker:
     """
@@ -38,10 +97,9 @@ class KalmanTracker:
 
         # For angle continuity (handle angle wrap-around)
         self.prev_angle = None
-        self.angle_offset = 0
 
         # For debugging/visualization
-        self.trajectory = deque(maxlen=100)
+        self.trajectory = deque(maxlen=2000)
         
         # For timestamp-based FPS calculation
         self.last_timestamp = None
@@ -90,7 +148,7 @@ class KalmanTracker:
         kf = cv2.KalmanFilter(6, 3)  # 6 states, 3 measurements
 
         # State transition matrix (A)
-        dt = 1.0 / self.fps
+        #sdt = 1.0 / self.fps
         kf.transitionMatrix = np.array(
             [
                 [1, 0, 0, 1, 0, 0],  # x = x + vx*dt
@@ -135,42 +193,41 @@ class KalmanTracker:
 
         return kf
 
-    def initialize_with_detection(self, detection_bbox):
+    def initialize_with_detection(self, center, angle):
         """Initialize tracker with first detection"""
-        if detection_bbox is not None:
-            x, y, w, h = detection_bbox
-            cx = x + w / 2
-            cy = y + h / 2
+        if center is not None:
+            cx, cy = center[0], center[1]
 
             # Initialize state with detection position
             self.kf.statePre = np.array(
-                [[cx], [cy], [0], [0], [0], [0]], dtype=np.float32
+                [[cx], [cy], [angle], [0], [0], [0]], dtype=np.float32
             )
             self.kf.statePost = np.array(
-                [[cx], [cy], [0], [0], [0], [0]], dtype=np.float32
+                [[cx], [cy], [angle], [0], [0], [0]], dtype=np.float32
             )
             
             # Initialize last center for jump detection
             self.last_center = (cx, cy)
 
-            logger.debug(f"Track {self.track_id} initialized at ({cx:.1f}, {cy:.1f}) px")
+            logger.debug(f"Track {self.track_id} initialized at ({cx:.1f}, {cy:.1f}) {angle:.1f} deg")
 
     def update(
         self,
-        frame: np.ndarray,
         bbox: List[float],
+        center: Optional[Tuple[float, float]] = None,
+        theta: Optional[float] = None,
         frame_number: int = 0,
-        orientation: Optional[float] = None,
         timestamp: Optional[float] = None,
     ):
         """
         Update tracker with new detection
 
         Args:
-            frame: Current frame
             bbox: Bounding box [x, y, w, h]
+            center: Center [x, y]
+            theta: Orientation angle in degrees (from detection mask, optional)
             frame_number: Current frame number
-            orientation: Orientation angle in degrees (from detection mask, optional)
+            timestamp: Timestamp
 
         Returns:
             dict: Tracking results
@@ -183,7 +240,6 @@ class KalmanTracker:
         self.kf.predict()
 
         state_pre = self.kf.statePre.flatten()
-        oriented_bbox = None
 
         if bbox is not None:
             # Update detection tracking
@@ -193,81 +249,120 @@ class KalmanTracker:
             # Get center position from bbox
             # Note: If bbox came from mask-based oriented_box_info, this center
             # is already the mask-based center (from minAreaRect)
-            x, y, w, h = bbox
-            measured_cx = x + w / 2
-            measured_cy = y + h / 2
+            measured_cx, measured_cy = center[0], center[1]
             
             # Get predicted position from Kalman filter (after predict step)
             predicted_cx = state_pre[0]
             predicted_cy = state_pre[1]
+            predicted_theta = state_pre[2]
             predicted_vx = state_pre[3]
             predicted_vy = state_pre[4]
             
+            # Default measurement values (will be adjusted based on validation)
+            cx = measured_cx
+            cy = measured_cy
+            theta_value = theta if theta is not None else predicted_theta
+            
             # Check if center jump is too large (segmentation failure detection)
             # Calculate distance between measured and predicted center
-            center_jump_distance = np.sqrt(
-                (measured_cx - predicted_cx) ** 2 + (measured_cy - predicted_cy) ** 2
-            )
+            # center_jump_distance = np.sqrt(
+            #     (measured_cx - predicted_cx) ** 2 + (measured_cy - predicted_cy) ** 2
+            # )
+            # measured_vx = center_jump_distance / self.fps
+            # measured_vy = center_jump_distance / self.fps
             
             # Use bbox size as reference (average of width and height)
-            bbox_size = (w + h) / 2
-            jump_threshold = bbox_size * 0.5  # 5% of bbox size
+           
+
             
             # Determine if we should use measurement or prediction only
             # Each frame is evaluated independently - if measurement is valid, use it
+
+            
+            iou_score = iou((bbox[0], bbox[1], bbox[0]+bbox[2], bbox[1]+bbox[3]), (predicted_cx-bbox[2]/2, predicted_cy-bbox[3]/2, predicted_cx+bbox[2]/2, predicted_cy+bbox[3]/2))
+
+            logger.info(f"measured_cx: {measured_cx}, measured_cy: {measured_cy}, predicted_cx: {predicted_cx}, predicted_cy: {predicted_cy}")
+            # if iou_score > 0.5:
+            #     use_measurement = True
+            # else:
+            #     use_measurement = False
+            #     self.use_prediction_only = True
+            #     logger.warning(
+            #             f"Track {self.track_id}: IoU score too low "
+            #             f"({iou_score:.1f}), using prediction only"
+            #     )
+                
+                
             use_measurement = True
             if self.last_center is not None:
                 # Check if measured center jumped too much from predicted position
-                if center_jump_distance > jump_threshold:
+                if iou_score < 0.5:
                     logger.warning(
-                        f"Track {self.track_id}: Center jump detected "
-                        f"({center_jump_distance:.1f}px > {jump_threshold:.1f}px), using prediction only"
+                        f"Track {self.track_id}: IoU score too low "
+                        f"({iou_score:.1f}), using prediction only"
                     )
                     use_measurement = False
+                    cx = predicted_cx
+                    cy = predicted_cy
+                    theta_value = predicted_theta
                     self.use_prediction_only = True
+                    self.frames_since_detection += 1
+                    if self.is_lost(max_frames_lost=MAX_FRAMES_LOST):
+                        logger.info(f"Track {self.track_id} is lost, resetting")
+                        self.reset()
                 else:
                     # Normal detection - measurement is valid, return to normal mode
+                    cx = measured_cx
+                    cy = measured_cy
+                    theta_value = theta_value
+                    self.last_center = (cx, cy)
                     use_measurement = True
                     self.use_prediction_only = False
             else:
                 # First frame - always use measurement to initialize
+                cx = measured_cx
+                cy = measured_cy
+                theta_value = theta_value
+                self.last_center = (cx, cy)
                 use_measurement = True
                 self.use_prediction_only = False
             
-            # Use velocity-based corrected position if measurement is unreliable
-            if not use_measurement:
-                cx = predicted_cx
-                cy = predicted_cy
-            else:
-                # Use measured position (from mask-based oriented_box_info)
-                # This is a valid detection - update last_center and return to normal mode
-                cx = measured_cx
-                cy = measured_cy
-                self.last_center = (cx, cy)
-                self.use_prediction_only = False
+            # # Use velocity-based corrected position if measurement is unreliable
+            # if not use_measurement:
+            #     cx = predicted_cx
+            #     cy = predicted_cy
+            #     theta = predicted_theta
+            # else:
+            #     # Use measured position (from mask-based oriented_box_info)
+            #     # This is a valid detection - update last_center and return to normal mode
+            #     cx = measured_cx
+            #     cy = measured_cy
+            #     self.last_center = (cx, cy)
+            #     self.use_prediction_only = False
 
             # Use orientation from detection mask if available, otherwise detect it
             # orientation comes from detection.get_orientation() which now returns degrees
-            if orientation is not None:
+            #if theta is not None:
                 # Orientation from mask-based minAreaRect (already in degrees)
-                theta = orientation
                 # Handle angle continuity (in degrees)
-                theta = self.handle_angle_continuity(theta)
-            else:
-                # Fallback: Detect orientation using OBB method from frame
-                theta = self.detect_orientation_obb(frame, bbox)
-                if theta is not None:
-                    # Handle angle continuity (in degrees)
-                    theta = self.handle_angle_continuity(theta)
-                else:
-                    # Use previous angle or default to avoid dimension mismatch
-                    theta = self.prev_angle if self.prev_angle is not None else 0.0
+            new_angle = self.handle_angle_continuity(theta_value)
+            self.prev_angle = new_angle
+            # else:
+            #     # Fallback: Detect orientation using OBB method from frame
+            #     theta = self.detect_orientation_obb(frame, bbox)
+            #     if theta is not None:
+            #         # Handle angle continuity (in degrees)
+            #         theta = self.handle_angle_continuity(theta)
+            #     else:
+            #         # Use previous angle or default to avoid dimension mismatch
+            #         theta = self.prev_angle if self.prev_angle is not None else 0.0
 
             # Measurement vector: [cx, cy, theta]
             # cx, cy: either measured (if valid) or predicted (if segmentation failed)
             # theta: orientation in degrees from mask-based oriented_box_info (if mask available)
             # This is the input to Kalman filter correction step
-            z = np.array([[cx], [cy], [theta]], dtype=np.float32)
+            
+            z = np.array([[cx], [cy], [new_angle]], dtype=np.float32)
 
             # Ensure z has correct shape and type
             if z.shape != (3, 1):
@@ -289,37 +384,37 @@ class KalmanTracker:
 
             # Apply velocity damping when position is nearly stationary
             # If position change is very small, reduce velocity towards zero
-            if use_measurement and self.last_center is not None:
-                state_post = self.kf.statePost.flatten()
-                # Calculate actual position change
-                pos_change_x = abs(measured_cx - self.last_center[0])
-                pos_change_y = abs(measured_cy - self.last_center[1])
-                pos_change = np.sqrt(pos_change_x**2 + pos_change_y**2)
+            # if use_measurement and self.last_center is not None:
+            #     state_post = self.kf.statePost.flatten()
+            #     # Calculate actual position change
+            #     pos_change_x = abs(measured_cx - self.last_center[0])
+            #     pos_change_y = abs(measured_cy - self.last_center[1])
+            #     pos_change = np.sqrt(pos_change_x**2 + pos_change_y**2)
                 
-                # If position change is very small (< 0.5 pixels), apply velocity damping
-                VELOCITY_DAMPING_THRESHOLD = 0.5  # pixels
-                VELOCITY_DAMPING_FACTOR = 0.9  # Multiply velocity by this factor when stationary
+            #     # If position change is very small (< 0.5 pixels), apply velocity damping
+            #     VELOCITY_DAMPING_THRESHOLD = 0.5  # pixels
+            #     VELOCITY_DAMPING_FACTOR = 0.9  # Multiply velocity by this factor when stationary
                 
-                if pos_change < VELOCITY_DAMPING_THRESHOLD:
-                    # Object is nearly stationary - reduce velocity
-                    current_vx = state_post[3]
-                    current_vy = state_post[4]
-                    current_vel_magnitude = np.sqrt(current_vx**2 + current_vy**2)
+            #     if pos_change < VELOCITY_DAMPING_THRESHOLD:
+            #         # Object is nearly stationary - reduce velocity
+            #         current_vx = state_post[3]
+            #         current_vy = state_post[4]
+            #         current_vel_magnitude = np.sqrt(current_vx**2 + current_vy**2)
                     
-                    # Only damp if velocity is already small (avoid damping during actual movement)
-                    if current_vel_magnitude < 5.0:  # Only damp velocities < 5 pixels/frame
-                        # Apply damping: reduce velocity by damping factor
-                        new_vx = current_vx * VELOCITY_DAMPING_FACTOR
-                        new_vy = current_vy * VELOCITY_DAMPING_FACTOR
+            #         # Only damp if velocity is already small (avoid damping during actual movement)
+            #         if current_vel_magnitude < 5.0:  # Only damp velocities < 5 pixels/frame
+            #             # Apply damping: reduce velocity by damping factor
+            #             new_vx = current_vx * VELOCITY_DAMPING_FACTOR
+            #             new_vy = current_vy * VELOCITY_DAMPING_FACTOR
                         
-                        # Update velocity in state
-                        self.kf.statePost[3, 0] = new_vx
-                        self.kf.statePost[4, 0] = new_vy
+            #             # Update velocity in state
+            #             self.kf.statePost[3, 0] = new_vx
+            #             self.kf.statePost[4, 0] = new_vy
                         
-                        # Also update error covariance for velocity to reflect reduced uncertainty
-                        # (velocity is more certain when object is stationary)
-                        self.kf.errorCovPost[3, 3] *= 0.9
-                        self.kf.errorCovPost[4, 4] *= 0.9
+            #             # Also update error covariance for velocity to reflect reduced uncertainty
+            #             # (velocity is more certain when object is stationary)
+            #             self.kf.errorCovPost[3, 3] *= 0.9
+            #             self.kf.errorCovPost[4, 4] *= 0.9
 
             # Store trajectory point and bbox
             self.trajectory.append((cx, cy))
@@ -329,8 +424,13 @@ class KalmanTracker:
             self.frames_since_detection += 1
 
             state_post = self.kf.statePost.flatten()
+            # Update trajectory with predicted position even when no detection
+            pred_cx = state_post[0]
+            pred_cy = state_post[1]
+            self.trajectory.append((pred_cx, pred_cy))
+            
             logger.debug(
-                f"Track {self.track_id} prediction only: pos=({state_post[0]:.1f}, {state_post[1]:.1f})"
+                f"Track {self.track_id} prediction only: pos=({pred_cx:.1f}, {pred_cy:.1f})"
             )
 
         # Extract state
@@ -488,6 +588,42 @@ class KalmanTracker:
 
         return continuous_angle
 
+    # def _calculate_iou(self, box1, box2):
+    #     """
+    #     Calculate Intersection over Union (IoU) of two bounding boxes.
+
+    #     Args:
+    #         box1: [x, y, w, h] format
+    #         box2: [x, y, w, h] format
+
+    #     Returns:
+    #         IoU value between 0 and 1
+    #     """
+    #     x1, y1, w1, h1 = box1
+    #     x2, y2, w2, h2 = box2
+
+    #     # Calculate intersection coordinates
+    #     x_left = max(x1, x2)
+    #     y_top = max(y1, y2)
+    #     x_right = min(x1 + w1, x2 + w2)
+    #     y_bottom = min(y1 + h1, y2 + h2)
+
+    #     if x_right < x_left or y_bottom < y_top:
+    #         return 0.0
+
+    #     intersection_area = (x_right - x_left) * (y_bottom - y_top)
+
+    #     # Calculate union area
+    #     box1_area = w1 * h1
+    #     box2_area = w2 * h2
+    #     union_area = box1_area + box2_area - intersection_area
+
+    #     if union_area == 0:
+    #         return 0.0
+
+    #     return intersection_area / union_area
+
+
     def normalize_angle_deg(self, angle_deg):
         """
         Normalize angle to [0, 360) degrees
@@ -608,3 +744,24 @@ class KalmanTracker:
             bool: True if tracker should be removed
         """
         return self.frames_since_detection > max_frames_lost
+
+    def reset(self):
+        """
+        Reset tracker
+        """
+        self.kf = self.init_kalman()
+        self.prev_angle = None
+        self.trajectory.clear()
+        self.last_bbox = None
+        self.last_size_measurement = None
+        self.initial_size_measurement = None
+        self.last_center = None
+        self.use_prediction_only = False
+        self.frames_since_detection = 0
+        self.last_detection_frame = 0
+        self.last_timestamp = None
+        self.timestamp_history.clear()
+        
+        # self.fps = 30
+        # self.pixel_size = 1.0
+        #self.track_id = 0

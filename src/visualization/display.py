@@ -24,8 +24,6 @@ class Visualizer:
         """
         self.homography = homography
         self.colors = self._generate_colors(20)
-        self.track_colors = {}  # Track ID to color mapping
-        self.track_trajs = {}  # Track ID to list of centers
         self.latest_rect_angles = {}  # Track ID to latest minAreaRect angle (deg)
 
     def _generate_colors(self, num_colors: int) -> List[Tuple[int, int, int]]:
@@ -95,8 +93,8 @@ class Visualizer:
         out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
         return out
 
-    def draw_detections(
-        self, frame: np.ndarray, detections: List[Dict], measurements: List[Dict]
+    def draw_single_object(
+        self, frame: np.ndarray, detections: List[Dict], trackings: List[Dict]
     ) -> np.ndarray:
         """
         Draw detection results on frame.
@@ -110,23 +108,23 @@ class Visualizer:
             Frame with visualizations
         """
         vis_frame = frame.copy()
+        box_color = (0, 0, 255)
+        mask_color = tuple(c // 2 for c in box_color) # half of box color
+        detection_color = (0, 255, 0)
+        
 
-        for detection, measurement in zip(detections, measurements):
+        for detection, tracking in zip(detections, trackings):
             # Get color for this track
-            track_id = measurement.get("track_id", 0)
+            track_id = tracking.get("track_id", 0)
             if track_id != 0:
                 continue
-            if track_id not in self.track_colors:
-                self.track_colors[track_id] = self.colors[track_id % len(self.colors)]
-            color = self.track_colors[track_id]
-            # color_box = tuple(np.clip(np.array(color) + 50, 0, 255).astype(int))
 
             # Use Kalman tracker position (filtered, handles segmentation failures)
             # instead of raw detection bbox to avoid drawing jumped centers
-            if "position" in measurement:
+            if "position" in tracking:
                 # Use filtered position from Kalman tracker
-                kalman_cx = measurement["position"]["x"]
-                kalman_cy = measurement["position"]["y"]
+                kalman_cx = tracking["position"]["x"]
+                kalman_cy = tracking["position"]["y"]
             else:
                 # Fallback to detection center if measurement not available
                 x, y, w, h = detection.bbox
@@ -136,33 +134,36 @@ class Visualizer:
             # Get bbox size from detection (for drawing purposes)
             x, y, w, h = detection.bbox
 
-            bbox_corners = np.array(
-                [
-                    [x, y],  # top-left
-                    [x + w, y],  # top-right
-                    [x + w, y + h],  # bottom-right
-                    [x, y + h],  # bottom-left
-                ],
-                dtype=np.int32,
-            )
+            # bbox_corners = np.array(
+            #     [
+            #         [x, y],  # top-left
+            #         [x + w, y],  # top-right
+            #         [x + w, y + h],  # bottom-right
+            #         [x, y + h],  # bottom-left
+            #     ],
+            #     dtype=np.int32,
+            # )
             # cv2.polylines(vis_frame, [bbox_corners], True, color, 2)
 
             # Draw oriented bounding box from mask if available
             if hasattr(detection, "oriented_box_info") and detection.oriented_box_info is not None:
                 try:
+                    
+                    center = detection.oriented_box_info["center"]
+                    cv2.circle(vis_frame, (int(center[0]), int(center[1])), 9, detection_color, -1)
                     # Draw polygon mask if available
                     if getattr(detection, "masks", None) is not None:
                         poly = detection.masks
                         poly = np.asarray(poly, dtype=np.float32)
                         if poly.ndim == 2 and poly.shape[1] == 2 and poly.shape[0] >= 3:
                             pts = poly.reshape((-1, 1, 2)).astype(np.int32)
-                            cv2.polylines(vis_frame, [pts], True, color, 2)
+                            cv2.polylines(vis_frame, [pts], True, mask_color, 2)
                     
                     # Draw oriented bounding box from extracted info
                     box_info = detection.oriented_box_info
                     box_points = box_info["box_points"]
                     box_i32 = box_points.reshape((-1, 1, 2)).astype(np.int32)
-                    cv2.polylines(vis_frame, [box_i32], True, color, 2)
+                    cv2.polylines(vis_frame, [box_i32], True, box_color, 2)
                     
                     # Save angle from oriented box (degrees)
                     self.latest_rect_angles[track_id] = float(box_info["angle"])
@@ -175,7 +176,7 @@ class Visualizer:
                     poly = np.asarray(poly, dtype=np.float32)
                     if poly.ndim == 2 and poly.shape[1] == 2 and poly.shape[0] >= 3:
                         pts = poly.reshape((-1, 1, 2)).astype(np.int32)
-                        cv2.polylines(vis_frame, [pts], True, color, 2)
+                        cv2.polylines(vis_frame, [pts], True, mask_color, 2)
                 except Exception:
                     pass
 
@@ -202,33 +203,32 @@ class Visualizer:
             #     4,
             # )
 
-            # Draw trajectory (keep accumulating center points)
-            if track_id not in self.track_trajs:
-                self.track_trajs[track_id] = []
-            self.track_trajs[track_id].append(center)
-            # 제한 길이 유지
-            if len(self.track_trajs[track_id]) > 200:
-                self.track_trajs[track_id] = self.track_trajs[track_id][-200:]
-
-            traj_pts = self.track_trajs[track_id]
-            if len(traj_pts) >= 2:
+            # Draw trajectory from tracker (trajectory is managed by KalmanTracker)
+            trajectory = tracking.get("trajectory", [])
+            if len(trajectory) >= 2:
+                # Convert trajectory points to integer tuples for drawing
+                traj_pts = [(int(x), int(y)) for x, y in trajectory]
                 for i in range(1, len(traj_pts)):
-                    cv2.line(vis_frame, traj_pts[i - 1], traj_pts[i], color, 2)
+                    cv2.line(vis_frame, traj_pts[i - 1], traj_pts[i], box_color, 2)
             # 중심점도 표시
-            cv2.circle(vis_frame, center, 3, color, -1)
+            cv2.circle(vis_frame, center, 5, box_color, -1)
+
+
+
+            
 
             # Draw measurements (optionally disabled texts kept commented)
             # self._draw_measurements(vis_frame, center, measurement, color)
 
             # Draw speed vector
-            speed_value = None
-            if "speed" in measurement:
-                speed_value = measurement["speed"]
-            elif (
-                "velocity" in measurement
-                and "linear_speed_mm_per_sec" in measurement["velocity"]
-            ):
-                speed_value = measurement["velocity"]["linear_speed_mm_per_sec"]
+            # speed_value = None
+            # if "speed" in measurement:
+            #     speed_value = measurement["speed"]
+            # elif (
+            #     "velocity" in measurement
+            #     and "linear_speed_mm_per_sec" in measurement["velocity"]
+            # ):
+            #     speed_value = measurement["velocity"]["linear_speed_mm_per_sec"]
 
             # Skip speed vector; we are drawing trajectory instead
             # if speed_value is not None and speed_value > 0:
@@ -241,15 +241,15 @@ class Visualizer:
         thickness = max(2, int(font_scale * 2.2))
 
         lines = []
-        for detection, measurement in zip(detections, measurements):
-            track_id = measurement.get("track_id", 0)
+        for detection, tracking in zip(detections, trackings):
+            track_id = tracking.get("track_id", 0)
             if track_id != 0:
                 continue
             
             # Use Kalman tracker position (filtered, handles segmentation failures)
-            if "position" in measurement:
-                cx = int(measurement["position"]["x"])
-                cy = int(measurement["position"]["y"])
+            if "position" in tracking:
+                cx = int(tracking["position"]["x"])
+                cy = int(tracking["position"]["y"])
             else:
                 # Fallback to detection center if measurement not available
                 x, y, w, h = detection.bbox
@@ -259,7 +259,7 @@ class Visualizer:
             if track_id in self.latest_rect_angles:
                 theta_deg = float(self.latest_rect_angles[track_id])
             else:
-                angle = measurement.get("orientation", 0)
+                angle = tracking.get("orientation", 0)
                 theta_deg = float(self._extract_angle_deg(angle))
             lines.append(f"ID {track_id}  x={cx}, y={cy}, yaw={theta_deg:.1f}")
 
@@ -277,55 +277,55 @@ class Visualizer:
 
         return vis_frame
 
-    def draw_tracking(
-        self, frame: np.ndarray, tracking_results: List[Dict]
-    ) -> np.ndarray:
-        """
-        Draw tracking results on frame (tracked objects' centers in yellow).
+    # def draw_tracking(
+    #     self, frame: np.ndarray, tracking_results: List[Dict]
+    # ) -> np.ndarray:
+    #     """
+    #     Draw tracking results on frame (tracked objects' centers in yellow).
 
-        Args:
-            frame: Input image
-            tracking_results: List of tracking results
+    #     Args:
+    #         frame: Input image
+    #         tracking_results: List of tracking results
 
-        Returns:
-            Frame with tracking visualizations
-        """
-        vis_frame = frame.copy()
+    #     Returns:
+    #         Frame with tracking visualizations
+    #     """
+    #     vis_frame = frame.copy()
 
-        # Draw tracked objects' centers in yellow (only for tracked objects)
-        for result in tracking_results:
-            track_id = result.get("track_id", 0)
-            if track_id != 0:
-                continue
+    #     # Draw tracked objects' centers in yellow (only for tracked objects)
+    #     for result in tracking_results:
+    #         track_id = result.get("track_id", 0)
+    #         if track_id != 0:
+    #             continue
 
-            # Get position from tracking result
-            position = result.get("position", {})
-            if position:
-                tracked_x = position.get("x", 0)
-                tracked_y = position.get("y", 0)
-                tracked_center = (int(tracked_x), int(tracked_y))
+    #         # Get position from tracking result
+    #         position = result.get("position", {})
+    #         if position:
+    #             tracked_x = position.get("x", 0)
+    #             tracked_y = position.get("y", 0)
+    #             tracked_center = (int(tracked_x), int(tracked_y))
 
-                # Draw yellow circle for tracked center
-                cv2.circle(
-                    vis_frame, tracked_center, 5, (0, 255, 255), -1
-                )  # Yellow filled circle
+    #             # Draw yellow circle for tracked center
+    #             cv2.circle(
+    #                 vis_frame, tracked_center, 5, (0, 255, 255), -1
+    #             )  # Yellow filled circle
 
-                # Draw trajectory for tracked object (yellow)
-                if track_id not in self.track_trajs:
-                    self.track_trajs[track_id] = []
-                self.track_trajs[track_id].append(tracked_center)
-                # Limit trajectory length
-                if len(self.track_trajs[track_id]) > 200:
-                    self.track_trajs[track_id] = self.track_trajs[track_id][-200:]
+    #             # Draw trajectory for tracked object (yellow)
+    #             if track_id not in self.track_trajs:
+    #                 self.track_trajs[track_id] = []
+    #             self.track_trajs[track_id].append(tracked_center)
+    #             # Limit trajectory length
+    #             if len(self.track_trajs[track_id]) > 100:
+    #                 self.track_trajs[track_id] = self.track_trajs[track_id][-100:]
 
-                traj_pts = self.track_trajs[track_id]
-                if len(traj_pts) >= 2:
-                    for i in range(1, len(traj_pts)):
-                        cv2.line(
-                            vis_frame, traj_pts[i - 1], traj_pts[i], (0, 255, 255), 2
-                        )  # Yellow line
+    #             traj_pts = self.track_trajs[track_id]
+    #             if len(traj_pts) >= 2:
+    #                 for i in range(1, len(traj_pts)):
+    #                     cv2.line(
+    #                         vis_frame, traj_pts[i - 1], traj_pts[i], (0, 255, 255), 2
+    #                     )  # Yellow line
 
-        return vis_frame
+    #     return vis_frame
 
     def _draw_measurements(
         self,
@@ -551,75 +551,6 @@ class Visualizer:
 
         return img_pts
 
-    # def create_bird_eye_view(
-    #     self,
-    #     measurements: List[Dict],
-    #     world_size: Tuple[float, float] = (5000, 5000),
-    #     scale: float = 0.2,
-    # ) -> np.ndarray:
-    #     """
-    #     Create bird's eye view visualization.
-
-    #     Args:
-    #         measurements: List of measurements with world coordinates
-    #         world_size: Size of world to visualize in mm
-    #         scale: Scale factor for visualization
-
-    #     Returns:
-    #         Bird's eye view image
-    #     """
-    #     # Create blank canvas
-    #     width = int(world_size[0] * scale)
-    #     height = int(world_size[1] * scale)
-    #     bird_eye = np.ones((height, width, 3), dtype=np.uint8) * 255
-
-    #     # Draw grid
-    #     grid_spacing = int(500 * scale)  # 500mm grid
-    #     for x in range(0, width, grid_spacing):
-    #         cv2.line(bird_eye, (x, 0), (x, height), (200, 200, 200), 1)
-    #     for y in range(0, height, grid_spacing):
-    #         cv2.line(bird_eye, (0, y), (width, y), (200, 200, 200), 1)
-
-    #     # Draw AGVs
-    #     for measurement in measurements:
-    #         if "center_world" not in measurement:
-    #             continue
-
-    #         # Convert world coordinates to canvas coordinates
-    #         cx, cy = measurement["center_world"]
-    #         cx_canvas = int(cx * scale + width / 2)
-    #         cy_canvas = int(cy * scale + height / 2)
-
-    #         # Get dimensions
-    #         width_agv = int(measurement.get("width", 100) * scale)
-    #         height_agv = int(measurement.get("height", 100) * scale)
-
-    #         # Get color for track
-    #         track_id = measurement.get("track_id", 0)
-    #         color = self.colors[track_id % len(self.colors)]
-
-    #         # Draw AGV rectangle
-    #         angle = measurement.get("orientation", 0)
-    #         print(f"Debug - Angle: {angle}")
-    #         angle_deg = self._extract_angle_deg(angle)
-    #         rect = (
-    #             (float(cx_canvas), float(cy_canvas)),
-    #             (float(width_agv), float(height_agv)),
-    #             float(angle_deg),
-    #         )
-    #         box = cv2.boxPoints(rect)
-    #         box = np.int0(box)
-    #         cv2.fillPoly(bird_eye, [box], color)
-
-    #         # Draw ID
-    #         # cv2.putText(
-    #         #     bird_eye,
-    #         #     str(track_id),
-    #         #     (cx_canvas - 10, cy_canvas),
-    #         #     cv2.FONT_HERSHEY_SIMPLEX,
-    #         #     1.5,
-    #         #     (0, 0, 0),
-    #         #     2,
-    #         # )
-
-    #     return bird_eye
+    def reset(self):
+        
+        self.latest_rect_angles.clear()
