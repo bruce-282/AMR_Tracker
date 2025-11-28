@@ -47,8 +47,7 @@ class TrackingConfig:
     max_frames_lost: int = 500  # frames before removing tracker
 
     # Trajectory settings
-    trajectory_max_frames: int = 100  # trajectory history buffer size
-    camera2_trajectory_max_frames: int = 50  # trajectory frames for camera 2
+    camera2_trajectory_max_frames: int = 300  # trajectory frames for camera 2
 
     # Kalman filter parameters
     velocity_damping_threshold: float = 0.5  # pixels - threshold for velocity damping
@@ -57,7 +56,7 @@ class TrackingConfig:
 
     # Visualization
     arrow_length: int = 50  # pixels for orientation arrow
-    base_reference_width: int = 1920  # reference width for font scaling
+
 
 
 @dataclass

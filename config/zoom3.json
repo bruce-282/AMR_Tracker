@@ -1,13 +1,114 @@
 {
-  "camera_1": 0,
-  "camera_2": 1,
-  "camera_3": 2,
+  "calibration": {
+    "checkerboard_size": [8, 7],
+    "square_size": 20.0,
+    "num_calibration_images": 29,
+    "camera_height": 0.0,
+    "calibration_data_path": "calibration_data.json"
+  },
   "detector": {
-    "model_path": "weights/zoom3/last.pt",
+    "model_path": "weights/zoom1/best.pt",
     "confidence_threshold": 0.2,
     "nms_threshold": 0.4,
     "imgsz": 640,
     "target_classes": [0]
+  },
+  "tracker": {
+    "speed_threshold_pix_per_frame": 5.0,
+    "speed_near_zero_threshold": 3.0,
+    "speed_zero_frames_threshold": 10,
+    "detection_loss_threshold_frames": 30,
+    "max_frames_lost": 500,
+    "camera2_trajectory_max_frames": 50,
+    "velocity_damping_threshold": 0.5,
+    "velocity_damping_factor": 0.9,
+    "velocity_damping_max": 5.0,
+    "arrow_length": 50
+  },
+  "execution": {
+
+    "presets": {
+
+      "camera_tracking": {
+        "loader_mode": "camera",
+        "camera_1": {
+          "id": "I3ZEB19D",
+          "config": "config/camera_config.json",
+          "measurement": {
+              "min_agv_area": 1000,
+              "max_tracking_distance": 500,
+              "fps": 30,
+              "pixel_size": 0.4455786347389221
+            }
+        },
+        "camera_2": {
+          "id": "I3ZEB19D",
+          "config": "config/camera_config.json",
+          "measurement": {
+              "min_agv_area": 1000,
+              "max_tracking_distance": 500,
+              "fps": 30,
+              "pixel_size": 0.4455786347389221
+            }
+        },
+        "camera_3": {
+          "id": "I3ZEB19D",
+          "config": "config/camera_config.json",
+          "measurement": {
+              "min_agv_area": 1000,
+              "max_tracking_distance": 500,
+              "fps": 30,
+              "pixel_size": 0.4455786347389221
+            }
+        }
+      },
+      "video_tracking": {
+        "loader_mode": "video",
+        "camera_1": {
+          "id": "data/novitec_capture_20251110_153214.mp4",
+          "config": "config/video_config.json",
+          "measurement": {
+              "min_agv_area": 1000,
+              "max_tracking_distance": 500,
+              "fps": 30,
+              "pixel_size": 0.4455786347389221
+            }
+        },
+        "camera_2": {
+          "id": "data/round_course.mp4",
+          "config": "config/video_config.json",
+          "measurement": {
+              "min_agv_area": 1000,
+              "max_tracking_distance": 500,
+              "fps": 30,
+              "pixel_size": 0.4455786347389221
+            }
+        },
+        "camera_3": {
+          "id": "data/novitec_capture_20251110_153214.mp4",
+          "config": "config/video_config.json",
+          "measurement": {
+              "min_agv_area": 1000,
+              "max_tracking_distance": 500,
+              "fps": 30,
+              "pixel_size": 0.4455786347389221
+            }
+        }
+      },
+      "sequence_tracking": {
+        "loader_mode": "sequence",
+        "camera_1": {
+          "id": "data/0001_fixed",
+          "config": "config/sequence_config.json",
+          "measurement": {
+              "min_agv_area": 1000,
+              "max_tracking_distance": 500,
+              "fps": 30,
+              "pixel_size": 0.4455786347389221
+            }
+        }
+      }
+  
+    }
   }
 }
-

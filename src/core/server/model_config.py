@@ -120,7 +120,6 @@ class ModelConfig:
                         detector_config = {
                             "model_path": config.get("model_path", str(self.weights_dir / product_model_name / self.DEFAULT_MODEL_FILE)),
                             "confidence_threshold": config.get("confidence_threshold", 0.2),
-                            "nms_threshold": config.get("nms_threshold", 0.4),
                             "imgsz": config.get("imgsz", 640),
                             "target_classes": config.get("target_classes", [0])
                         }
@@ -143,12 +142,11 @@ class ModelConfig:
             "detector": {
                 "model_path": str(model_path),
                 "confidence_threshold": 0.2,
-                "nms_threshold": 0.4,
-                "imgsz": 640,
+                "imgsz": 1536,
                 "target_classes": [0]
             }
         }
-    
+
     def get_camera_device_id(self, product_model_name: Optional[str] = None, camera_id: int = 1) -> int:
         """
         Get camera device ID for a specific camera.

@@ -59,16 +59,21 @@ class EnhancedAMRTracker:
         self.pixel_size = pixel_size
 
         # Initialize data logger
-        #self.data_logger = TrackingDataLogger()
+        # self.data_logger = TrackingDataLogger()
 
         # Initialize components
         self.detector = None
-        #self.tracker = None
+        # self.tracker = None
         self.size_measurement = None
-        #self.speed_tracker = None
+        # self.speed_tracker = None
         self.visualizer = None
+        # Get fps from config if available
+        fps = 30
+        if self.config and hasattr(self.config, "measurement"):
+            fps = self.config.measurement.fps
+
         self.tracker = KalmanTracker(
-            fps=30,
+            fps=fps,
             pixel_size=self.pixel_size,
             track_id=0,
         )
@@ -77,12 +82,15 @@ class EnhancedAMRTracker:
 
     def _initialize_components(self):
         """Initialize all system components"""
-        logger.info(f"Initializing Enhanced AMR System (detector={self.detector_type}, tracker={self.tracker_type})")
+        logger.info(
+            f"Initializing Enhanced AMR System (detector={self.detector_type}, tracker={self.tracker_type})"
+        )
 
         # Initialize detector
         if self.detector_type == "yolo":
             try:
                 import torch
+
                 device = "cuda" if torch.cuda.is_available() else "cpu"
                 logger.info(f"Using device: {device}")
 
@@ -107,8 +115,8 @@ class EnhancedAMRTracker:
         #     self.speed_tracker = SpeedTracker(max_history=30, max_tracking_distance=500)
         #     logger.info("Speed tracker initialized")
         # else:
-        
-        #self.trackers = {}
+
+        # self.trackers = {}
         self.next_track_id = 0
         self.track_id = None
         logger.info("Multi-object Kalman filter tracker initialized")
@@ -118,15 +126,9 @@ class EnhancedAMRTracker:
             try:
                 # Load calibration data if available
                 try:
-                    if isinstance(self.config, dict):
-                        # dict object
-                        calibration_path = self.config["calibration"][
-                            "calibration_data_path"
-                        ]
-                    else:
-                        # SystemConfig object
-                        calibration_path = self.config.calibration.calibration_data_path
-                except (KeyError, AttributeError) as e:
+                    # SystemConfig object
+                    calibration_path = self.config.calibration.calibration_data_path
+                except AttributeError as e:
                     logger.debug(f"Error accessing calibration_data_path: {e}")
                     calibration_path = None
                 if calibration_path and Path(calibration_path).exists():
@@ -150,7 +152,6 @@ class EnhancedAMRTracker:
             except Exception as e:
                 logger.warning(f"Error initializing modules: {e}")
 
-
     def detect_objects(
         self, frame: np.ndarray, frame_number: int = 0, timestamp: float = None
     ) -> List[Dict]:
@@ -162,7 +163,7 @@ class EnhancedAMRTracker:
 
         # YOLO detection using YOLODetector
         detections = self.detector.detect(
-                image=frame, frame_number=frame_number, timestamp=timestamp
+            image=frame, frame_number=frame_number, timestamp=timestamp
         )
         return detections
 
@@ -177,7 +178,7 @@ class EnhancedAMRTracker:
             if len(detections) > 0:
                 # If no primary tracker exists, create one with the best detection
                 best_detection = detections[0]
-                #logger.info(f"length of detections: {len(detections)}")
+                # logger.info(f"length of detections: {len(detections)}")
 
                 if self.track_id is None:
                     # Select the best detection (largest area or highest confidence)
@@ -187,8 +188,11 @@ class EnhancedAMRTracker:
 
                     # Create primary tracker
                     self.track_id = 0
-        
-                    self.tracker.initialize_with_detection(best_detection.oriented_box_info["center"], best_detection.oriented_box_info["angle"])
+
+                    self.tracker.initialize_with_detection(
+                        best_detection.oriented_box_info["center"],
+                        best_detection.oriented_box_info["angle"],
+                    )
                     self.next_track_id += 1
 
                     # Update with first detection
@@ -259,9 +263,12 @@ class EnhancedAMRTracker:
                     #         break
 
                     # If no match, predict only (don't create new trackers)
-                   
+
                     tracking_result = self.tracker.update(
-                            bbox=best_detection.bbox, center=best_detection.oriented_box_info["center"], theta=best_detection.oriented_box_info["angle"], frame_number=frame_number
+                        bbox=best_detection.bbox,
+                        center=best_detection.oriented_box_info["center"],
+                        theta=best_detection.oriented_box_info["angle"],
+                        frame_number=frame_number,
                     )
                     tracking_result["detection_type"] = "predicted"
                     tracking_result["track_id"] = self.track_id
@@ -270,19 +277,21 @@ class EnhancedAMRTracker:
 
                     if self.tracker.is_lost(max_frames_lost=MAX_FRAMES_LOST):
                         logger.info(
-                                f"Removing lost primary tracker ID: {self.track_id}"
-                            )
+                            f"Removing lost primary tracker ID: {self.track_id}"
+                        )
                         self.tracker.reset()
                         self.visualizer.reset()
                         self.track_id = None
-      
 
             else:
                 # No detections: predict with primary tracker
                 if self.track_id is not None:
                     if self.tracker is not None:
                         tracking_result = self.tracker.update(
-                            bbox=None, center=None, theta=None, frame_number=frame_number
+                            bbox=None,
+                            center=None,
+                            theta=None,
+                            frame_number=frame_number,
                         )
                         tracking_result["detection_type"] = "predicted"
                         tracking_result["track_id"] = self.track_id
@@ -297,40 +306,39 @@ class EnhancedAMRTracker:
                             self.tracker.reset()
                             self.visualizer.reset()
                             self.track_id = None
-                     
- 
+
             # Update speed tracker
-           # logger.debug(f"Speed tracker: {len(measurements)} measurements")
-            # results = self.speed_tracker.update(measurements)
-            # logger.debug(f"Speed tracker: {len(results)} results")
+        # logger.debug(f"Speed tracker: {len(measurements)} measurements")
+        # results = self.speed_tracker.update(measurements)
+        # logger.debug(f"Speed tracker: {len(results)} results")
         else:
-            raise ValueError(f"Unsupported tracker type: {self.tracker_type}. Only 'kalman' is supported.")
+            raise ValueError(
+                f"Unsupported tracker type: {self.tracker_type}. Only 'kalman' is supported."
+            )
         return results
 
     def visualize_results(
         self, frame: np.ndarray, detections: List[Dict], tracking_results: List[Dict]
     ) -> np.ndarray:
         """Visualize results using appropriate visualizer"""
-            # Use multi-object AMR tracker visualization
+        # Use multi-object AMR tracker visualization
         if self.visualizer and self.size_measurement:
-                # Use enhanced visualizer if available
-                detection_objects = detections
-                vis_frame = self.visualizer.draw_single_object(
-                    frame, detection_objects, tracking_results
-                )
+            # Use enhanced visualizer if available
+            detection_objects = detections
+            vis_frame = self.visualizer.draw_single_object(
+                frame, detection_objects, tracking_results
+            )
         else:
-                # Use basic AMR tracker visualization
-                vis_frame = frame.copy()
+            # Use basic AMR tracker visualization
+            vis_frame = frame.copy()
 
-                # Draw all tracking results
-                for i, result in enumerate(tracking_results):
-                    if "track_id" in result:
-                        if result["track_id"] == 0:
-                            vis_frame = self.tracker.draw_visualization(vis_frame, result)
+            # Draw all tracking results
+            for i, result in enumerate(tracking_results):
+                if "track_id" in result:
+                    if result["track_id"] == 0:
+                        vis_frame = self.tracker.draw_visualization(vis_frame, result)
 
         return vis_frame
-
-            
 
 
 def load_execution_preset(config_path: str, preset_name: str) -> dict:
@@ -346,7 +354,9 @@ def load_execution_preset(config_path: str, preset_name: str) -> dict:
                 return presets[preset_name]
             else:
                 available_presets = list(presets.keys())
-                logger.warning(f"Preset '{preset_name}' not found. Available: {available_presets}")
+                logger.warning(
+                    f"Preset '{preset_name}' not found. Available: {available_presets}"
+                )
                 return {}
         else:
             logger.warning("No execution presets found in config file")
@@ -362,22 +372,36 @@ def apply_preset_to_args(args: argparse.Namespace, preset: dict) -> argparse.Nam
         return args
 
     # Apply preset values only if args are not explicitly set
-    if args.mode == "basic" and "mode" in preset:
-        args.mode = preset["mode"]
-    if args.loader_mode == "auto" and "loader_mode" in preset:
-        args.loader_mode = preset["loader_mode"]
-    if args.source1 == "0" and "source1" in preset:
-        args.source1 = preset["source1"]
-    if args.source2 == "0" and "source2" in preset:
-        args.source2 = preset["source2"]
-    if args.source3 == "0" and "source3" in preset:
-        args.source3 = preset["source3"]
-    if args.fps == 30 and "fps" in preset:
-        args.fps = preset["fps"]
-    if args.detector == "yolo" and "detector" in preset:
-        args.detector = preset["detector"]
-    if args.tracker == "kalman" and "tracker" in preset:
-        args.tracker = preset["tracker"]
+
+    # Handle camera configuration in new format (camera_1, camera_2, camera_3)
+    if not hasattr(args, "camera_configs"):
+        args.camera_configs = {}
+    if not hasattr(args, "camera_measurements"):
+        args.camera_measurements = {}
+
+    if "camera_1" in preset and isinstance(preset["camera_1"], dict):
+        if "id" in preset["camera_1"]:
+            args.camera_1 = preset["camera_1"]["id"]
+        if "config" in preset["camera_1"]:
+            args.camera_configs["1"] = preset["camera_1"]["config"]
+        if "measurement" in preset["camera_1"]:
+            args.camera_measurements["1"] = preset["camera_1"]["measurement"]
+
+    if "camera_2" in preset and isinstance(preset["camera_2"], dict):
+        if "id" in preset["camera_2"]:
+            args.camera_2 = preset["camera_2"]["id"]
+        if "config" in preset["camera_2"]:
+            args.camera_configs["2"] = preset["camera_2"]["config"]
+        if "measurement" in preset["camera_2"]:
+            args.camera_measurements["2"] = preset["camera_2"]["measurement"]
+
+    if "camera_3" in preset and isinstance(preset["camera_3"], dict):
+        if "id" in preset["camera_3"]:
+            args.camera_3 = preset["camera_3"]["id"]
+        if "config" in preset["camera_3"]:
+            args.camera_configs["3"] = preset["camera_3"]["config"]
+        if "measurement" in preset["camera_3"]:
+            args.camera_measurements["3"] = preset["camera_3"]["measurement"]
 
     return args
 
@@ -385,33 +409,7 @@ def apply_preset_to_args(args: argparse.Namespace, preset: dict) -> argparse.Nam
 def main():
     """Enhanced main function with command line arguments"""
     parser = argparse.ArgumentParser(description="Enhanced AMR Tracking System")
-    parser.add_argument(
-        "--source1",
-        default="0",
-        help="Video source (0 for camera, file path, video file, or image sequence folder)",
-    )
-    parser.add_argument(
-        "--source2",
-        default="0",
-        help="Video source (0 for camera, file path, video file, or image sequence folder)",
-    )
-    parser.add_argument(
-        "--source3",
-        default="0",
-        help="Video source (0 for camera, file path, video file, or image sequence folder)",
-    )
-    parser.add_argument(
-        "--detector",
-        choices=["yolo"],
-        default="yolo",
-        help="Type of detector to use (enhanced mode only)",
-    )
-    parser.add_argument(
-        "--tracker",
-        choices=["kalman", "speed"],
-        default="kalman",
-        help="Type of tracker to use (enhanced mode only)",
-    )
+
     parser.add_argument(
         "--config",
         default="tracker_config.json",
@@ -420,22 +418,9 @@ def main():
     parser.add_argument(
         "--preset",
         type=str,
-        help="Load execution preset from config file (e.g., 'enhanced_stationary', 'enhanced_tracking', 'basic_tracking', 'camera_basic')",
+        help="Load execution preset from config file (e.g., 'camera_tracking', 'video_tracking', 'sequence_tracking')",
     )
-    parser.add_argument(
-        "--mode",
-        type=str,
-        choices=["basic", "enhanced"],
-        default="enhanced",
-        help="System mode: basic (AMR tracker only) or enhanced (AGV measurement system)",
-    )
-    parser.add_argument(
-        "--loader-mode",
-        type=str,
-        choices=["auto", "camera", "video", "sequence"],
-        default="auto",
-        help="Loader mode: auto (default), camera, video, or sequence",
-    )
+
     parser.add_argument(
         "--fps",
         type=int,
@@ -451,13 +436,13 @@ def main():
     )
 
     args = parser.parse_args()
-    
+
     # 로깅 설정 (명령줄 인자로 레벨 설정)
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
     logging.basicConfig(
         level=log_level,
-        format='%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s: %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        format="%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
     logger.setLevel(log_level)
 
@@ -478,54 +463,60 @@ def main():
         logger.warning(f"Config file not found: {args.config}")
         config = None
 
-    # Initialize system
-    # if args.mode == "basic":
-    #     logger.info("Running in basic mode...")
-    #     if config:
-    #         if isinstance(config, dict):
-    #             # dict object
-    #             pixel_size = config["measurement"]["pixel_size"]
-    #         else:
-    #             # SystemConfig object
-    #             pixel_size = config.measurement.pixel_size
-    #     else:
-    #         pixel_size = 1.0
-    #     run_basic_mode(
-    #         args.source,
-    #         args.fps,
-    #         args.loader_mode,
-    #         pixel_size,
-    #     )
-    if args.mode == "enhanced":
-        logger.info("Running in enhanced mode...")
-        if config:
-            try:
-                if isinstance(config, dict):
-                    pixel_size = config["measurement"]["pixel_size"]
-                elif hasattr(config, "measurement") and hasattr(config.measurement, "pixel_size"):
-                    pixel_size = config.measurement.pixel_size
-                else:
-                    logger.warning("Config object doesn't have expected structure, using default pixel_size")
-                    pixel_size = 1.0
-            except (KeyError, AttributeError) as e:
-                logger.warning(f"Error accessing pixel_size: {e}")
-                pixel_size = 1.0
-        else:
-            logger.warning("No config loaded, using default pixel_size")
-            pixel_size = 1.0
-        run_enhanced_mode(
-            args,
-            args.source1,
-            args.fps,
-            args.loader_mode,
-            pixel_size,
-        )
-    else:
-        logger.error(f"Unknown mode: {args.mode}")
+    logger.info("Running in enhanced mode...")
+
+    # Get preset configuration if available
+    loader_mode = None
+    source = None
+    fps = args.fps
+    pixel_size = 1.0
+
+    if config and config.execution:
+        # Get preset name from args or config
+        preset_name = args.preset
+        if not preset_name and config.execution.get("use_preset"):
+            preset_name = config.execution.get("use_preset")
+
+        if preset_name and config.execution.get("presets"):
+            presets = config.execution.get("presets", {})
+            preset = presets.get(preset_name, {})
+            if preset:
+                loader_mode = preset.get("loader_mode", "auto")
+                if "camera_1" in preset and isinstance(preset["camera_1"], dict):
+                    source = preset["camera_1"].get("id")
+                    if "measurement" in preset["camera_1"]:
+                        measurement = preset["camera_1"]["measurement"]
+                        pixel_size = measurement.get("pixel_size", 1.0)
+                        fps = measurement.get("fps", args.fps)
+                logger.info(
+                    f"Using preset: {preset_name} (loader_mode={loader_mode}, source={source})"
+                )
+
+    # Fallback to config.measurement.pixel_size if not set from preset
+    if pixel_size == 1.0 and config:
+        try:
+            pixel_size = config.measurement.pixel_size
+        except AttributeError:
+            pass
+
+    # Fallback to args.camera_1 if source not set
+    if not source and hasattr(args, "camera_1"):
+        source = args.camera_1
+
+    if not source:
+        logger.error("No source specified. Please provide --preset or --camera_1")
         return
 
+    run_enhanced_mode(
+        args,
+        source,
+        loader_mode or "auto",
+        fps,
+        pixel_size,
+    )
 
-def run_enhanced_mode(args, loader_source, fps=30, loader_mode="auto", pixel_size=1.0):
+
+def run_enhanced_mode(args, source, loader_mode="auto", fps=30, pixel_size=1.0):
     """Run enhanced AMR system"""
     # Load configuration
     config = None
@@ -539,20 +530,18 @@ def run_enhanced_mode(args, loader_source, fps=30, loader_mode="auto", pixel_siz
     # Initialize enhanced system
     amr_tracker = EnhancedAMRTracker(
         config=config,
-        detector_type=args.detector,
-        tracker_type=args.tracker,
         pixel_size=pixel_size,
     )
 
     # Create sequence loader based on mode
     if loader_mode == "camera":
-        cap = create_camera_device_loader(loader_source)
+        cap = create_camera_device_loader(source)
     elif loader_mode == "video":
-        cap = create_video_file_loader(loader_source)
+        cap = create_video_file_loader(source)
     elif loader_mode == "sequence":
-        cap = create_image_sequence_loader(loader_source, fps)
+        cap = create_image_sequence_loader(source, fps)
     else:  # auto mode
-        cap = create_sequence_loader(loader_source, fps)
+        cap = create_sequence_loader(source, fps)
 
     if cap is None:
         logger.error("Cannot create sequence loader")
@@ -595,6 +584,8 @@ def run_enhanced_mode(args, loader_source, fps=30, loader_mode="auto", pixel_siz
             new_width = int(width * scale)
             new_height = int(height * scale)
             vis_frame_window = cv2.resize(vis_frame, (new_width, new_height))
+        else:
+            vis_frame_window = vis_frame
 
         # Show results
         cv2.imshow("AMR Tracking", vis_frame_window)

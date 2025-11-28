@@ -145,7 +145,6 @@ height_mm = pixel_height * pixels_per_mm
   },
   "measurement": {
     "min_agv_area": 1000,
-    "max_tracking_distance": 500,
     "fps": 30
   },
   "execution": {

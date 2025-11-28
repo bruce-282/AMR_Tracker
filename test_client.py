@@ -114,8 +114,37 @@ class VisionClient:
                             if expected_cmd is None or response.get("cmd") == expected_cmd:
                                 # Remove this JSON from buffer
                                 remaining = text[json_end:].encode('utf-8')
-                                # Log response
+                                
+                                # Calculate memory size
+                                import sys
+                                json_size_bytes = len(json_str.encode('utf-8'))
+                                json_size_kb = json_size_bytes / 1024
+                                json_size_mb = json_size_kb / 1024
+                                
+                                # Estimate Python object size
+                                object_size_bytes = sys.getsizeof(response)
+                                if isinstance(response.get("data"), list):
+                                    # For trajectory data (list of dicts)
+                                    for item in response.get("data", []):
+                                        object_size_bytes += sys.getsizeof(item)
+                                        if isinstance(item, dict):
+                                            for key, value in item.items():
+                                                object_size_bytes += sys.getsizeof(key) + sys.getsizeof(value)
+                                elif isinstance(response.get("data"), dict):
+                                    # For single detection data
+                                    for key, value in response.get("data", {}).items():
+                                        object_size_bytes += sys.getsizeof(key) + sys.getsizeof(value)
+                                
+                                object_size_kb = object_size_bytes / 1024
+                                object_size_mb = object_size_kb / 1024
+                                
+                                # Log response with memory info
                                 self.logger.info(f"Response: {json.dumps(response, indent=2)}")
+                                self.logger.info(
+                                    f"Response memory size: "
+                                    f"JSON={json_size_bytes} bytes ({json_size_kb:.2f} KB, {json_size_mb:.3f} MB), "
+                                    f"Python object={object_size_bytes} bytes ({object_size_kb:.2f} KB, {object_size_mb:.3f} MB)"
+                                )
                                 return response
                             
                             # Not the response we want, continue looking
@@ -305,8 +334,36 @@ def main():
                                         
                                         # Handle camera responses (cmd: 3, 4, 5)
                                         if cmd in [3, 4, 5] and response.get("success"):
+                                            # Calculate memory size
+                                            import sys
+                                            json_size_bytes = len(json_str.encode('utf-8'))
+                                            json_size_kb = json_size_bytes / 1024
+                                            json_size_mb = json_size_kb / 1024
+                                            
+                                            # Estimate Python object size
+                                            object_size_bytes = sys.getsizeof(response)
+                                            if isinstance(response.get("data"), list):
+                                                # For trajectory data (list of dicts)
+                                                for item in response.get("data", []):
+                                                    object_size_bytes += sys.getsizeof(item)
+                                                    if isinstance(item, dict):
+                                                        for key, value in item.items():
+                                                            object_size_bytes += sys.getsizeof(key) + sys.getsizeof(value)
+                                            elif isinstance(response.get("data"), dict):
+                                                # For single detection data
+                                                for key, value in response.get("data", {}).items():
+                                                    object_size_bytes += sys.getsizeof(key) + sys.getsizeof(value)
+                                            
+                                            object_size_kb = object_size_bytes / 1024
+                                            object_size_mb = object_size_kb / 1024
+                                            
                                             # Log response in same format as send_request
                                             logger.info(f"Response: {json.dumps(response, indent=2)}")
+                                            logger.info(
+                                                f"Response memory size: "
+                                                f"JSON={json_size_bytes} bytes ({json_size_kb:.2f} KB, {json_size_mb:.3f} MB), "
+                                                f"Python object={object_size_bytes} bytes ({object_size_kb:.2f} KB, {object_size_mb:.3f} MB)"
+                                            )
                                             
                                             response_count[cmd] += 1
                                             

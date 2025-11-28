@@ -15,9 +15,16 @@ from .protocol import ProtocolHandler, Command
 from .model_config import ModelConfig
 from .camera_state import CameraState, CameraStateManager
 from src.core.detection import YOLODetector, Detection
-from src.core.tracking import KalmanTracker, associate_detections_to_trackers
+from src.core.tracking import KalmanTracker
 from src.utils.sequence_loader import create_sequence_loader, BaseLoader
 from src.utils.trajectory_repeatability import TrajectoryRepeatability
+from src.utils.config_loader import (
+    load_product_model_config,
+    get_camera_config,
+    get_camera_pixel_sizes,
+    load_tracking_config,
+    load_calibration_config,
+)
 from config import SystemConfig, TrackingConfig
 
 # Import visualizer
@@ -67,7 +74,7 @@ class VisionServer:
                                         datefmt='%Y-%m-%d %H:%M:%S')
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
-            self.logger.setLevel(logging.INFO)
+            self.logger.setLevel(logging.DEBUG)
         self.host = host
         self.port = port
         self.socket = None
@@ -115,6 +122,7 @@ class VisionServer:
         self.tracking_threads = {}  # camera_id -> thread
         self.frame_numbers = {}  # camera_id -> frame_number
         self.latest_detections = {}  # camera_id -> latest Detection object
+        self.camera_pixel_sizes = {}  # camera_id -> pixel_size (pre-loaded at initialization)
         
         # Visualization components (same as main.py)
         self.visualizer = None
@@ -175,12 +183,59 @@ class VisionServer:
     # ==================== Helper Methods ====================
     
     def _normalize_loader_mode(self, loader_mode: str) -> str:
-        """Normalize loader mode string to sequence_loader format."""
-        return LOADER_MODE_MAP.get(loader_mode, loader_mode)
+        """
+        Normalize loader mode string to sequence_loader format.
+        
+        Note: create_sequence_loader expects "video", "camera", "sequence" directly,
+        so this function should not be used. Keeping for backward compatibility but
+        returning the original mode.
+        """
+        # create_sequence_loader expects "video", "camera", "sequence" directly
+        # So we don't need to normalize - just return as-is
+        return loader_mode
     
-    def _get_pixel_size(self) -> float:
-        """Get pixel size from config."""
-        return self.config.measurement.pixel_size if self.config else 1.0
+    def _get_pixel_size(self, camera_id: Optional[int] = None) -> float:
+        """
+        Get pixel size for a camera (pre-loaded at initialization).
+        
+        Args:
+            camera_id: Optional camera ID (1, 2, or 3). If provided, returns 
+                      pre-loaded pixel_size for that camera.
+        
+        Returns:
+            Pixel size in mm. Defaults to 1.0 if not found.
+        """
+        # Return pre-loaded pixel_size if available
+        if camera_id and camera_id in self.camera_pixel_sizes:
+            return self.camera_pixel_sizes[camera_id]
+        
+        # Fallback to config.measurement.pixel_size
+        return self.config.measurement.pixel_size if self.config and hasattr(self.config, 'measurement') else 1.0
+    
+    def _load_camera_pixel_sizes(self, preset_name: Optional[str] = None, product_model_name: Optional[str] = None):
+        """
+        Pre-load pixel_size for all cameras from preset configuration.
+        Called during initialization to avoid repeated parsing.
+        
+        Args:
+            preset_name: Preset name to use. If None, uses self.preset_name or config's use_preset.
+            product_model_name: Product model name (e.g., "zoom1"). If None, uses selected_model.
+        """
+        if product_model_name is None:
+            product_model_name = self.model_config.get_selected_model()
+        
+        if preset_name is None:
+            preset_name = self.preset_name
+        
+        # Use config_loader utility
+        pixel_sizes = get_camera_pixel_sizes(
+            product_model_name=product_model_name,
+            main_config_execution=self.config.execution if self.config and hasattr(self.config, 'execution') and self.config.execution else None,
+            main_config_measurement=self.config.measurement if self.config and hasattr(self.config, 'measurement') else None,
+            preset_name=preset_name
+        )
+        
+        self.camera_pixel_sizes.update(pixel_sizes)
     
     def _get_fps_from_loader(self, loader: BaseLoader) -> float:
         """Get FPS from loader or config."""
@@ -196,7 +251,8 @@ class VisionServer:
             loader = self.camera_loaders.get(camera_id)
             fps = self._get_fps_from_loader(loader)
         
-        pixel_size = self._get_pixel_size()
+        # Get pixel_size for this specific camera
+        pixel_size = self._get_pixel_size(camera_id)
         
         return KalmanTracker(
             fps=fps,
@@ -262,7 +318,7 @@ class VisionServer:
         
         try:
             loader_mode, source, fps = self._get_camera_config(camera_id, product_model_name)
-            loader_mode = self._normalize_loader_mode(loader_mode)
+           # loader_mode = self._normalize_loader_mode(loader_mode)
             
             if camera_id not in self.camera_loaders:
                 self._initialize_camera(camera_id, loader_mode=loader_mode, source=source, fps=fps)
@@ -325,10 +381,10 @@ class VisionServer:
             if best_detection_idx is not None:
                 detection = detections[best_detection_idx]
                 tracking_result = tracker.update(
-                    frame,
-                    detection.bbox,
+                    bbox=detection.bbox,
+                    center=detection.get_center(),
+                    theta=detection.get_orientation(),
                     frame_number=frame_number,
-                    orientation=detection.get_orientation(),
                     timestamp=frame_timestamp,
                 )
                 tracking_result["track_id"] = track_id
@@ -338,8 +394,9 @@ class VisionServer:
             else:
                 # No detection found, predict only
                 tracking_result = tracker.update(
-                    frame,
-                    None,
+                    bbox=None,
+                    center=None,
+                    theta=None,
                     frame_number=frame_number,
                     timestamp=frame_timestamp
                 )
@@ -370,19 +427,15 @@ class VisionServer:
                 trackers[track_id] = tracker
 
             # Initialize tracker with detection
-            tracker.initialize_with_detection(detection.bbox)
-
-            # Update with orientation if available
-            if detection.get_orientation() is not None:
-                state = tracker.kf.statePost.flatten()
-                state[2] = detection.get_orientation()
-                tracker.kf.statePost = state.reshape(-1, 1)
+            center = detection.get_center()
+            angle = detection.get_orientation() if detection.get_orientation() is not None else 0.0
+            tracker.initialize_with_detection(center, angle)
 
             tracking_result = tracker.update(
-                frame,
-                detection.bbox,
+                bbox=detection.bbox,
+                center=center,
+                theta=angle,
                 frame_number=frame_number,
-                orientation=detection.get_orientation(),
                 timestamp=frame_timestamp,
             )
             tracking_result["track_id"] = track_id
@@ -459,11 +512,12 @@ class VisionServer:
 
         # Check if speed threshold reached (for stopping tracking)
         if abs(speed_pix_per_frame) > speed_thresh and cam_state.response_sent:
+          
             self.logger.info(
-                f"Camera {camera_id}: Speed threshold reached "
-                f"({speed_pix_per_frame:.3f} pix/frame > {speed_thresh} pix/frame). "
-                f"Stopping camera {camera_id} tracking loop."
+                    f"Camera {camera_id}: Speed threshold reached "
+                    f"({speed_pix_per_frame:.3f} pix/frame > {speed_thresh} pix/frame). "
             )
+            self.logger.info(f"Camera {camera_id}: AGV가 다시 움직이기 시작하였으므로 다음 카메라의 Tracking Loop를 시작합니다.") 
             self._start_next_camera_after_1_3(camera_id)
             return False  # Break tracking loop
 
@@ -481,16 +535,12 @@ class VisionServer:
                     cam2_state = self.camera_state_manager.get_or_create(2)
                     cam2_state.reset_detection_loss()
                     self.camera2_trajectory_sent = False
-                    if self.visualizer is not None and 0 in self.visualizer.track_trajs:
-                        self.visualizer.track_trajs[0] = []
                     self._start_camera_tracking(2)
-                    self.logger.info("Camera 2 tracking thread started")
+
         elif camera_id == 3:
             # Camera 3 -> Start camera 1 (cycle)
             self.logger.info("Camera 3: Starting camera 1 tracking loop again (infinite cycle).")
             self._reset_camera_state(1)
-            if self.visualizer is not None and 0 in self.visualizer.track_trajs:
-                self.visualizer.track_trajs[0] = []
             if 1 not in self.tracking_threads or not self.tracking_threads[1].is_alive():
                 if 1 in self.camera_loaders and 1 in self.trackers:
                     self._start_camera_tracking(1)
@@ -514,13 +564,13 @@ class VisionServer:
             True if tracking should continue, False if should break.
         """
         detection_loss_thresh = self.tracking_config.detection_loss_threshold_frames
-        trajectory_max_frames = self.tracking_config.camera2_trajectory_max_frames
+        camera2_trajectory_max_frames = self.tracking_config.camera2_trajectory_max_frames
 
         if tracking_results:
             tracker = next(iter(trackers.values())) if trackers else None
             if tracker:
                 kf_state = tracker.kf.statePost.flatten()
-                pixel_size = self.config.measurement.pixel_size if self.config else 1.0
+                pixel_size = self._get_pixel_size(camera_id)
                 x_mm = kf_state[0] * pixel_size
                 y_mm = kf_state[1] * pixel_size
                 rz_deg = kf_state[2]
@@ -536,48 +586,102 @@ class VisionServer:
         # Check if detection lost
         if not has_detection:
             cam_state.increment_detection_loss()
+        else:
+            # Reset detection loss counter when detection is found
+            cam_state.reset_detection_loss()
+        
+        # Log Camera 2 tracking status periodically
+        self.logger.info(
+            f"Camera 2: Trajectory tracking - "
+            f"trajectory_frames={len(self.camera2_trajectory)}/{camera2_trajectory_max_frames}, "
+            f"has_detection={has_detection}, "
+            f"detection_loss_frames={cam_state.detection_loss_frames}/{detection_loss_thresh}"
+        )
 
         # Check if should send trajectory data
         should_send_trajectory = False
         reason = ""
-        if not has_detection and cam_state.detection_loss_frames >= detection_loss_thresh:
+        if not has_detection and cam_state.detection_loss_frames >= detection_loss_thresh and len(self.camera2_trajectory) > 0:
             should_send_trajectory = True
-            reason = f"detection lost for {detection_loss_thresh}+ frames"
-        elif len(self.camera2_trajectory) >= trajectory_max_frames:
+            reason = f"detection lost for {cam_state.detection_loss_frames} frames (>= {detection_loss_thresh})"
+        elif len(self.camera2_trajectory) >= camera2_trajectory_max_frames:
             should_send_trajectory = True
-            reason = f"trajectory reached {len(self.camera2_trajectory)} frames (>= {trajectory_max_frames})"
+            reason = f"trajectory reached {len(self.camera2_trajectory)} frames (>= {camera2_trajectory_max_frames})"
 
-        if should_send_trajectory and len(self.camera2_trajectory) > 0 and not self.camera2_trajectory_sent:
-            self.camera2_trajectory_sent = True
-            self.logger.info(f"Camera 2: {reason}. Sending trajectory data to client ({len(self.camera2_trajectory)} frames).")
-
-            result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
-            self._save_result_image(camera_id, result_image_path, frame=vis_frame_original, detections=detections, tracking_results=tracking_results)
-
-            trajectory_data = list(self.camera2_trajectory)
-            cmd = Command.START_CAM_2
-            if self._send_response_to_client(cmd, success=True, data=trajectory_data):
-                self.logger.info(f"Camera 2 trajectory data sent ({len(trajectory_data)} frames) with result_image")
-
-            self.camera2_trajectory.clear()
-            cam_state.reset_detection_loss()
-
-            # Start camera 3
-            if not self.use_area_scan:
-                self._start_camera_3_after_2()
-
-            self.logger.info("Camera 2: Tracking loop exiting after sending trajectory.")
-            return False  # Break tracking loop
+        if should_send_trajectory:
+            if self._send_camera2_trajectory(
+                camera_id, 
+                frame=vis_frame_original, 
+                detections=detections, 
+                tracking_results=tracking_results,
+                reason=reason
+            ):
+                cam_state.reset_detection_loss()
+                self.logger.info("Camera 2: Tracking loop exiting after sending trajectory.")
+                return False  # Break tracking loop
 
         return True  # Continue tracking
+
+    def _send_camera2_trajectory(
+        self,
+        camera_id: int,
+        frame: Optional[np.ndarray] = None,
+        detections: Optional[List[Detection]] = None,
+        tracking_results: Optional[List[Dict]] = None,
+        reason: str = "trajectory data available"
+    ) -> bool:
+        """Send Camera 2 trajectory data to client.
+        
+        Args:
+            camera_id: Camera ID (should be 2)
+            frame: Optional frame for result image
+            detections: Optional detections for result image
+            tracking_results: Optional tracking results for result image
+            reason: Reason for sending trajectory
+            
+        Returns:
+            True if trajectory was sent, False otherwise
+        """
+        if camera_id != 2:
+            return False
+        
+        if len(self.camera2_trajectory) == 0 or self.camera2_trajectory_sent:
+            return False
+        
+        self.camera2_trajectory_sent = True
+        self.logger.info(f"Camera 2: {reason}. Sending trajectory data to client ({len(self.camera2_trajectory)} frames).")
+        
+        # Save result image if frame is available
+        if frame is not None:
+            result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
+            self._save_result_image(
+                camera_id, 
+                result_image_path, 
+                frame=frame, 
+                detections=detections or [], 
+                tracking_results=tracking_results or []
+            )
+        
+        # Send trajectory data
+        trajectory_data = list(self.camera2_trajectory)
+        cmd = Command.START_CAM_2
+        if self._send_response_to_client(cmd, success=True, data=trajectory_data):
+            self.logger.info(f"Camera 2 trajectory data sent ({len(trajectory_data)} frames)")
+        
+        self.camera2_trajectory.clear()
+        
+        # Start camera 3 if not use_area_scan
+        if not self.use_area_scan:
+            self.logger.info(f"Camera {camera_id}: AGV가 카메라 상에서 벗어났으므로 다음 카메라의 Tracking Loop를 시작합니다.")
+            self._start_camera_3_after_2()
+        
+        return True
 
     def _start_camera_3_after_2(self):
         """Start camera 3 after camera 2 finishes tracking."""
         self.logger.info("Camera 2: Starting camera 3 tracking loop.")
         if 3 not in self.tracking_threads or not self.tracking_threads[3].is_alive():
             self._reset_camera_state(3)
-            if self.visualizer is not None and 0 in self.visualizer.track_trajs:
-                self.visualizer.track_trajs[0] = []
             if 3 in self.camera_loaders and 3 in self.trackers:
                 self._start_camera_tracking(3)
             else:
@@ -590,7 +694,7 @@ class VisionServer:
             return  # Already sent
         
         # Get detection data (use detection center, not tracker position, for cameras 1, 3)
-        pixel_size = self._get_pixel_size()
+        pixel_size = self._get_pixel_size(camera_id)
         center = detection.get_center()
         x_mm = center[0] * pixel_size
         y_mm = center[1] * pixel_size
@@ -612,7 +716,7 @@ class VisionServer:
             
             # For cameras 1, 3: draw only current point, not trajectory
             draw_trajectory = camera_id not in [1, 3]
-            # Note: visualize_results internally copies frame via Visualizer.draw_detections
+            # Note: visualize_results internally copies frame via Visualizer.draw_single_object
             frame_with_results = self.visualize_results(camera_id, frame, [detection], tracking_results, draw_trajectory=draw_trajectory)
             cv2.imwrite(str(result_image_path), frame_with_results)
         except Exception as e:
@@ -823,7 +927,6 @@ class VisionServer:
             self.detector = YOLODetector(
                 str(self.model_path),
                 confidence_threshold=detector_config.get("confidence_threshold", 0.2),
-                nms_threshold=detector_config.get("nms_threshold", 0.4),
                 device=device,
                 imgsz=detector_config.get("imgsz", 640),
                 target_classes=detector_config.get("target_classes", [0]),
@@ -834,13 +937,62 @@ class VisionServer:
             self.logger.info(f"Vision started with product model: {product_model_name}")
             self.logger.info(f"  Model file: {self.model_path}")
             
+            # Load tracking configuration using config_loader utility
+            self.tracking_config = load_tracking_config(
+                product_model_name=product_model_name,
+                main_config_tracking=self.config.tracking if self.config and self.config.tracking else None
+            )
+            # Update camera2_trajectory maxlen
+            self.camera2_trajectory = deque(maxlen=self.tracking_config.camera2_trajectory_max_frames * 2)
+            
+            # Load calibration configuration using config_loader utility
+            calibration_data = load_calibration_config(
+                product_model_name=product_model_name,
+                main_config_calibration=self.config.calibration if self.config and self.config.calibration else None
+            )
+            
+            if calibration_data and ENHANCED_VISUALIZATION_AVAILABLE:
+                try:
+                    calibration_path = calibration_data.get("calibration_data_path")
+                    if calibration_path and Path(calibration_path).exists():
+                        with open(calibration_path, "r") as f:
+                            calib_data = json.load(f)
+                        
+                        # Re-initialize size measurement and visualizer with product model calibration
+                        # calibration_image_size can be tuple or list, convert to tuple
+                        calib_img_size = calibration_data.get("calibration_image_size", (3840, 2160))
+                        if isinstance(calib_img_size, list):
+                            calib_img_size = tuple(calib_img_size)
+                        
+                        self.size_measurement = SizeMeasurement(
+                            homography=np.array(calib_data["homography"]),
+                            camera_height=calibration_data.get("camera_height", 0.0),
+                            pixel_size=calib_data.get("pixel_size", 1.0),
+                            calibration_image_size=calib_img_size,
+                        )
+                        self.logger.info(f"Size measurement initialized from product model config ({product_model_name}.json)")
+                        
+                        self.visualizer = Visualizer(
+                            homography=np.array(calib_data["homography"])
+                        )
+                        self.logger.info(f"Visualizer initialized from product model config ({product_model_name}.json)")
+                    else:
+                        self.logger.debug(f"Calibration data file not found: {calibration_path}")
+                except Exception as e:
+                    self.logger.warning(f"Error initializing visualization components from product model config: {e}")
+            
+            # Pre-load pixel_sizes for all cameras from preset (efficient - done once at initialization)
+            exec_config = self.config.execution if self.config and hasattr(self.config, 'execution') and self.config.execution else {}
+            preset_name = self.preset_name or exec_config.get("use_preset")
+            self._load_camera_pixel_sizes(preset_name, product_model_name)
+            
             # Initialize all 3 cameras and initialize trackers (without starting tracking threads)
             for cam_id in [1, 2, 3]:
                 try:
                     self.logger.info(f"Initializing camera {cam_id}...")
                     
                     loader_mode, source, fps = self._get_camera_config(cam_id, product_model_name)
-                    loader_mode = self._normalize_loader_mode(loader_mode)
+                    #loader_mode = self._normalize_loader_mode(loader_mode)
                     
                     # Initialize camera loader
                     self._initialize_camera(cam_id, loader_mode=loader_mode, source=source, fps=fps)
@@ -912,52 +1064,18 @@ class VisionServer:
         if product_model_name is None:
             product_model_name = self.model_config.get_selected_model()
         
-        loader_mode = None
-        source = None
-        fps = 30.0
+        # Use config_loader utility
+        loader_mode, source, fps = get_camera_config(
+            camera_id=camera_id,
+            product_model_name=product_model_name,
+            main_config_execution=self.config.execution if self.config and hasattr(self.config, 'execution') and self.config.execution else None,
+            preset_name=self.preset_name
+        )
         
-        if self.config and hasattr(self.config, 'execution') and self.config.execution:
-            exec_config = self.config.execution
-            
-            # Check if preset is specified (command-line arg takes priority)
-            preset_name = self.preset_name or exec_config.get("use_preset")
-            if preset_name:
-                # Use specified preset
-                presets = exec_config.get("presets", {})
-                preset = presets.get(preset_name, {})
-                if preset:
-                    loader_mode = preset.get("loader_mode")
-                    source = preset.get("source")
-                    fps = preset.get("fps", 30.0)
-                    
-                    # If camera mode, use camera device ID from product model config
-                    if loader_mode == "camera" and product_model_name:
-                        source = self.model_config.get_camera_device_id(product_model_name, camera_id)
-                        self.logger.info(f"Camera {camera_id}: Using device_id={source} from product config '{product_model_name}'")
-                    
-                    self.logger.info(f"Using preset: {preset_name} (loader_mode={loader_mode}, source={source})")
-                else:
-                    self.logger.warning(f"Preset '{preset_name}' not found in config")
-            
-            # If preset not found or not specified, use default settings
-            if loader_mode is None or source is None:
-                loader_mode = exec_config.get("default_loader_mode", "camera")
-                source = exec_config.get("default_source", camera_id - 1)
-                fps = exec_config.get("default_fps", 30.0)
-                
-                # If camera mode, try to use camera device ID from product model config
-                if loader_mode == "camera" and product_model_name:
-                    source = self.model_config.get_camera_device_id(product_model_name, camera_id)
-                    self.logger.info(f"Camera {camera_id}: Using device_id={source} from product config '{product_model_name}'")
-                
-                self.logger.info(f"Using default settings (loader_mode={loader_mode}, source={source})")
-        else:
-            # Fallback defaults if no config
-            loader_mode = "camera"
-            if product_model_name:
-                source = self.model_config.get_camera_device_id(product_model_name, camera_id)
-            else:
-                source = camera_id - 1
+        # If camera mode and source is not set, try to use device ID from product model config
+        if loader_mode == "camera" and not source and product_model_name:
+            source = self.model_config.get_camera_device_id(product_model_name, camera_id)
+            self.logger.info(f"Camera {camera_id}: Using device_id={source} from product config '{product_model_name}'")
         
         return loader_mode, source, fps
     
@@ -1134,8 +1252,24 @@ class VisionServer:
             try:
                 ret, frame = loader.read()
                 if not ret:
-                    time.sleep(0.1)
-                    continue
+                    # No more frames available, exit tracking loop and start next camera
+                    self.logger.info(f"Camera {camera_id}: No more frames available. Exiting tracking loop.")
+                    # For Camera 2, send trajectory data if available before exiting
+                    if camera_id == 2:
+                        self._send_camera2_trajectory(
+                            camera_id,
+                            reason="No more frames available"
+                        )
+                    # Start next camera if not use_area_scan
+                    if not self.use_area_scan:
+                        if camera_id == 1 or camera_id == 3:
+                            self._start_next_camera_after_1_3(camera_id)
+                        elif camera_id == 2:
+                            self._start_camera_3_after_2()
+                        else:
+                            self.logger.error(f"Camera {camera_id}: Unknown camera ID. Exiting tracking loop.")
+                            return False
+                    break
 
                 frame_number += 1
                 self.frame_numbers[camera_id] = frame_number
@@ -1268,7 +1402,7 @@ class VisionServer:
                 orientation = detection.get_orientation()
                 
                 # Convert to mm
-                pixel_size = self.config.measurement.pixel_size if self.config else 1.0
+                pixel_size = self._get_pixel_size(camera_id)
                 x_mm = center[0] * pixel_size
                 y_mm = center[1] * pixel_size
                 rz_deg = orientation if orientation is not None else 0.0  # Already in degrees
@@ -1297,7 +1431,7 @@ class VisionServer:
         state = tracker.kf.statePost.flatten()
         
         # Convert to mm if config available
-        pixel_size = self.config.measurement.pixel_size if self.config else 1.0
+        pixel_size = self._get_pixel_size(camera_id)
         x_mm = state[0] * pixel_size
         y_mm = state[1] * pixel_size
         rz_deg = state[2]  # rz = yaw = rotation around Z-axis (in degrees)
@@ -1467,25 +1601,25 @@ class VisionServer:
             filtered_tracking_results.append(result)
         
         if self.visualizer is not None:
-            # For cameras 1, 3: clear trajectory before drawing to show only current point
-            if not draw_trajectory and camera_id in [1, 3]:
-                track_id = 0
-                if track_id in self.visualizer.track_trajs:
-                    # Clear trajectory and keep only current point
-                    if filtered_tracking_results:
-                        position = filtered_tracking_results[0].get("position", {})
-                        if position:
-                            x = int(position.get("x", 0))
-                            y = int(position.get("y", 0))
-                            self.visualizer.track_trajs[track_id] = [(x, y)]
-                        else:
-                            self.visualizer.track_trajs[track_id] = []
-                    else:
-                        self.visualizer.track_trajs[track_id] = []
-            
-            vis_frame = self.visualizer.draw_detections(
-                frame, detections, filtered_tracking_results
-            )
+            # For cameras 1, 3: do not draw tracking information, only detections
+            # For camera 2: draw tracking information with trajectory
+            if camera_id == 2:
+                # Camera 2: use tracking results with trajectory, but force track_id to 0
+                # (draw_single_object only draws when track_id == 0)
+                camera2_trackings = []
+                for result in filtered_tracking_results:
+                    result_copy = result.copy()
+                    result_copy["track_id"] = 0
+                    camera2_trackings.append(result_copy)
+                vis_frame = self.visualizer.draw_single_object(
+                    frame, detections, camera2_trackings
+                )
+            else:
+                # Camera 1, 3: create empty tracking dicts for each detection (to draw detections only)
+                empty_trackings = [{"track_id": 0, "trajectory": []} for _ in detections]
+                vis_frame = self.visualizer.draw_single_object(
+                    frame, detections, empty_trackings
+                )
         else:
             # Fallback: return frame as-is if visualizer is not available
             vis_frame = frame.copy()

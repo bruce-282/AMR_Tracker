@@ -368,9 +368,9 @@ class AGVCalibrator:
         )
 
         # 속도 추적기 초기화
-        self.speed_tracker = SpeedTracker(
-            max_tracking_distance=self.config.measurement.max_tracking_distance
-        )
+        # self.speed_tracker = SpeedTracker(
+        #     max_tracking_distance=self.config.measurement.max_tracking_distance
+        # )
 
         # 시각화 도구 초기화
         self.visualizer = Visualizer(homography=self.calibration_data["homography"])

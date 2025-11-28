@@ -134,16 +134,6 @@ class Visualizer:
             # Get bbox size from detection (for drawing purposes)
             x, y, w, h = detection.bbox
 
-            # bbox_corners = np.array(
-            #     [
-            #         [x, y],  # top-left
-            #         [x + w, y],  # top-right
-            #         [x + w, y + h],  # bottom-right
-            #         [x, y + h],  # bottom-left
-            #     ],
-            #     dtype=np.int32,
-            # )
-            # cv2.polylines(vis_frame, [bbox_corners], True, color, 2)
 
             # Draw oriented bounding box from mask if available
             if hasattr(detection, "oriented_box_info") and detection.oriented_box_info is not None:
@@ -180,32 +170,18 @@ class Visualizer:
                 except Exception:
                     pass
 
-            # angle = measurement.get("orientation", 0)
-            # print(f"Debug - Angle: {angle}")
-            # # Use bbox center for rotated rectangle center
-            # cx = x + w / 2.0
-            # cy = y + h / 2.0
-            # angle_deg = self._extract_angle_deg(angle)
-            # rect = ((cx, cy), (float(w), float(h)), float(angle_deg))
-            # box = cv2.boxPoints(rect)
-            # box = np.int32(box)
-            # cv2.fillPoly(vis_frame, [box], color)
 
             # Use Kalman tracker center (filtered, handles segmentation failures)
             center = (int(kalman_cx), int(kalman_cy))
-            # cv2.putText(
-            #     vis_frame,
-            #     f"ID: {track_id}",
-            #     (center[0] - 20, center[1] - 30),
-            #     cv2.FONT_HERSHEY_SIMPLEX,
-            #     2.0,
-            #     color,
-            #     4,
-            # )
+
 
             # Draw trajectory from tracker (trajectory is managed by KalmanTracker)
             trajectory = tracking.get("trajectory", [])
             if len(trajectory) >= 2:
+                # Limit trajectory to recent points for performance (max 500 points)
+                max_trajectory_points = 500
+                if len(trajectory) > max_trajectory_points:
+                    trajectory = trajectory[-max_trajectory_points:]
                 # Convert trajectory points to integer tuples for drawing
                 traj_pts = [(int(x), int(y)) for x, y in trajectory]
                 for i in range(1, len(traj_pts)):
@@ -213,26 +189,6 @@ class Visualizer:
             # 중심점도 표시
             cv2.circle(vis_frame, center, 5, box_color, -1)
 
-
-
-            
-
-            # Draw measurements (optionally disabled texts kept commented)
-            # self._draw_measurements(vis_frame, center, measurement, color)
-
-            # Draw speed vector
-            # speed_value = None
-            # if "speed" in measurement:
-            #     speed_value = measurement["speed"]
-            # elif (
-            #     "velocity" in measurement
-            #     and "linear_speed_mm_per_sec" in measurement["velocity"]
-            # ):
-            #     speed_value = measurement["velocity"]["linear_speed_mm_per_sec"]
-
-            # Skip speed vector; we are drawing trajectory instead
-            # if speed_value is not None and speed_value > 0:
-            #     self._draw_speed_vector(vis_frame, center, measurement, color)
 
         # Bottom overlay: x, y, rotation only
         height, width = vis_frame.shape[:2]
@@ -277,260 +233,211 @@ class Visualizer:
 
         return vis_frame
 
-    # def draw_tracking(
-    #     self, frame: np.ndarray, tracking_results: List[Dict]
+
+    # def _draw_measurements(
+    #     self,
+    #     frame: np.ndarray,
+    #     center: Tuple[int, int],
+    #     measurement: Dict,
+    #     color: Tuple[int, int, int],
+    # ):
+    #     """Draw measurement information."""
+    #     # 이미지 크기에 따라 텍스트 크기 동적 조정 (더 큰 텍스트)
+    #     height, width = frame.shape[:2]
+    #     font_scale = max(
+    #         2.0, min(5.0, width / 200)
+    #     )  # 200px 기준으로 스케일링 (더 큰 텍스트)
+    #     thickness = max(2, int(font_scale * 3))
+
+    #     y_offset = int(10 * font_scale)
+
+    #     # Size information
+    #     if "width" in measurement and "height" in measurement:
+    #         size_text = (
+    #             f"Size: {measurement['width']:.0f}x{measurement['height']:.0f}mm"
+    #         )
+    #         # cv2.putText(
+    #         #     frame,
+    #         #     size_text,
+    #         #     (center[0] - int(40 * font_scale), center[1] + y_offset),
+    #         #     cv2.FONT_HERSHEY_SIMPLEX,
+    #         #     font_scale,
+    #         #     color,
+    #         #     thickness,
+    #         # )
+    #         y_offset += int(15 * font_scale)
+
+    #     # Speed information
+    #     speed_value = None
+    #     if "speed" in measurement:
+    #         speed_value = measurement["speed"]
+    #     elif (
+    #         "velocity" in measurement
+    #         and "linear_speed_mm_per_sec" in measurement["velocity"]
+    #     ):
+    #         speed_value = measurement["velocity"]["linear_speed_mm_per_sec"]
+
+    #     if speed_value is not None:
+    #         speed_text = f"Speed: {speed_value:.1f}mm/s"
+    #         # Debug: print speed value
+    #         print(f"Debug - Speed value: {speed_value}")
+    #         # Use smaller font scale for speed text
+    #         speed_font_scale = font_scale * 0.7
+    #         speed_thickness = max(1, int(speed_font_scale * 2))
+    #         # cv2.putText(
+    #         #     frame,
+    #         #     speed_text,
+    #         #     (center[0] - int(40 * speed_font_scale), center[1] + y_offset),
+    #         #     cv2.FONT_HERSHEY_SIMPLEX,
+    #         #     speed_font_scale,
+    #         #     color,
+    #         #     speed_thickness,
+    #         # )
+    #         y_offset += int(15 * speed_font_scale)
+    #     else:
+    #         # Debug: print measurement structure
+    #         print(
+    #             f"Debug - No speed found in measurement keys: {list(measurement.keys())}"
+    #         )
+    #         if "velocity" in measurement:
+    #             print(f"Debug - Velocity keys: {list(measurement['velocity'].keys())}")
+
+    #     # Quality indicator
+    #     if "rectangularity" in measurement:
+    #         quality = measurement["rectangularity"]
+    #         quality_color = (0, 255, 0) if quality > 0.95 else (0, 165, 255)
+    #         quality_text = f"Q: {quality:.2f}"
+    #         # cv2.putText(
+    #         #     frame,
+    #         #     quality_text,
+    #         #     (center[0] - int(40 * font_scale), center[1] + y_offset),
+    #         #     cv2.FONT_HERSHEY_SIMPLEX,
+    #         #     font_scale,
+    #         #     quality_color,
+    #         #     thickness,
+    #         # )
+
+    # def _draw_speed_vector(
+    #     self,
+    #     frame: np.ndarray,
+    #     center: Tuple[int, int],
+    #     measurement: Dict,
+    #     color: Tuple[int, int, int],
+    # ):
+    #     """Draw speed vector arrow."""
+    #     # Get speed and direction information
+    #     speed_value = None
+    #     direction = None
+
+    #     if "speed" in measurement and "direction" in measurement:
+    #         speed_value = measurement["speed"]
+    #         direction = measurement["direction"]
+    #     elif "velocity" in measurement:
+    #         velocity = measurement["velocity"]
+    #         if "linear_speed_mm_per_sec" in velocity:
+    #             speed_value = velocity["linear_speed_mm_per_sec"]
+    #         # For direction, we can use orientation from Kalman tracker
+    #         if (
+    #             "orientation" in measurement
+    #             and "theta_deg" in measurement["orientation"]
+    #         ):
+    #             direction = measurement["orientation"]["theta_deg"]
+    #             print(f"Debug - Direction: {direction}")
+
+    #     if speed_value is None or direction is None:
+    #         return
+
+    #     # Calculate arrow end point
+    #     speed_scale = min(speed_value / 10, 50)  # Scale for visualization
+    #     angle_rad = np.radians(direction)
+
+    #     end_x = int(center[0] + speed_scale * np.cos(angle_rad))
+    #     end_y = int(center[1] + speed_scale * np.sin(angle_rad))
+
+    #     # Draw arrow
+    #     cv2.arrowedLine(frame, center, (end_x, end_y), color, 2, tipLength=0.3)
+
+    # def _draw_statistics(self, frame: np.ndarray, measurements: List[Dict]):
+    #     """Draw statistics panel."""
+    #     # Create semi-transparent overlay for stats
+    #     overlay = frame.copy()
+    #     height, width = frame.shape[:2]
+
+    #     # Statistics box
+    #     cv2.rectangle(overlay, (10, 10), (250, 120), (0, 0, 0), -1)
+    #     frame_with_overlay = cv2.addWeighted(overlay, 0.3, frame, 0.7, 0)
+
+    #     # Calculate statistics
+    #     num_agvs = len(measurements)
+
+    #     # Get speed values from different sources
+    #     speeds = []
+    #     for m in measurements:
+    #         if "speed" in m:
+    #             speeds.append(m["speed"])
+    #         elif "velocity" in m and "linear_speed_mm_per_sec" in m["velocity"]:
+    #             speeds.append(m["velocity"]["linear_speed_mm_per_sec"])
+
+    #     avg_speed = np.mean(speeds) if speeds else 0
+    #     total_area = sum(m.get("area", 0) for m in measurements)
+
+    #     # Draw text
+    #     stats = [
+    #         f"AGVs Detected: {num_agvs}",
+    #         f"Avg Speed: {avg_speed:.1f} mm/s",
+    #         f"Total Area: {total_area:.0f} mm²",
+    #         f"FPS: {cv2.getTickFrequency() / cv2.getTickCount():.1f}",
+    #     ]
+
+    #     y_pos = 30
+    #     for stat in stats:
+    #         # cv2.putText(
+    #         #     frame_with_overlay,
+    #         #     stat,
+    #         #     (20, y_pos),
+    #         #     cv2.FONT_HERSHEY_SIMPLEX,
+    #         #     1.5,
+    #         #     (255, 255, 255),
+    #         #     1,
+    #         # )
+    #         y_pos += 25
+
+    #     return frame_with_overlay
+
+    # def draw_trajectory(
+    #     self,
+    #     frame: np.ndarray,
+    #     trajectory: List[Tuple[float, float]],
+    #     color: Tuple[int, int, int] = (0, 255, 0),
     # ) -> np.ndarray:
     #     """
-    #     Draw tracking results on frame (tracked objects' centers in yellow).
+    #     Draw object trajectory on frame.
 
     #     Args:
     #         frame: Input image
-    #         tracking_results: List of tracking results
+    #         trajectory: List of (x, y) positions in world coordinates
+    #         color: Color for trajectory
 
     #     Returns:
-    #         Frame with tracking visualizations
+    #         Frame with trajectory
     #     """
-    #     vis_frame = frame.copy()
+    #     if len(trajectory) < 2 or self.homography is None:
+    #         return frame
 
-    #     # Draw tracked objects' centers in yellow (only for tracked objects)
-    #     for result in tracking_results:
-    #         track_id = result.get("track_id", 0)
-    #         if track_id != 0:
-    #             continue
+    #     # Convert world coordinates to image coordinates
+    #     trajectory_array = np.array(trajectory)
+    #     img_points = self._world_to_image(trajectory_array)
 
-    #         # Get position from tracking result
-    #         position = result.get("position", {})
-    #         if position:
-    #             tracked_x = position.get("x", 0)
-    #             tracked_y = position.get("y", 0)
-    #             tracked_center = (int(tracked_x), int(tracked_y))
+    #     # Draw trajectory
+    #     pts = img_points.astype(np.int32)
+    #     for i in range(1, len(pts)):
+    #         cv2.line(frame, tuple(pts[i - 1]), tuple(pts[i]), color, 2)
 
-    #             # Draw yellow circle for tracked center
-    #             cv2.circle(
-    #                 vis_frame, tracked_center, 5, (0, 255, 255), -1
-    #             )  # Yellow filled circle
+    #     # Mark start and end
+    #     cv2.circle(frame, tuple(pts[0]), 5, (0, 255, 0), -1)  # Start (green)
+    #     cv2.circle(frame, tuple(pts[-1]), 5, (0, 0, 255), -1)  # End (red)
 
-    #             # Draw trajectory for tracked object (yellow)
-    #             if track_id not in self.track_trajs:
-    #                 self.track_trajs[track_id] = []
-    #             self.track_trajs[track_id].append(tracked_center)
-    #             # Limit trajectory length
-    #             if len(self.track_trajs[track_id]) > 100:
-    #                 self.track_trajs[track_id] = self.track_trajs[track_id][-100:]
-
-    #             traj_pts = self.track_trajs[track_id]
-    #             if len(traj_pts) >= 2:
-    #                 for i in range(1, len(traj_pts)):
-    #                     cv2.line(
-    #                         vis_frame, traj_pts[i - 1], traj_pts[i], (0, 255, 255), 2
-    #                     )  # Yellow line
-
-    #     return vis_frame
-
-    def _draw_measurements(
-        self,
-        frame: np.ndarray,
-        center: Tuple[int, int],
-        measurement: Dict,
-        color: Tuple[int, int, int],
-    ):
-        """Draw measurement information."""
-        # 이미지 크기에 따라 텍스트 크기 동적 조정 (더 큰 텍스트)
-        height, width = frame.shape[:2]
-        font_scale = max(
-            2.0, min(5.0, width / 200)
-        )  # 200px 기준으로 스케일링 (더 큰 텍스트)
-        thickness = max(2, int(font_scale * 3))
-
-        y_offset = int(10 * font_scale)
-
-        # Size information
-        if "width" in measurement and "height" in measurement:
-            size_text = (
-                f"Size: {measurement['width']:.0f}x{measurement['height']:.0f}mm"
-            )
-            # cv2.putText(
-            #     frame,
-            #     size_text,
-            #     (center[0] - int(40 * font_scale), center[1] + y_offset),
-            #     cv2.FONT_HERSHEY_SIMPLEX,
-            #     font_scale,
-            #     color,
-            #     thickness,
-            # )
-            y_offset += int(15 * font_scale)
-
-        # Speed information
-        speed_value = None
-        if "speed" in measurement:
-            speed_value = measurement["speed"]
-        elif (
-            "velocity" in measurement
-            and "linear_speed_mm_per_sec" in measurement["velocity"]
-        ):
-            speed_value = measurement["velocity"]["linear_speed_mm_per_sec"]
-
-        if speed_value is not None:
-            speed_text = f"Speed: {speed_value:.1f}mm/s"
-            # Debug: print speed value
-            print(f"Debug - Speed value: {speed_value}")
-            # Use smaller font scale for speed text
-            speed_font_scale = font_scale * 0.7
-            speed_thickness = max(1, int(speed_font_scale * 2))
-            # cv2.putText(
-            #     frame,
-            #     speed_text,
-            #     (center[0] - int(40 * speed_font_scale), center[1] + y_offset),
-            #     cv2.FONT_HERSHEY_SIMPLEX,
-            #     speed_font_scale,
-            #     color,
-            #     speed_thickness,
-            # )
-            y_offset += int(15 * speed_font_scale)
-        else:
-            # Debug: print measurement structure
-            print(
-                f"Debug - No speed found in measurement keys: {list(measurement.keys())}"
-            )
-            if "velocity" in measurement:
-                print(f"Debug - Velocity keys: {list(measurement['velocity'].keys())}")
-
-        # Quality indicator
-        if "rectangularity" in measurement:
-            quality = measurement["rectangularity"]
-            quality_color = (0, 255, 0) if quality > 0.95 else (0, 165, 255)
-            quality_text = f"Q: {quality:.2f}"
-            # cv2.putText(
-            #     frame,
-            #     quality_text,
-            #     (center[0] - int(40 * font_scale), center[1] + y_offset),
-            #     cv2.FONT_HERSHEY_SIMPLEX,
-            #     font_scale,
-            #     quality_color,
-            #     thickness,
-            # )
-
-    def _draw_speed_vector(
-        self,
-        frame: np.ndarray,
-        center: Tuple[int, int],
-        measurement: Dict,
-        color: Tuple[int, int, int],
-    ):
-        """Draw speed vector arrow."""
-        # Get speed and direction information
-        speed_value = None
-        direction = None
-
-        if "speed" in measurement and "direction" in measurement:
-            speed_value = measurement["speed"]
-            direction = measurement["direction"]
-        elif "velocity" in measurement:
-            velocity = measurement["velocity"]
-            if "linear_speed_mm_per_sec" in velocity:
-                speed_value = velocity["linear_speed_mm_per_sec"]
-            # For direction, we can use orientation from Kalman tracker
-            if (
-                "orientation" in measurement
-                and "theta_deg" in measurement["orientation"]
-            ):
-                direction = measurement["orientation"]["theta_deg"]
-                print(f"Debug - Direction: {direction}")
-
-        if speed_value is None or direction is None:
-            return
-
-        # Calculate arrow end point
-        speed_scale = min(speed_value / 10, 50)  # Scale for visualization
-        angle_rad = np.radians(direction)
-
-        end_x = int(center[0] + speed_scale * np.cos(angle_rad))
-        end_y = int(center[1] + speed_scale * np.sin(angle_rad))
-
-        # Draw arrow
-        cv2.arrowedLine(frame, center, (end_x, end_y), color, 2, tipLength=0.3)
-
-    def _draw_statistics(self, frame: np.ndarray, measurements: List[Dict]):
-        """Draw statistics panel."""
-        # Create semi-transparent overlay for stats
-        overlay = frame.copy()
-        height, width = frame.shape[:2]
-
-        # Statistics box
-        cv2.rectangle(overlay, (10, 10), (250, 120), (0, 0, 0), -1)
-        frame_with_overlay = cv2.addWeighted(overlay, 0.3, frame, 0.7, 0)
-
-        # Calculate statistics
-        num_agvs = len(measurements)
-
-        # Get speed values from different sources
-        speeds = []
-        for m in measurements:
-            if "speed" in m:
-                speeds.append(m["speed"])
-            elif "velocity" in m and "linear_speed_mm_per_sec" in m["velocity"]:
-                speeds.append(m["velocity"]["linear_speed_mm_per_sec"])
-
-        avg_speed = np.mean(speeds) if speeds else 0
-        total_area = sum(m.get("area", 0) for m in measurements)
-
-        # Draw text
-        stats = [
-            f"AGVs Detected: {num_agvs}",
-            f"Avg Speed: {avg_speed:.1f} mm/s",
-            f"Total Area: {total_area:.0f} mm²",
-            f"FPS: {cv2.getTickFrequency() / cv2.getTickCount():.1f}",
-        ]
-
-        y_pos = 30
-        for stat in stats:
-            # cv2.putText(
-            #     frame_with_overlay,
-            #     stat,
-            #     (20, y_pos),
-            #     cv2.FONT_HERSHEY_SIMPLEX,
-            #     1.5,
-            #     (255, 255, 255),
-            #     1,
-            # )
-            y_pos += 25
-
-        return frame_with_overlay
-
-    def draw_trajectory(
-        self,
-        frame: np.ndarray,
-        trajectory: List[Tuple[float, float]],
-        color: Tuple[int, int, int] = (0, 255, 0),
-    ) -> np.ndarray:
-        """
-        Draw object trajectory on frame.
-
-        Args:
-            frame: Input image
-            trajectory: List of (x, y) positions in world coordinates
-            color: Color for trajectory
-
-        Returns:
-            Frame with trajectory
-        """
-        if len(trajectory) < 2 or self.homography is None:
-            return frame
-
-        # Convert world coordinates to image coordinates
-        trajectory_array = np.array(trajectory)
-        img_points = self._world_to_image(trajectory_array)
-
-        # Draw trajectory
-        pts = img_points.astype(np.int32)
-        for i in range(1, len(pts)):
-            cv2.line(frame, tuple(pts[i - 1]), tuple(pts[i]), color, 2)
-
-        # Mark start and end
-        cv2.circle(frame, tuple(pts[0]), 5, (0, 255, 0), -1)  # Start (green)
-        cv2.circle(frame, tuple(pts[-1]), 5, (0, 0, 255), -1)  # End (red)
-
-        return frame
+    #     return frame
 
     def _world_to_image(self, world_points: np.ndarray) -> np.ndarray:
         """Convert world coordinates to image coordinates."""
