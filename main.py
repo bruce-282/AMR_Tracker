@@ -1,9 +1,13 @@
 import argparse
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
+
+# Fix OpenMP library conflict
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import cv2
 import numpy as np

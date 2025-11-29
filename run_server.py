@@ -2,6 +2,11 @@
 
 import argparse
 import logging
+import os
+
+# Fix OpenMP library conflict
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 from src.core.server.vision_server import VisionServer
 
 

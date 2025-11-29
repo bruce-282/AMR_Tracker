@@ -1,5 +1,10 @@
 """TCP/IP Vision Server for AMR Tracking System."""
 
+import os
+
+# Fix OpenMP library conflict - must be set before importing other libraries
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 import socket
 import threading
 import json
