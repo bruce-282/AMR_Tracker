@@ -23,7 +23,6 @@ class YOLODetector:
         self,
         model_path: str,
         confidence_threshold: float = 0.5,
-        nms_threshold: float = 0.4,
         device: str = "cuda",
         target_classes: Optional[List[int]] = None,
         imgsz: int = 768,
@@ -34,13 +33,11 @@ class YOLODetector:
         Args:
             model_path: Path to YOLO model weights
             confidence_threshold: Minimum confidence for detections
-            nms_threshold: Non-maximum suppression threshold
             device: Device to run inference on ('cpu' or 'cuda')
             target_classes: List of class IDs to detect (None for all classes)
         """
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
-        self.nms_threshold = nms_threshold
         self.device = device
         self.target_classes = target_classes
         self.imgsz = imgsz
@@ -250,7 +247,6 @@ class YOLODetector:
         return {
             "model_path": self.model_path,
             "confidence_threshold": self.confidence_threshold,
-            "nms_threshold": self.nms_threshold,
             "device": self.device,
             "model_loaded": self.model is not None,
         }

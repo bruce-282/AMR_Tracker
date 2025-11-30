@@ -26,6 +26,9 @@
   },
   "execution": {
     "visualize_stream": true,
+    "result_base_path": "C:/CMES_AI/Result",
+    "summary_base_path": "C:/CMES_AI/Summary",
+    "debug_base_path": "C:/CMES_AI/Debug",
     "presets": {
 
       "camera_tracking": {
@@ -70,7 +73,7 @@
             }
         },
         "camera_2": {
-          "id": "data/novitec_capture_20251110_150019.mp4",
+          "id": "data/round_course.mp4",
           "config": "config/video_config.json",
           "measurement": {
               "min_agv_area": 1000,

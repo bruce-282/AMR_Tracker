@@ -1,8 +1,13 @@
 """Model configuration management."""
 
 import json
+import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any
+
+from config import TrackingConfig
+
+logger = logging.getLogger(__name__)
 
 
 class ModelConfig:
@@ -14,7 +19,7 @@ class ModelConfig:
     
     DEFAULT_CONFIG_PATH = "model_config.json"
     DEFAULT_WEIGHTS_DIR = "weights"
-    DEFAULT_MODEL_FILE = "last.pt"  # Default model file name in each product model folder
+    DEFAULT_MODEL_FILE = "best.pt"  # Default model file name in each product model folder
     
     def __init__(self, config_path: Optional[str] = None, weights_dir: str = "weights"):
         """
@@ -99,7 +104,6 @@ class ModelConfig:
                 "detector": {
                     "model_path": str(self.weights_dir / self.DEFAULT_MODEL_FILE),
                     "confidence_threshold": 0.2,
-                    "nms_threshold": 0.4,
                     "imgsz": 640,
                     "target_classes": [0]
                 }
@@ -191,6 +195,109 @@ class ModelConfig:
         """
         config = self.get_product_config(product_model_name)
         return config.get("detector", {})
+    
+    def get_tracking_config(
+        self, 
+        product_model_name: Optional[str] = None,
+        main_config_tracking: Optional[Any] = None
+    ) -> TrackingConfig:
+        """
+        Get tracking configuration for a product model.
+        
+        Priority: product model config > main config > default
+        
+        Args:
+            product_model_name: Product model name (e.g., "zoom1"). 
+                               If None, uses selected_model.
+            main_config_tracking: Tracking config from main config file (optional)
+        
+        Returns:
+            TrackingConfig instance
+        """
+        if product_model_name is None:
+            product_model_name = self.selected_model
+        
+        # Try product model config first
+        if product_model_name:
+            product_config = self._load_product_model_config_file(product_model_name)
+            if product_config and "tracker" in product_config:
+                tracker_data = product_config["tracker"]
+                logger.info(f"Loaded tracking config from product model config ({product_model_name}.json)")
+                return TrackingConfig(**tracker_data)
+        
+        # Fallback to main config
+        if main_config_tracking:
+            logger.debug("Using tracking config from main config")
+            return main_config_tracking
+        
+        # Fallback to default
+        logger.debug("Using default tracking config")
+        return TrackingConfig()
+    
+    def get_calibration_config(
+        self,
+        product_model_name: Optional[str] = None,
+        main_config_calibration: Optional[Any] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Get calibration configuration for a product model.
+        
+        Priority: product model config > main config
+        
+        Args:
+            product_model_name: Product model name (e.g., "zoom1"). 
+                               If None, uses selected_model.
+            main_config_calibration: Calibration config from main config file (optional)
+        
+        Returns:
+            Calibration config dictionary, or None if not found
+        """
+        if product_model_name is None:
+            product_model_name = self.selected_model
+        
+        # Try product model config first
+        if product_model_name:
+            product_config = self._load_product_model_config_file(product_model_name)
+            if product_config and "calibration" in product_config:
+                logger.debug(f"Loaded calibration config from product model config ({product_model_name}.json)")
+                return product_config["calibration"]
+        
+        # Fallback to main config
+        if main_config_calibration:
+            logger.debug("Using calibration config from main config")
+            # Convert CalibrationConfig object to dict
+            if hasattr(main_config_calibration, '__dict__'):
+                return main_config_calibration.__dict__
+            return main_config_calibration
+        
+        return None
+    
+    def _load_product_model_config_file(self, product_model_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Load product model configuration file (config/{product_model_name}.json).
+        
+        Args:
+            product_model_name: Product model name (e.g., "zoom1")
+        
+        Returns:
+            Dictionary with config data, or None if file not found or error
+        """
+        if not product_model_name:
+            return None
+        
+        product_config_path = Path("config") / f"{product_model_name}.json"
+        if not product_config_path.exists():
+            logger.debug(f"Product model config file not found: {product_config_path}")
+            return None
+        
+        try:
+            with open(product_config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            logger.debug(f"Loaded product model config from {product_config_path}")
+            return config
+        except Exception as e:
+            logger.warning(f"Failed to load product model config from {product_config_path}: {e}")
+            return None
     
     def add_product_model(self, product_model_name: str):
         """Add product model to list."""

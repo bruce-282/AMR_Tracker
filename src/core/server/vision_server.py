@@ -21,14 +21,13 @@ from .model_config import ModelConfig
 from .camera_state import CameraState, CameraStateManager
 from src.core.detection import YOLODetector, Detection
 from src.core.tracking import KalmanTracker
+from src.core.amr_tracker import EnhancedAMRTracker
 from src.utils.sequence_loader import create_sequence_loader, BaseLoader
 from src.utils.trajectory_repeatability import TrajectoryRepeatability
 from src.utils.config_loader import (
     load_product_model_config,
     get_camera_config,
     get_camera_pixel_sizes,
-    load_tracking_config,
-    load_calibration_config,
 )
 from config import SystemConfig, TrackingConfig
 
@@ -59,7 +58,6 @@ class VisionServer:
         self,
         host: str = "127.0.0.1",
         port: int = 10000,
-        config_path: Optional[str] = None,
         preset_name: Optional[str] = None
     ):
         """
@@ -68,7 +66,6 @@ class VisionServer:
         Args:
             host: Server host address
             port: Server port
-            config_path: Path to configuration file
             preset_name: Preset name to use (overrides config's use_preset)
         """
         # Setup logger with timestamp
@@ -90,12 +87,6 @@ class VisionServer:
         
         # Load configuration
         self.config = None
-        if config_path and Path(config_path).exists():
-            try:
-                self.config = SystemConfig.load(config_path)
-                self.logger.info(f"Configuration loaded from {config_path}")
-            except Exception as e:
-                self.logger.warning(f"Error loading config: {e}")
         
         # Model configuration
         self.model_config = ModelConfig()
@@ -108,20 +99,21 @@ class VisionServer:
         self.summary_base_path.mkdir(parents=True, exist_ok=True)
 
         # Debug data path (separate from studio results)
-        self.debug_base_path = Path("tracking_results")
+        self.debug_base_path = Path("C:/CMES_AI/Debug")
         self.debug_base_path.mkdir(parents=True, exist_ok=True)
         
         # System state
         self.vision_active = False
         # Get model file path from selected product model
-        selected_product_model = self.model_config.get_selected_model()
-        if selected_product_model:
-            self.model_path = self.model_config.get_model_file_path(selected_product_model)
-        else:
-            self.model_path = Path("weights/last.pt")  # Fallback
+        #selected_product_model = self.model_config.get_selected_model()
+        #if selected_product_model:
+        #    self.model_path = self.model_config.get_model_file_path(selected_product_model)
+        #else:
+        #    self.model_path = Path("weights/last.pt")  # Fallback
         self.use_area_scan = False
         self.detector = None
-        self.trackers = {}  # camera_id -> tracker dict
+        self.trackers = {}  # camera_id -> tracker dict (legacy, kept for compatibility)
+        self.amr_trackers = {}  # camera_id -> EnhancedAMRTracker instance
         self.camera_loaders = {}  # camera_id -> loader
         self.next_track_ids = {}  # camera_id -> next_track_id
         self.tracking_threads = {}  # camera_id -> thread
@@ -476,7 +468,13 @@ class VisionServer:
         if not tracking_results:
             return True
 
-        tracker = next(iter(trackers.values())) if trackers else None
+        # Try to get tracker from EnhancedAMRTracker first, then fallback to trackers dict
+        amr_tracker = self.amr_trackers.get(camera_id)
+        if amr_tracker and amr_tracker.tracker and amr_tracker.track_id is not None:
+            tracker = amr_tracker.tracker
+        else:
+            tracker = next(iter(trackers.values())) if trackers else None
+        
         if not tracker:
             return True
 
@@ -573,7 +571,13 @@ class VisionServer:
         camera2_trajectory_max_frames = self.tracking_config.camera2_trajectory_max_frames
 
         if tracking_results:
-            tracker = next(iter(trackers.values())) if trackers else None
+            # Try to get tracker from EnhancedAMRTracker first, then fallback to trackers dict
+            amr_tracker = self.amr_trackers.get(camera_id)
+            if amr_tracker and amr_tracker.tracker and amr_tracker.track_id is not None:
+                tracker = amr_tracker.tracker
+            else:
+                tracker = next(iter(trackers.values())) if trackers else None
+            
             if tracker:
                 kf_state = tracker.kf.statePost.flatten()
                 pixel_size = self._get_pixel_size(camera_id)
@@ -912,9 +916,20 @@ class VisionServer:
                 if not product_model_name:
                     raise ValueError("No model selected. Please provide model in request or set in config.")
             
-            # Get detector configuration from product model config
+            # Get all configurations from model_config (consistent interface)
             detector_config = self.model_config.get_detector_config(product_model_name)
+            tracking_config = self.model_config.get_tracking_config(
+                product_model_name=product_model_name,
+                main_config_tracking=self.config.tracking if self.config and self.config.tracking else None
+            )
+            calibration_data = self.model_config.get_calibration_config(
+                product_model_name=product_model_name,
+                main_config_calibration=self.config.calibration if self.config and self.config.calibration else None
+            )
+            
+            # Get model path from detector config
             model_path_str = detector_config.get("model_path")
+            self.logger.info(f"Detector config: {detector_config}")
             self.model_path = Path(model_path_str)
             
             if not self.model_path.exists():
@@ -938,24 +953,16 @@ class VisionServer:
                 target_classes=detector_config.get("target_classes", [0]),
             )
             
+            # Store tracking config
+            self.tracking_config = tracking_config
+            # Update camera2_trajectory maxlen
+            self.camera2_trajectory = deque(maxlen=self.tracking_config.camera2_trajectory_max_frames * 2)
+            
             self.vision_active = True
             
             self.logger.info(f"Vision started with product model: {product_model_name}")
             self.logger.info(f"  Model file: {self.model_path}")
-            
-            # Load tracking configuration using config_loader utility
-            self.tracking_config = load_tracking_config(
-                product_model_name=product_model_name,
-                main_config_tracking=self.config.tracking if self.config and self.config.tracking else None
-            )
-            # Update camera2_trajectory maxlen
-            self.camera2_trajectory = deque(maxlen=self.tracking_config.camera2_trajectory_max_frames * 2)
-            
-            # Load calibration configuration using config_loader utility
-            calibration_data = load_calibration_config(
-                product_model_name=product_model_name,
-                main_config_calibration=self.config.calibration if self.config and self.config.calibration else None
-            )
+            self.logger.info(f"  Tracking config loaded: {tracking_config}")
             
             if calibration_data and ENHANCED_VISUALIZATION_AVAILABLE:
                 try:
@@ -1242,12 +1249,27 @@ class VisionServer:
             loader.frame_number = 0
         
         self.camera_loaders[camera_id] = loader
-        self.trackers[camera_id] = {}
+        self.trackers[camera_id] = {}  # Legacy, kept for compatibility
         self.next_track_ids[camera_id] = 0
         self.frame_numbers[camera_id] = 0
         self.camera_status[camera_id] = True
         
-        self.logger.info(f"Camera {camera_id} initialized")
+        # Initialize EnhancedAMRTracker for this camera
+        pixel_size = self._get_pixel_size(camera_id)
+        fps = self._get_fps_from_loader(loader)
+        
+        # Get model path for this camera (can be customized per camera in the future)
+        model_path = str(self.model_path) if self.model_path else None
+        
+        self.amr_trackers[camera_id] = EnhancedAMRTracker(
+            config=self.config,
+            detector_type="yolo",
+            tracker_type="kalman",
+            pixel_size=pixel_size,
+            model_path=model_path,
+        )
+        
+        self.logger.info(f"Camera {camera_id} initialized with EnhancedAMRTracker")
         
         # Note: Connection notification is not sent automatically
         # Client can check camera status via START CAM response
@@ -1299,12 +1321,58 @@ class VisionServer:
                     if loader_timestamp is not None:
                         frame_timestamp = loader_timestamp
 
-                # Detect objects
-                detections = self.detector.detect(
-                    frame,
-                    frame_number=frame_number,
-                    timestamp=frame_timestamp
-                )
+                # Use EnhancedAMRTracker for detection and tracking
+                amr_tracker = self.amr_trackers.get(camera_id)
+                if amr_tracker:
+                    # Detect objects using EnhancedAMRTracker
+                    detections = amr_tracker.detect_objects(
+                        frame=frame,
+                        frame_number=frame_number,
+                        timestamp=frame_timestamp
+                    )
+                    
+                    # Track objects using EnhancedAMRTracker
+                    tracking_results = amr_tracker.track_objects(
+                        frame=frame,
+                        detections=detections,
+                        frame_number=frame_number
+                    )
+                    
+                    # Sync EnhancedAMRTracker's internal tracker to trackers dict for compatibility
+                    # This allows existing methods to work with EnhancedAMRTracker
+                    if amr_tracker.tracker and amr_tracker.track_id is not None:
+                        track_id = amr_tracker.track_id
+                        if track_id not in trackers:
+                            trackers[track_id] = amr_tracker.tracker
+                        else:
+                            # Update reference
+                            trackers[track_id] = amr_tracker.tracker
+                    else:
+                        # Clear trackers if no active tracking
+                        trackers.clear()
+                    
+                    # Visualize results using EnhancedAMRTracker
+                    vis_frame = amr_tracker.visualize_results(
+                        frame=frame,
+                        detections=detections,
+                        tracking_results=tracking_results
+                    )
+                else:
+                    # Fallback to legacy method if EnhancedAMRTracker not available
+                    detections = self.detector.detect(
+                        frame,
+                        frame_number=frame_number,
+                        timestamp=frame_timestamp
+                    )
+                    
+                    # Update trackers using helper method
+                    tracking_results = self._update_trackers(
+                        camera_id, trackers, detections, frame,
+                        frame_number, frame_timestamp, loader
+                    )
+                    
+                    # Visualize results
+                    vis_frame = self.visualize_results(camera_id, frame, detections, tracking_results)
 
                 has_detection = len(detections) > 0
                 cam_state = self.camera_state_manager.get_or_create(camera_id)
@@ -1318,15 +1386,6 @@ class VisionServer:
                 else:
                     if camera_id in [1, 3] and not self.use_area_scan:
                         cam_state.increment_detection_loss()
-
-                # Update trackers using helper method
-                tracking_results = self._update_trackers(
-                    camera_id, trackers, detections, frame,
-                    frame_number, frame_timestamp, loader
-                )
-
-                # Visualize results (always generate for camera 2 trajectory image, but only display if visualize_stream is True)
-                vis_frame = self.visualize_results(camera_id, frame, detections, tracking_results)
                 vis_frame_original = vis_frame  # Keep reference for camera 2
                 
                 if self.visualize_stream:
@@ -1367,13 +1426,27 @@ class VisionServer:
                             break  # Stop tracking loop
                 
                 # Clean up lost trackers
-                trackers_to_remove = [
-                    track_id for track_id, tracker in trackers.items()
-                    if tracker.is_lost(max_frames_lost=self.tracking_config.detection_loss_threshold_frames)
-                ]
-                
-                for track_id in trackers_to_remove:
-                    del trackers[track_id]
+                # For EnhancedAMRTracker, the cleanup is handled internally
+                # For legacy trackers, clean up lost ones
+                if amr_tracker:
+                    # Sync EnhancedAMRTracker state to trackers dict
+                    if amr_tracker.tracker and amr_tracker.track_id is not None:
+                        track_id = amr_tracker.track_id
+                        if track_id not in trackers:
+                            trackers[track_id] = amr_tracker.tracker
+                        else:
+                            trackers[track_id] = amr_tracker.tracker
+                    elif amr_tracker.track_id is None:
+                        # Tracker was lost, clear trackers dict
+                        trackers.clear()
+                else:
+                    trackers_to_remove = [
+                        track_id for track_id, tracker in trackers.items()
+                        if tracker.is_lost(max_frames_lost=self.tracking_config.detection_loss_threshold_frames)
+                    ]
+                    
+                    for track_id in trackers_to_remove:
+                        del trackers[track_id]
                 
                 # Small delay to prevent CPU overload
                 time.sleep(0.01)
@@ -1440,6 +1513,27 @@ class VisionServer:
                 return {"x": 0.0, "y": 0.0, "rz": 0.0}
         
         # Camera 2 or use_area_scan=true: use tracker data
+        # Try EnhancedAMRTracker first, then fallback to legacy trackers
+        amr_tracker = self.amr_trackers.get(camera_id)
+        if amr_tracker and amr_tracker.tracker and amr_tracker.track_id is not None:
+            # Use EnhancedAMRTracker's internal tracker
+            tracker = amr_tracker.tracker
+            state = tracker.kf.statePost.flatten()
+            
+            # Convert to mm if config available
+            pixel_size = self._get_pixel_size(camera_id)
+            x_mm = state[0] * pixel_size
+            y_mm = state[1] * pixel_size
+            rz_deg = state[2]  # rz = yaw = rotation around Z-axis (in degrees)
+            
+            self.logger.debug(f"Camera {camera_id}: Returning EnhancedAMRTracker data: x={x_mm:.2f}, y={y_mm:.2f}, rz={rz_deg:.4f}deg")
+            return {
+                "x": round(float(x_mm), 3),
+                "y": round(float(y_mm), 3),
+                "rz": round(float(rz_deg), 3)  # yaw angle in degrees
+            }
+        
+        # Fallback to legacy trackers
         trackers = self.trackers.get(camera_id, {})
         
         if not trackers:

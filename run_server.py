@@ -24,11 +24,11 @@ def main():
         default=10000,
         help="Server port (default: 10000)"
     )
-    parser.add_argument(
-        "--config",
-        default="tracker_config.json",
-        help="Configuration file path (default: tracker_config.json)"
-    )
+    # parser.add_argument(
+    #     "--config",
+    #     default="tracker_config.json",
+    #     help="Configuration file path (default: tracker_config.json)"
+    # )
     parser.add_argument(
         "--preset",
         default="video_tracking",
@@ -52,17 +52,15 @@ def main():
     logger.info("=" * 60)
     logger.info(f"Host: {args.host}")
     logger.info(f"Port: {args.port}")
-    logger.info(f"Config: {args.config}")
     if args.preset:
         logger.info(f"Preset: {args.preset}")
     else:
-        logger.info("Preset: None (using default_loader_mode)")
+        logger.info("Preset: None")
     logger.info("=" * 60)
     
     server = VisionServer(
         host=args.host,
         port=args.port,
-        config_path=args.config,
         preset_name=args.preset
     )
     
