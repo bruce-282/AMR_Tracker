@@ -213,10 +213,15 @@ class ResponseBuilder:
             vis_frame = self.visualize_results(
                 camera_id, frame, detections, tracking_results
             )
-            cv2.imwrite(str(image_path), vis_frame)
-            logger.info(f"Result image saved: {image_path}")
+            # Ensure directory exists
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            success = cv2.imwrite(str(image_path), vis_frame)
+            if success:
+                logger.info(f"Result image saved: {image_path}")
+            else:
+                logger.error(f"Failed to save result image: {image_path} (cv2.imwrite returned False)")
         except Exception as e:
-            logger.warning(f"Failed to save result image: {e}")
+            logger.error(f"Failed to save result image: {e}", exc_info=True)
     
     def visualize_results(
         self,

@@ -505,16 +505,16 @@ class VisionServer:
         self.camera2_trajectory_sent = True
         self.logger.info(f"Camera 2: {reason}. Sending trajectory data to client ({len(self.camera2_trajectory)} frames).")
         
-        # Save result image if frame is available
-        if frame is not None:
-            result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
-            self.response_builder.save_result_image(
-                camera_id, 
-                result_image_path, 
-                frame=frame, 
-                detections=detections or [], 
-                tracking_results=tracking_results or []
-            )
+        # Save result image (frame can be None, save_result_image will try to read from loader)
+        result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
+        self.logger.info(f"Camera {camera_id}: Saving result image to {result_image_path} (frame is {'not None' if frame is not None else 'None'})")
+        self.response_builder.save_result_image(
+            camera_id, 
+            result_image_path, 
+            frame=frame, 
+            detections=detections or [], 
+            tracking_results=tracking_results or []
+        )
         
         # Send trajectory data
         trajectory_data = list(self.camera2_trajectory)

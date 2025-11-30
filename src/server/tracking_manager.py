@@ -51,6 +51,7 @@ class TrackingManager:
         self.latest_detections: Dict[int, Detection] = {}
         self.camera2_trajectory = None  # Will be initialized with deque
         self.camera2_trajectory_sent = False
+        self.last_frames: Dict[int, np.ndarray] = {}  # Store last frame for each camera
         
         # Callbacks for camera-specific logic
         self.on_camera_1_3_stop: Optional[Callable[[int], None]] = None
@@ -149,6 +150,9 @@ class TrackingManager:
                     tracking_results=tracking_results
                 )
                 
+                # Store last frame for result image saving (especially for camera 2)
+                self.last_frames[camera_id] = frame.copy()
+                
                 has_detection = len(detections) > 0
                 cam_state = self.camera_state_manager.get_or_create(camera_id)
                 
@@ -212,10 +216,16 @@ class TrackingManager:
     def _handle_no_frames(self, camera_id: int):
         """Handle case when no more frames are available."""
         if camera_id == 2 and self.on_camera_2_trajectory:
-            # For no frames case, pass None for frame and empty lists
+            # Use last frame if available, otherwise None (save_result_image will try to read from loader)
+            last_frame = self.last_frames.get(camera_id)
+            if last_frame is not None:
+                logger.info(f"Camera {camera_id}: Using last frame for result image")
+            else:
+                logger.warning(f"Camera {camera_id}: No last frame available, save_result_image will try to read from loader")
+            
             self.on_camera_2_trajectory(
                 camera_id,
-                frame=None,
+                frame=last_frame,
                 detections=[],
                 tracking_results=[],
                 reason="No more frames available"
@@ -245,7 +255,7 @@ class TrackingManager:
             )
         elif camera_id == 2:
             return self._handle_camera_2_tracking(
-                camera_id, trackers, tracking_results, has_detection, vis_frame, detections, cam_state
+                camera_id, trackers, tracking_results, has_detection, vis_frame, detections, cam_state, frame
             )
         return True
     
@@ -339,7 +349,8 @@ class TrackingManager:
         has_detection: bool,
         vis_frame: np.ndarray,
         detections: List[Detection],
-        cam_state
+        cam_state,
+        frame: Optional[np.ndarray] = None
     ) -> bool:
         """Handle camera 2 specific tracking logic."""
         detection_loss_thresh = self.tracking_config.detection_loss_threshold_frames
@@ -392,9 +403,12 @@ class TrackingManager:
         
         if end_tracking:
             if self.on_camera_2_trajectory:
+                # Use original frame if available, otherwise use vis_frame
+                frame_to_save = frame if frame is not None else vis_frame
+                logger.info(f"Camera {camera_id}: End tracking triggered ({reason}), frame_to_save is {'not None' if frame_to_save is not None else 'None'}")
                 if self.on_camera_2_trajectory(
                     camera_id,
-                    vis_frame,
+                    frame_to_save,
                     detections,
                     tracking_results,
                     reason

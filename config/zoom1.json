@@ -26,9 +26,9 @@
   },
   "execution": {
     "visualize_stream": true,
-    "result_base_path": "C:/CMES_AI/Result",
-    "summary_base_path": "C:/CMES_AI/Summary",
-    "debug_base_path": "C:/CMES_AI/Debug",
+    "result_base_path": "C:\\Users\\junda\\OneDrive\\문서\\cmes_repo\\AMR_Tracker\\output\\Result",
+    "summary_base_path": "C:\\Users\\junda\\OneDrive\\문서\\cmes_repo\\AMR_Tracker\\output\\Summary",
+    "debug_base_path": "C:\\Users\\junda\\OneDrive\\문서\\cmes_repo\\AMR_Tracker\\output\\Debug",
     "image_undistortion": false,
     "presets": {
 
@@ -70,7 +70,7 @@
           "measurement": {
               "min_agv_area": 1000,
               "fps": 30,
-              "pixel_size": 1.0
+              "pixel_size": 0.5
             }
         },
         "camera_2": {
@@ -79,7 +79,7 @@
           "measurement": {
               "min_agv_area": 1000,
               "fps": 30,
-              "pixel_size": 1.0
+              "pixel_size": 0.5
             }
         },
         "camera_3": {
@@ -88,7 +88,7 @@
           "measurement": {
               "min_agv_area": 1000,
               "fps": 30,
-              "pixel_size": 1.0
+              "pixel_size": 0.5
             }
         }
       },
