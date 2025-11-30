@@ -738,11 +738,29 @@ class VisionServer:
                 main_config_calibration=self.config.calibration if self.config and self.config.calibration else None
             )
             
-            # Get image_undistortion setting from execution config
+            # Get execution config settings
             image_undistortion = False
             product_model_config = load_product_model_config(product_model_name)
             if product_model_config and "execution" in product_model_config:
-                image_undistortion = product_model_config["execution"].get("image_undistortion", False)
+                exec_config = product_model_config["execution"]
+                image_undistortion = exec_config.get("image_undistortion", False)
+                
+                # Update result paths from execution config
+                if "result_base_path" in exec_config:
+                    self.result_base_path = Path(exec_config["result_base_path"])
+                    self.result_base_path.mkdir(parents=True, exist_ok=True)
+                    self.response_builder.result_base_path = self.result_base_path
+                    self.logger.info(f"Result base path set to: {self.result_base_path}")
+                
+                if "summary_base_path" in exec_config:
+                    self.summary_base_path = Path(exec_config["summary_base_path"])
+                    self.summary_base_path.mkdir(parents=True, exist_ok=True)
+                    self.logger.info(f"Summary base path set to: {self.summary_base_path}")
+                
+                if "debug_base_path" in exec_config:
+                    self.debug_base_path = Path(exec_config["debug_base_path"])
+                    self.debug_base_path.mkdir(parents=True, exist_ok=True)
+                    self.logger.info(f"Debug base path set to: {self.debug_base_path}")
             
             # Add image_undistortion to calibration_data so it can be passed to loaders
             if calibration_data:
