@@ -153,8 +153,47 @@ class CameraManager:
             except Exception as e:
                 logger.warning(f"Camera {camera_id}: Failed to load config from {camera_config_path}: {e}")
         
-        # Create loader with config
-        loader = create_sequence_loader(source, fps=fps, loader_mode=loader_mode, config=camera_config)
+        # Load undistortion parameters from calibration config
+        enable_undistortion = False
+        camera_matrix = None
+        dist_coeffs = None
+        
+        if calibration_config:
+            # Check if image_undistortion is enabled (from execution config)
+            # This will be set in vision_server.py from product model config
+            enable_undistortion = calibration_config.get("enable_undistortion", False)
+            
+            if enable_undistortion:
+                # Load calibration data from file
+                calibration_data_path = calibration_config.get("calibration_data_path")
+                if calibration_data_path:
+                    try:
+                        calib_file = Path(calibration_data_path)
+                        if calib_file.exists():
+                            import json
+                            import numpy as np
+                            with open(calib_file, 'r', encoding='utf-8') as f:
+                                calib_data = json.load(f)
+                            
+                            camera_matrix = np.array(calib_data.get("camera_matrix"))
+                            dist_coeffs = np.array(calib_data.get("dist_coeffs"))
+                            
+                            logger.info(f"Camera {camera_id}: Loaded undistortion parameters from {calibration_data_path}")
+                        else:
+                            logger.warning(f"Camera {camera_id}: Calibration data file not found: {calibration_data_path}")
+                    except Exception as e:
+                        logger.warning(f"Camera {camera_id}: Failed to load calibration data: {e}")
+        
+        # Create loader with config and undistortion parameters
+        loader = create_sequence_loader(
+            source, 
+            fps=fps, 
+            loader_mode=loader_mode, 
+            config=camera_config,
+            enable_undistortion=enable_undistortion,
+            camera_matrix=camera_matrix,
+            dist_coeffs=dist_coeffs
+        )
         if loader is None:
             raise RuntimeError(f"Failed to create loader for camera {camera_id} (mode: {loader_mode}, source: {source})")
         

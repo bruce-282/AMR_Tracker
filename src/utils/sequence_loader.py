@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional, Union, List
 from enum import Enum
 import time
+import numpy as np
 
 # Novitec Camera import
 try:
@@ -47,9 +48,44 @@ class LoaderMode(Enum):
 class BaseLoader:
     """Base class for all sequence loaders"""
 
-    def __init__(self):
+    def __init__(self, enable_undistortion: bool = False, camera_matrix: Optional[np.ndarray] = None, dist_coeffs: Optional[np.ndarray] = None):
         self.frame_number = 0
         self.is_connected = False
+        self.enable_undistortion = enable_undistortion
+        self.camera_matrix = camera_matrix
+        self.dist_coeffs = dist_coeffs
+        
+        # Pre-compute undistortion maps for performance
+        self.undistort_map1 = None
+        self.undistort_map2 = None
+        self.undistort_image_size = None
+
+    def _initialize_undistort_maps(self, image_width: int, image_height: int):
+        """Initialize undistortion maps (called once during initialization)."""
+        if not self.enable_undistortion or self.camera_matrix is None or self.dist_coeffs is None:
+            return
+        
+        if self.undistort_map1 is None:
+            self.undistort_map1, self.undistort_map2 = cv2.initUndistortRectifyMap(
+                self.camera_matrix, self.dist_coeffs, None, self.camera_matrix, (image_width, image_height), cv2.CV_16SC2
+            )
+            self.undistort_image_size = (image_width, image_height)
+    
+    def _undistort_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Apply undistortion to frame if enabled."""
+        if not self.enable_undistortion or self.camera_matrix is None or self.dist_coeffs is None:
+            return frame
+        
+        if frame is None:
+            return frame
+        
+        # Initialize maps on first frame if not already initialized
+        if self.undistort_map1 is None:
+            h, w = frame.shape[:2]
+            self._initialize_undistort_maps(w, h)
+        
+        # Apply undistortion using pre-computed maps
+        return cv2.remap(frame, self.undistort_map1, self.undistort_map2, cv2.INTER_LINEAR)
 
     def read(self):
         """Read next frame"""
@@ -69,13 +105,18 @@ class BaseLoader:
 
     def get_frame_number(self):
         return self.frame_number
+    
+    def reset(self):
+        """Reset loader to beginning (for video/sequence loaders)."""
+        # Default implementation - override in subclasses
+        pass
 
 
 class VideoFileLoader(BaseLoader):
     """Loader for video files"""
 
-    def __init__(self, file_path: str):
-        super().__init__()
+    def __init__(self, file_path: str, enable_undistortion: bool = False, camera_matrix: Optional[np.ndarray] = None, dist_coeffs: Optional[np.ndarray] = None):
+        super().__init__(enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
         self.file_path = file_path
         self.cap = cv2.VideoCapture(file_path)
 
@@ -86,12 +127,24 @@ class VideoFileLoader(BaseLoader):
         self.fps = self.cap.get(cv2.CAP_PROP_FPS)
         self.is_connected = True
 
+        # Initialize undistortion maps if enabled (read first frame to get image size)
+        if self.enable_undistortion and self.camera_matrix is not None and self.dist_coeffs is not None:
+            ret, first_frame = self.cap.read()
+            if ret and first_frame is not None:
+                h, w = first_frame.shape[:2]
+                self._initialize_undistort_maps(w, h)
+                # Reset video to beginning
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            else:
+                print(f"[WARN] Could not read first frame to initialize undistortion maps")
+
         print(f"[OK] Video file opened: {file_path}")
         print(f"  Total frames: {self.total_frames}, FPS: {self.fps:.2f}")
 
     def read(self):
         ret, frame = self.cap.read()
         if ret:
+            frame = self._undistort_frame(frame)
             self.frame_number += 1
         return ret, frame
 
@@ -107,13 +160,20 @@ class VideoFileLoader(BaseLoader):
 
     def get_total_frames(self):
         return self.total_frames
+    
+    def reset(self):
+        """Reset video to beginning."""
+        if self.cap:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            self.frame_number = 0
+            print(f"[OK] Video file reset to beginning: {self.file_path}")
 
 
 class ImageSequenceLoader(BaseLoader):
     """Loader for image sequences"""
 
-    def __init__(self, sequence_path: str, fps: float = 30.0):
-        super().__init__()
+    def __init__(self, sequence_path: str, fps: float = 30.0, enable_undistortion: bool = False, camera_matrix: Optional[np.ndarray] = None, dist_coeffs: Optional[np.ndarray] = None):
+        super().__init__(enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
         self.sequence_path = Path(sequence_path)
         self.fps = fps
         self.frame_duration = 1.0 / fps
@@ -134,6 +194,16 @@ class ImageSequenceLoader(BaseLoader):
         self.current_index = 0
         self.last_frame_time = time.time()
         self.is_connected = True
+
+        # Initialize undistortion maps if enabled (read first image to get image size)
+        if self.enable_undistortion and self.camera_matrix is not None and self.dist_coeffs is not None and self.image_files:
+            first_image_path = self.image_files[0]
+            first_frame = cv2.imread(first_image_path)
+            if first_frame is not None:
+                h, w = first_frame.shape[:2]
+                self._initialize_undistort_maps(w, h)
+            else:
+                print(f"[WARN] Could not read first image to initialize undistortion maps")
 
         print(f"[OK] Image sequence opened: {sequence_path}")
         print(f"  Found {len(self.image_files)} images, FPS: {fps}")
@@ -156,6 +226,9 @@ class ImageSequenceLoader(BaseLoader):
             self.current_index += 1
             return False, None
 
+        # Apply undistortion if enabled
+        frame = self._undistort_frame(frame)
+        
         self.current_index += 1
         self.frame_number += 1
         self.last_frame_time = current_time
@@ -173,20 +246,30 @@ class ImageSequenceLoader(BaseLoader):
 
     def get_total_frames(self):
         return len(self.image_files)
+    
+    def reset(self):
+        """Reset image sequence to beginning."""
+        self.current_index = 0
+        self.frame_number = 0
+        self.last_frame_time = time.time()
+        print(f"[OK] Image sequence reset to beginning: {self.sequence_path}")
 
 
 class NovitecCameraLoader(BaseLoader):
     """Loader for Novitec industrial cameras"""
 
-    def __init__(self, device_id: str, config: Optional[dict] = None):
+    def __init__(self, device_id: str, config: Optional[dict] = None, enable_undistortion: bool = False, camera_matrix: Optional[np.ndarray] = None, dist_coeffs: Optional[np.ndarray] = None):
         """
         Initialize Novitec camera loader.
 
         Args:
             device_id: Device ID - serial number of the camera
             config: Optional configuration dictionary for camera parameters
+            enable_undistortion: Whether to enable undistortion
+            camera_matrix: Camera intrinsic matrix for undistortion
+            dist_coeffs: Distortion coefficients for undistortion
         """
-        super().__init__()
+        super().__init__(enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
 
         if not NOVITEC_AVAILABLE:
             raise RuntimeError(
@@ -218,6 +301,23 @@ class NovitecCameraLoader(BaseLoader):
 
         self.initialized = True
         self.is_connected = True
+        
+        # Initialize undistortion maps if enabled (read first frame to get image size)
+        if self.enable_undistortion and self.camera_matrix is not None and self.dist_coeffs is not None:
+            try:
+                data = self.camera.capture(output_formats=["image"])
+                if data and "image" in data:
+                    first_frame = data["image"]
+                    if first_frame is not None and len(first_frame.shape) == 3:
+                        h, w = first_frame.shape[:2]
+                        self._initialize_undistort_maps(w, h)
+                    else:
+                        print(f"[WARN] Could not read first frame to initialize undistortion maps")
+                else:
+                    print(f"[WARN] Could not capture first frame to initialize undistortion maps")
+            except Exception as e:
+                print(f"[WARN] Error initializing undistortion maps: {e}")
+        
         print(f"[OK] Novitec camera initialized and streaming: {self.device_id}")
 
     def read(self):
@@ -241,6 +341,8 @@ class NovitecCameraLoader(BaseLoader):
 
             # Ensure frame is in correct format (BGR for OpenCV)
             if frame is not None and len(frame.shape) == 3:
+                # Apply undistortion if enabled
+                frame = self._undistort_frame(frame)
                 self.frame_number += 1
                 return True, frame
             else:
@@ -279,7 +381,10 @@ def create_sequence_loader(
     source: Union[str, int], 
     fps: float = 30.0, 
     loader_mode: str = "auto",
-    config: Optional[dict] = None
+    config: Optional[dict] = None,
+    enable_undistortion: bool = False,
+    camera_matrix: Optional[np.ndarray] = None,
+    dist_coeffs: Optional[np.ndarray] = None
 ) -> Optional[BaseLoader]:
     """
     Create appropriate sequence loader based on source and mode
@@ -289,17 +394,20 @@ def create_sequence_loader(
         fps: Frame rate for image sequences
         loader_mode: Loader mode ("auto", "camera_device", "video_file", "image_sequence")
         config: Optional configuration dictionary (for camera loaders)
+        enable_undistortion: Whether to enable undistortion
+        camera_matrix: Camera intrinsic matrix for undistortion
+        dist_coeffs: Distortion coefficients for undistortion
 
     Returns:
         Appropriate loader instance or None if failed
     """
     try:
         if loader_mode == "camera":
-            return create_camera_device_loader(source=source, config=config)
+            return create_camera_device_loader(source=source, config=config, enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
         elif loader_mode == "video":
-            return create_video_file_loader(source=source)
+            return create_video_file_loader(source=source, enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
         elif loader_mode == "sequence":
-            return create_image_sequence_loader(source=source, fps=fps)
+            return create_image_sequence_loader(source=source, fps=fps, enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
         else:
             print(f"Error: Unknown loader mode: {loader_mode}")
             return None
@@ -310,12 +418,12 @@ def create_sequence_loader(
 
 
 def create_camera_device_loader(
-    source: str, config: Optional[dict] = None
+    source: str, config: Optional[dict] = None, enable_undistortion: bool = False, camera_matrix: Optional[np.ndarray] = None, dist_coeffs: Optional[np.ndarray] = None
 ) -> Optional[BaseLoader]:
     """Create camera device loader with Novitec fallback"""
 
     try:
-        loader = NovitecCameraLoader(device_id=source, config=config)
+        loader = NovitecCameraLoader(device_id=source, config=config, enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
         print("[OK] Novitec camera loader created")
         return loader
     except Exception as e:
@@ -323,10 +431,10 @@ def create_camera_device_loader(
         return None
 
 
-def create_video_file_loader(source: str) -> Optional[BaseLoader]:
+def create_video_file_loader(source: str, enable_undistortion: bool = False, camera_matrix: Optional[np.ndarray] = None, dist_coeffs: Optional[np.ndarray] = None) -> Optional[BaseLoader]:
     """Create video file loader"""
     try:
-        loader = VideoFileLoader(file_path=source)
+        loader = VideoFileLoader(file_path=source, enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
         print("[OK] Video file loader created")
         return loader
     except Exception as e:
@@ -334,11 +442,11 @@ def create_video_file_loader(source: str) -> Optional[BaseLoader]:
         return None
 
 def create_image_sequence_loader(
-    source: str, fps: float = 30.0
+    source: str, fps: float = 30.0, enable_undistortion: bool = False, camera_matrix: Optional[np.ndarray] = None, dist_coeffs: Optional[np.ndarray] = None
 ) -> Optional[BaseLoader]:
     """Create image sequence loader"""
     try:
-        loader = ImageSequenceLoader(sequence_path=source, fps=fps)
+        loader = ImageSequenceLoader(sequence_path=source, fps=fps, enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
         print("[OK] Image sequence loader created")
         return loader
     except Exception as e:

@@ -194,6 +194,14 @@ class TrackingManager:
         
         logger.info(f"Camera {camera_id} tracking stopped")
         
+        # Reset loader to beginning if it's a video/sequence loader
+        if loader and hasattr(loader, 'reset'):
+            try:
+                loader.reset()
+                logger.info(f"Camera {camera_id}: Loader reset to beginning")
+            except Exception as e:
+                logger.warning(f"Camera {camera_id}: Failed to reset loader: {e}")
+        
         # Close tracking window
         window_name = f"Camera {camera_id} - AMR Tracking"
         try:

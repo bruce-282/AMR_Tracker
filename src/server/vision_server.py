@@ -391,7 +391,7 @@ class VisionServer:
             self._reset_camera_state(1)
             if 1 not in self.tracking_threads or not self.tracking_threads[1].is_alive():
                 if 1 in self.camera_loaders and 1 in self.trackers:
-                    self._start_camera_tracking(1)
+                    self.tracking_manager.start_tracking(1)
                     self.logger.info("Camera 1 tracking thread started (cycle restarted)")
                 else:
                     self.logger.warning("Camera 1 not initialized, cannot start tracking")
@@ -738,6 +738,16 @@ class VisionServer:
                 main_config_calibration=self.config.calibration if self.config and self.config.calibration else None
             )
             
+            # Get image_undistortion setting from execution config
+            image_undistortion = False
+            product_model_config = load_product_model_config(product_model_name)
+            if product_model_config and "execution" in product_model_config:
+                image_undistortion = product_model_config["execution"].get("image_undistortion", False)
+            
+            # Add image_undistortion to calibration_data so it can be passed to loaders
+            if calibration_data:
+                calibration_data["enable_undistortion"] = image_undistortion
+            
             # Get model path from detector config
             model_path_str = detector_config.get("model_path")
             self.logger.info(f"Detector config: {detector_config}")
@@ -776,6 +786,10 @@ class VisionServer:
             self.logger.info(f"  Tracking config loaded: {tracking_config}")
             if calibration_data:
                 self.logger.info(f"  Calibration config loaded: {calibration_data.get('calibration_data_path', 'N/A')}")
+                if calibration_data.get('enable_undistortion', False):
+                    self.logger.info(f"  Image undistortion: ENABLED")
+                else:
+                    self.logger.info(f"  Image undistortion: DISABLED")
             
             # Pre-load pixel_sizes for all cameras from preset (efficient - done once at initialization)
             exec_config = self.config.execution if self.config and hasattr(self.config, 'execution') and self.config.execution else {}
@@ -801,7 +815,7 @@ class VisionServer:
                 try:
                     self.logger.info(f"Initializing camera {cam_id}...")
                     
-                    loader_mode, source, fps, config_path = self._get_camera_config(cam_id, product_model_name)
+                    loader_mode, source, fps, config_path = self.camera_manager.get_camera_config(cam_id, product_model_name)
                     
                     # Initialize camera loader
                     self._initialize_camera(cam_id, loader_mode=loader_mode, source=source, fps=fps, camera_config_path=config_path)

@@ -29,6 +29,7 @@
     "result_base_path": "C:/CMES_AI/Result",
     "summary_base_path": "C:/CMES_AI/Summary",
     "debug_base_path": "C:/CMES_AI/Debug",
+    "image_undistortion": false,
     "presets": {
 
       "camera_tracking": {
