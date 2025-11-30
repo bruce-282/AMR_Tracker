@@ -71,7 +71,7 @@ def get_camera_config_from_preset(
     camera_id: int,
     preset: Dict[str, Any],
     product_model_name: Optional[str] = None
-) -> Tuple[Optional[str], Optional[str], float]:
+) -> Tuple[Optional[str], Optional[str], float, Optional[str]]:
     """
     Get camera configuration from preset.
     
@@ -81,7 +81,7 @@ def get_camera_config_from_preset(
         product_model_name: Product model name (for logging)
     
     Returns:
-        Tuple of (loader_mode, source, fps)
+        Tuple of (loader_mode, source, fps, config_path)
     """
     loader_mode = preset.get("loader_mode", "auto")
     
@@ -90,7 +90,7 @@ def get_camera_config_from_preset(
     
     if not isinstance(camera_config, dict):
         logger.warning(f"Camera {camera_id}: '{camera_key}' not found or invalid in preset")
-        return None, None, 30.0
+        return None, None, 30.0, None
     
     # Get source from camera's id field
     source = camera_config.get("id")
@@ -102,7 +102,10 @@ def get_camera_config_from_preset(
     else:
         fps = 30.0
     
-    return loader_mode, source, fps
+    # Get config file path (for Novitec camera initialization)
+    config_path = camera_config.get("config")
+    
+    return loader_mode, source, fps, config_path
 
 
 def get_camera_config(
@@ -110,9 +113,9 @@ def get_camera_config(
     product_model_name: Optional[str],
     main_config_execution: Optional[Dict[str, Any]],
     preset_name: Optional[str] = None
-) -> Tuple[str, Optional[str], float]:
+) -> Tuple[str, Optional[str], float, Optional[str]]:
     """
-    Get camera configuration (loader_mode, source, fps) from config files.
+    Get camera configuration (loader_mode, source, fps, config_path) from config files.
     
     Priority:
     1. Product model config file (config/{product_model_name}.json)
@@ -125,13 +128,13 @@ def get_camera_config(
         preset_name: Preset name to use
     
     Returns:
-        Tuple of (loader_mode, source, fps)
+        Tuple of (loader_mode, source, fps, config_path)
     """
     exec_config = get_execution_config(product_model_name, main_config_execution)
     
     if not exec_config:
         # Fallback defaults if no config
-        return "camera", None, 30.0
+        return "camera", None, 30.0, None
     
     # Get preset name
     if not preset_name:
@@ -140,20 +143,21 @@ def get_camera_config(
     loader_mode = None
     source = None
     fps = 30.0
+    config_path = None
     
     if preset_name:
         presets = exec_config.get("presets", {})
         preset = presets.get(preset_name, {})
         if preset:
-            loader_mode, source, fps = get_camera_config_from_preset(
+            loader_mode, source, fps, config_path = get_camera_config_from_preset(
                 camera_id, preset, product_model_name
             )
             if loader_mode and source:
                 logger.info(
                     f"Camera {camera_id}: Using preset '{preset_name}' "
-                    f"(loader_mode={loader_mode}, source={source}, fps={fps})"
+                    f"(loader_mode={loader_mode}, source={source}, fps={fps}, config={config_path})"
                 )
-                return loader_mode, source, fps
+                return loader_mode, source, fps, config_path
         else:
             logger.warning(f"Preset '{preset_name}' not found in config")
     
@@ -162,13 +166,15 @@ def get_camera_config(
         loader_mode = exec_config.get("default_loader_mode", "camera")
         source = exec_config.get("default_source", camera_id - 1)
         fps = exec_config.get("default_fps", 30.0)
+        config_path = None
     else:
         loader_mode = "camera"
         source = camera_id - 1
         fps = 30.0
+        config_path = None
     
     logger.info(f"Camera {camera_id}: Using default settings (loader_mode={loader_mode}, source={source}, fps={fps})")
-    return loader_mode, source, fps
+    return loader_mode, source, fps, config_path
 
 
 def get_camera_pixel_sizes(

@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 
 import numpy as np
 
@@ -35,6 +35,9 @@ class EnhancedAMRTracker:
         tracker_type: str = "kalman",
         pixel_size: float = 1.0,
         model_path: Optional[str] = None,
+        detector_config: Optional[Dict[str, Any]] = None,
+        calibration_config: Optional[Dict[str, Any]] = None,
+        fps: Optional[float] = None,
     ):
         """
         Initialize enhanced AMR system
@@ -45,30 +48,35 @@ class EnhancedAMRTracker:
             tracker_type: Type of tracker ("kalman", "speed")
             pixel_size: Pixel size in mm
             model_path: Path to YOLO model file (default: "weights/zoom1/best.pt")
+            detector_config: Detector configuration dictionary (optional)
+            calibration_config: Calibration configuration dictionary (optional)
+            fps: Frame rate (optional, defaults to config.measurement.fps or 30)
         """
         self.config = config if config else SystemConfig()
         self.detector_type = detector_type
         self.tracker_type = tracker_type
         self.pixel_size = pixel_size
 
-        # Initialize components
+        # Initialize components (will be set in _initialize_components)
         self.detector = None
+        self.tracker = None
         self.size_measurement = None
         self.visualizer = None
-        
-        # Get fps from config if available
-        fps = 30
-        if self.config and hasattr(self.config, "measurement"):
-            fps = self.config.measurement.fps
+        self.next_track_id = 0
+        self.track_id = None
 
-        self.tracker = KalmanTracker(
-            fps=fps,
-            pixel_size=self.pixel_size,
-            track_id=0,
-        )
-
-        # Store model path for initialization
+        # Store configs for initialization
         self.model_path = model_path or "weights/zoom1/best.pt"
+        self.detector_config = detector_config or {}
+        self.calibration_config = calibration_config
+        
+        # Get fps from parameter, config, or default
+        if fps is not None:
+            self.fps = fps
+        elif self.config and hasattr(self.config, "measurement"):
+            self.fps = self.config.measurement.fps
+        else:
+            self.fps = 30
 
         self._initialize_components()
 
@@ -86,12 +94,13 @@ class EnhancedAMRTracker:
                 device = "cuda" if torch.cuda.is_available() else "cpu"
                 logger.info(f"Using device: {device}")
                 
+                # Use detector_config if provided, otherwise use defaults
                 self.detector = YOLODetector(
                     self.model_path,
-                    confidence_threshold=0.5,
+                    confidence_threshold=self.detector_config.get("confidence_threshold", 0.5),
                     device=device,
-                    imgsz=1536,
-                    target_classes=[0],
+                    imgsz=self.detector_config.get("imgsz", 1536),
+                    target_classes=self.detector_config.get("target_classes", [0]),
                 )
                 logger.info("YOLO detector initialized")
             except ImportError:
@@ -103,40 +112,76 @@ class EnhancedAMRTracker:
                 f"Unsupported detector type: {self.detector_type}. Only 'yolo' is supported."
             )
 
+        # Initialize tracker
+        if self.tracker_type == "kalman":
+            self.tracker = KalmanTracker(
+                fps=self.fps,
+                pixel_size=self.pixel_size,
+                track_id=0,
+            )
+            logger.info(f"Kalman filter tracker initialized (fps={self.fps}, pixel_size={self.pixel_size})")
+        else:
+            raise ValueError(
+                f"Unsupported tracker type: {self.tracker_type}. Only 'kalman' is supported."
+            )
+
         self.next_track_id = 0
         self.track_id = None
-        logger.info("Multi-object Kalman filter tracker initialized")
 
-        # Initialize additional components if using new modules
-        if self.config:
+        # Initialize calibration components
+        self._initialize_calibration()
+
+    def _initialize_calibration(self):
+        """Initialize calibration components (size measurement and visualizer)"""
+        calibration_path = None
+        
+        # Try to get calibration path from calibration_config first
+        if self.calibration_config:
+            calibration_path = self.calibration_config.get("calibration_data_path")
+            camera_height = self.calibration_config.get("camera_height", 0.0)
+            calibration_image_size = self.calibration_config.get("calibration_image_size", (3840, 2160))
+        # Fallback to config object
+        elif self.config:
             try:
-                # Load calibration data if available
-                try:
-                    # SystemConfig object
-                    calibration_path = self.config.calibration.calibration_data_path
-                except AttributeError as e:
-                    logger.debug(f"Error accessing calibration_data_path: {e}")
-                    calibration_path = None
-                if calibration_path and Path(calibration_path).exists():
-                    with open(calibration_path, "r") as f:
-                        calibration_data = json.load(f)
+                calibration_path = self.config.calibration.calibration_data_path
+                camera_height = self.config.calibration.camera_height
+                calibration_image_size = self.config.calibration.calibration_image_size
+            except AttributeError as e:
+                logger.debug(f"Error accessing calibration from config: {e}")
+                camera_height = 0.0
+                calibration_image_size = (3840, 2160)
+        else:
+            camera_height = 0.0
+            calibration_image_size = (3840, 2160)
 
-                    self.size_measurement = SizeMeasurement(
-                        homography=np.array(calibration_data["homography"]),
-                        camera_height=self.config.calibration.camera_height,
-                        pixel_size=calibration_data.get("pixel_size", 1.0),
-                        calibration_image_size=self.config.calibration.calibration_image_size,
-                    )
-                    logger.info("Size measurement initialized")
+        if calibration_path and Path(calibration_path).exists():
+            try:
+                with open(calibration_path, "r") as f:
+                    calibration_data = json.load(f)
 
-                    self.visualizer = Visualizer(
-                        homography=np.array(calibration_data["homography"])
-                    )
-                    logger.info("Visualizer initialized")
-                else:
-                    logger.info("No calibration data found - size measurement disabled")
+                # Convert calibration_image_size to tuple if it's a list
+                if isinstance(calibration_image_size, list):
+                    calibration_image_size = tuple(calibration_image_size)
+
+                self.size_measurement = SizeMeasurement(
+                    homography=np.array(calibration_data["homography"]),
+                    camera_height=camera_height,
+                    pixel_size=calibration_data.get("pixel_size", 1.0),
+                    calibration_image_size=calibration_image_size,
+                )
+                logger.info("Size measurement initialized from calibration config")
+
+                self.visualizer = Visualizer(
+                    homography=np.array(calibration_data["homography"])
+                )
+                logger.info("Visualizer initialized from calibration config")
             except Exception as e:
-                logger.warning(f"Error initializing modules: {e}")
+                logger.warning(f"Error loading calibration data from {calibration_path}: {e}")
+        else:
+            if calibration_path:
+                logger.debug(f"Calibration data file not found: {calibration_path}")
+            else:
+                logger.debug("No calibration config provided - size measurement disabled")
 
     def detect_objects(
         self, frame: np.ndarray, frame_number: int = 0, timestamp: float = None

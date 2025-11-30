@@ -19,6 +19,9 @@ import numpy as np
 from .protocol import ProtocolHandler, Command
 from .model_config import ModelConfig
 from .camera_state import CameraState, CameraStateManager
+from .camera_manager import CameraManager
+from .tracking_manager import TrackingManager
+from .response_builder import ResponseBuilder
 from src.core.detection import YOLODetector, Detection
 from src.core.tracking import KalmanTracker
 from src.core.amr_tracker import EnhancedAMRTracker
@@ -31,13 +34,6 @@ from src.utils.config_loader import (
 )
 from config import SystemConfig, TrackingConfig
 
-# Import visualizer
-try:
-    from src.visualization.display import Visualizer
-    from src.core.measurement.size_measurement import SizeMeasurement
-    ENHANCED_VISUALIZATION_AVAILABLE = True
-except ImportError:
-    ENHANCED_VISUALIZATION_AVAILABLE = False
 
 
 # Constants
@@ -104,59 +100,8 @@ class VisionServer:
         
         # System state
         self.vision_active = False
-        # Get model file path from selected product model
-        #selected_product_model = self.model_config.get_selected_model()
-        #if selected_product_model:
-        #    self.model_path = self.model_config.get_model_file_path(selected_product_model)
-        #else:
-        #    self.model_path = Path("weights/last.pt")  # Fallback
         self.use_area_scan = False
-        self.detector = None
-        self.trackers = {}  # camera_id -> tracker dict (legacy, kept for compatibility)
-        self.amr_trackers = {}  # camera_id -> EnhancedAMRTracker instance
-        self.camera_loaders = {}  # camera_id -> loader
-        self.next_track_ids = {}  # camera_id -> next_track_id
-        self.tracking_threads = {}  # camera_id -> thread
-        self.frame_numbers = {}  # camera_id -> frame_number
-        self.latest_detections = {}  # camera_id -> latest Detection object
-        self.camera_pixel_sizes = {}  # camera_id -> pixel_size (pre-loaded at initialization)
-        
-        # Visualization components (same as main.py)
-        self.visualizer = None
-        self.size_measurement = None
         self.visualize_stream = True  # Enable/disable visualization stream (cv2.imshow)
-        if ENHANCED_VISUALIZATION_AVAILABLE and self.config:
-            try:
-                # Load calibration data if available (same as main.py)
-                calibration_path = None
-                try:
-                    if hasattr(self.config, 'calibration') and hasattr(self.config.calibration, 'calibration_data_path'):
-                        calibration_path = self.config.calibration.calibration_data_path
-                except (KeyError, AttributeError) as e:
-                    self.logger.debug(f"Error accessing calibration_data_path: {e}")
-                    calibration_path = None
-                
-                if calibration_path and Path(calibration_path).exists():
-                    with open(calibration_path, "r") as f:
-                        calibration_data = json.load(f)
-                    
-                    # Initialize size measurement and visualizer if calibration data exists
-                    self.size_measurement = SizeMeasurement(
-                        homography=np.array(calibration_data["homography"]),
-                        camera_height=self.config.calibration.camera_height,
-                        pixel_size=calibration_data.get("pixel_size", 1.0),
-                        calibration_image_size=self.config.calibration.calibration_image_size,
-                    )
-                    self.logger.info("Size measurement initialized")
-                    
-                    self.visualizer = Visualizer(
-                        homography=np.array(calibration_data["homography"])
-                    )
-                    self.logger.info("Visualizer initialized")
-                else:
-                    self.logger.debug("No calibration data found. Size measurement disabled.")
-            except Exception as e:
-                self.logger.warning(f"Error initializing visualization components: {e}")
         
         # Camera state manager - centralized state management for all cameras
         self.camera_state_manager = CameraStateManager()
@@ -164,93 +109,96 @@ class VisionServer:
         # Tracking configuration
         self.tracking_config = self.config.tracking if self.config and self.config.tracking else DEFAULT_TRACKING_CONFIG
 
-        # For camera 2: store all frame positions (using deque for automatic size limit)
-        self.camera2_trajectory = deque(maxlen=self.tracking_config.camera2_trajectory_max_frames * 2)
-        self.camera2_trajectory_sent = False  # Flag to prevent duplicate sends in the same cycle
+        # Initialize managers (delegates for camera, tracking, and response handling)
+        self.camera_manager = CameraManager(
+            model_config=self.model_config,
+            system_config=self.config,
+            preset_name=self.preset_name
+        )
         
-        # Camera connection status
-        self.camera_status = {1: False, 2: False, 3: False}
+        self.tracking_manager = TrackingManager(
+            camera_manager=self.camera_manager,
+            camera_state_manager=self.camera_state_manager,
+            tracking_config=self.tracking_config,
+            use_area_scan=self.use_area_scan,
+            visualize_stream=self.visualize_stream
+        )
         
-        # For periodic response when use_area_scan is false
-        self.periodic_response_threads = {}  # camera_id -> thread
-        self.periodic_response_interval = 0.1  # 100ms (10 Hz)
+        # Set callbacks for TrackingManager
+        self.tracking_manager.on_camera_1_3_stop = self._start_next_camera_after_1_3
+        self.tracking_manager.on_camera_2_stop = self._start_camera_3_after_2
+        self.tracking_manager.on_camera_1_3_first_detection = self._send_first_detection_response
+        self.tracking_manager.on_camera_2_trajectory = self._send_camera2_trajectory
+        
+        # Share camera2_trajectory with TrackingManager
+        # This will be initialized in START_VISION
+        self.camera2_trajectory = None
+        self.camera2_trajectory_sent = False
+        
+        self.response_builder = ResponseBuilder(
+            camera_manager=self.camera_manager,
+            tracking_manager=self.tracking_manager,
+            result_base_path=self.result_base_path
+        )
         
         # Protocol handler
         self.protocol = ProtocolHandler()
     
+    # ==================== Property Delegation ====================
+    # Properties delegate to manager attributes for cleaner access
+    
+    @property
+    def camera_loaders(self):
+        """Access camera_loaders from CameraManager."""
+        return self.camera_manager.camera_loaders
+    
+    @property
+    def amr_trackers(self):
+        """Access amr_trackers from CameraManager."""
+        return self.camera_manager.amr_trackers
+    
+    @property
+    def trackers(self):
+        """Access trackers from CameraManager."""
+        return self.camera_manager.trackers
+    
+    @property
+    def tracking_threads(self):
+        """Access tracking_threads from TrackingManager."""
+        return self.tracking_manager.tracking_threads
+    
+    @property
+    def latest_detections(self):
+        """Access latest_detections from TrackingManager."""
+        return self.tracking_manager.latest_detections
+    
+    @property
+    def camera_pixel_sizes(self):
+        """Access camera_pixel_sizes from CameraManager."""
+        return self.camera_manager.camera_pixel_sizes
+    
+    @property
+    def frame_numbers(self):
+        """Access frame_numbers from CameraManager."""
+        return self.camera_manager.frame_numbers
+    
+    @property
+    def camera_status(self):
+        """Access camera_status from CameraManager."""
+        return self.camera_manager.camera_status
+    
     # ==================== Helper Methods ====================
     
-    def _normalize_loader_mode(self, loader_mode: str) -> str:
-        """
-        Normalize loader mode string to sequence_loader format.
-        
-        Note: create_sequence_loader expects "video", "camera", "sequence" directly,
-        so this function should not be used. Keeping for backward compatibility but
-        returning the original mode.
-        """
-        # create_sequence_loader expects "video", "camera", "sequence" directly
-        # So we don't need to normalize - just return as-is
-        return loader_mode
     
-    def _get_pixel_size(self, camera_id: Optional[int] = None) -> float:
-        """
-        Get pixel size for a camera (pre-loaded at initialization).
-        
-        Args:
-            camera_id: Optional camera ID (1, 2, or 3). If provided, returns 
-                      pre-loaded pixel_size for that camera.
-        
-        Returns:
-            Pixel size in mm. Defaults to 1.0 if not found.
-        """
-        # Return pre-loaded pixel_size if available
-        if camera_id and camera_id in self.camera_pixel_sizes:
-            return self.camera_pixel_sizes[camera_id]
-        
-        # Fallback to config.measurement.pixel_size
-        return self.config.measurement.pixel_size if self.config and hasattr(self.config, 'measurement') else 1.0
-    
-    def _load_camera_pixel_sizes(self, preset_name: Optional[str] = None, product_model_name: Optional[str] = None):
-        """
-        Pre-load pixel_size for all cameras from preset configuration.
-        Called during initialization to avoid repeated parsing.
-        
-        Args:
-            preset_name: Preset name to use. If None, uses self.preset_name or config's use_preset.
-            product_model_name: Product model name (e.g., "zoom1"). If None, uses selected_model.
-        """
-        if product_model_name is None:
-            product_model_name = self.model_config.get_selected_model()
-        
-        if preset_name is None:
-            preset_name = self.preset_name
-        
-        # Use config_loader utility
-        pixel_sizes = get_camera_pixel_sizes(
-            product_model_name=product_model_name,
-            main_config_execution=self.config.execution if self.config and hasattr(self.config, 'execution') and self.config.execution else None,
-            main_config_measurement=self.config.measurement if self.config and hasattr(self.config, 'measurement') else None,
-            preset_name=preset_name
-        )
-        
-        self.camera_pixel_sizes.update(pixel_sizes)
-    
-    def _get_fps_from_loader(self, loader: BaseLoader) -> float:
-        """Get FPS from loader or config."""
-        if loader and hasattr(loader, 'fps'):
-            return loader.fps
-        elif self.config and hasattr(self.config, 'measurement'):
-            return self.config.measurement.fps
-        return 30.0
     
     def _create_tracker(self, camera_id: int, track_id: int, fps: Optional[float] = None) -> KalmanTracker:
         """Create a KalmanTracker instance for a camera."""
         if fps is None:
             loader = self.camera_loaders.get(camera_id)
-            fps = self._get_fps_from_loader(loader)
+            fps = self.camera_manager.get_fps_from_loader(loader)
         
         # Get pixel_size for this specific camera
-        pixel_size = self._get_pixel_size(camera_id)
+        pixel_size = self.camera_manager.get_pixel_size(camera_id)
         
         return KalmanTracker(
             fps=fps,
@@ -306,7 +254,7 @@ class VisionServer:
 
         self.logger.info(
             f"Camera {camera_id}: Tracker created (track_id={track_id}, "
-            f"fps={fps:.2f}, pixel_size={self._get_pixel_size()})"
+            f"fps={fps:.2f}, pixel_size={self.camera_manager.get_pixel_size()})"
         )
     
     def _ensure_camera_initialized(self, camera_id: int, product_model_name: Optional[str] = None) -> bool:
@@ -315,11 +263,11 @@ class VisionServer:
             return True
         
         try:
-            loader_mode, source, fps = self._get_camera_config(camera_id, product_model_name)
+            loader_mode, source, fps, config_path = self.camera_manager.get_camera_config(camera_id, product_model_name)
            # loader_mode = self._normalize_loader_mode(loader_mode)
             
             if camera_id not in self.camera_loaders:
-                self._initialize_camera(camera_id, loader_mode=loader_mode, source=source, fps=fps)
+                self._initialize_camera(camera_id, loader_mode=loader_mode, source=source, fps=fps, camera_config_path=config_path)
             
             if camera_id not in self.trackers:
                 self._initialize_camera_tracker(camera_id, fps, track_id=0)
@@ -337,110 +285,6 @@ class VisionServer:
         # Return speed in pixels/frame (no fps multiplication)
         return np.sqrt(vx**2 + vy**2)
 
-    def _update_trackers(
-        self,
-        camera_id: int,
-        trackers: Dict[int, KalmanTracker],
-        detections: List[Detection],
-        frame: np.ndarray,
-        frame_number: int,
-        frame_timestamp: float,
-        loader: BaseLoader
-    ) -> List[Dict]:
-        """Update existing trackers and create new ones for unassigned detections.
-
-        Returns:
-            List of tracking results for this frame.
-        """
-        tracking_results = []
-        used_detections = set()
-        max_association_distance = 500  # pixels
-
-        # Update existing trackers with best matching detections
-        for track_id, tracker in list(trackers.items()):
-            best_detection_idx = None
-            best_distance = float('inf')
-
-            # Find best matching detection for this tracker
-            tracker_state = tracker.kf.statePost.flatten()
-            tracker_pos = np.array([tracker_state[0], tracker_state[1]])
-
-            for i, detection in enumerate(detections):
-                if i in used_detections:
-                    continue
-
-                detection_center = np.array(detection.get_center())
-                distance = np.linalg.norm(tracker_pos - detection_center)
-
-                if distance < best_distance and distance < max_association_distance:
-                    best_distance = distance
-                    best_detection_idx = i
-
-            if best_detection_idx is not None:
-                detection = detections[best_detection_idx]
-                tracking_result = tracker.update(
-                    bbox=detection.bbox,
-                    center=detection.get_center(),
-                    theta=detection.get_orientation(),
-                    frame_number=frame_number,
-                    timestamp=frame_timestamp,
-                )
-                tracking_result["track_id"] = track_id
-                tracking_result["class_name"] = getattr(detection, "class_name", "Unknown")
-                tracking_results.append(tracking_result)
-                used_detections.add(best_detection_idx)
-            else:
-                # No detection found, predict only
-                tracking_result = tracker.update(
-                    bbox=None,
-                    center=None,
-                    theta=None,
-                    frame_number=frame_number,
-                    timestamp=frame_timestamp
-                )
-                tracking_result["track_id"] = track_id
-                tracking_results.append(tracking_result)
-
-        # Create new trackers for unassigned detections
-        for i, detection in enumerate(detections):
-            if i in used_detections:
-                continue
-
-            # Look for uninitialized tracker (state at origin)
-            tracker = None
-            track_id = None
-            for existing_track_id, existing_tracker in trackers.items():
-                state = existing_tracker.kf.statePost.flatten()
-                if state[0] == 0.0 and state[1] == 0.0 and state[2] == 0.0:
-                    tracker = existing_tracker
-                    track_id = existing_track_id
-                    break
-
-            # Create new tracker if no uninitialized one found
-            if tracker is None:
-                track_id = self.next_track_ids[camera_id]
-                self.next_track_ids[camera_id] += 1
-                fps = self._get_fps_from_loader(loader)
-                tracker = self._create_tracker(camera_id, track_id, fps)
-                trackers[track_id] = tracker
-
-            # Initialize tracker with detection
-            center = detection.get_center()
-            angle = detection.get_orientation() if detection.get_orientation() is not None else 0.0
-            tracker.initialize_with_detection(center, angle)
-
-            tracking_result = tracker.update(
-                bbox=detection.bbox,
-                center=center,
-                theta=angle,
-                frame_number=frame_number,
-                timestamp=frame_timestamp,
-            )
-            tracking_result["track_id"] = track_id
-            tracking_result["class_name"] = getattr(detection, "class_name", "Unknown")
-            tracking_results.append(tracking_result)
-
-        return tracking_results
 
     def _handle_camera_1_3_tracking(
         self,
@@ -539,7 +383,7 @@ class VisionServer:
                     cam2_state = self.camera_state_manager.get_or_create(2)
                     cam2_state.reset_detection_loss()
                     self.camera2_trajectory_sent = False
-                    self._start_camera_tracking(2)
+                    self.tracking_manager.start_tracking(2)
 
         elif camera_id == 3:
             # Camera 3 -> Start camera 1 (cycle)
@@ -580,7 +424,7 @@ class VisionServer:
             
             if tracker:
                 kf_state = tracker.kf.statePost.flatten()
-                pixel_size = self._get_pixel_size(camera_id)
+                pixel_size = self.camera_manager.get_pixel_size(camera_id)
                 x_mm = kf_state[0] * pixel_size
                 y_mm = kf_state[1] * pixel_size
                 rz_deg = kf_state[2]
@@ -635,18 +479,18 @@ class VisionServer:
     def _send_camera2_trajectory(
         self,
         camera_id: int,
-        frame: Optional[np.ndarray] = None,
-        detections: Optional[List[Detection]] = None,
-        tracking_results: Optional[List[Dict]] = None,
-        reason: str = "trajectory data available"
+        frame: Optional[np.ndarray],
+        detections: List[Detection],
+        tracking_results: List[Dict],
+        reason: str
     ) -> bool:
-        """Send Camera 2 trajectory data to client.
+        """Send Camera 2 trajectory data to client (callback for TrackingManager).
         
         Args:
             camera_id: Camera ID (should be 2)
-            frame: Optional frame for result image
-            detections: Optional detections for result image
-            tracking_results: Optional tracking results for result image
+            frame: Frame for result image
+            detections: Detections for result image
+            tracking_results: Tracking results for result image
             reason: Reason for sending trajectory
             
         Returns:
@@ -664,7 +508,7 @@ class VisionServer:
         # Save result image if frame is available
         if frame is not None:
             result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
-            self._save_result_image(
+            self.response_builder.save_result_image(
                 camera_id, 
                 result_image_path, 
                 frame=frame, 
@@ -693,7 +537,7 @@ class VisionServer:
         if 3 not in self.tracking_threads or not self.tracking_threads[3].is_alive():
             self._reset_camera_state(3)
             if 3 in self.camera_loaders and 3 in self.trackers:
-                self._start_camera_tracking(3)
+                self.tracking_manager.start_tracking(3)
             else:
                 self.logger.warning("Camera 3 not initialized, cannot start tracking")
 
@@ -703,43 +547,10 @@ class VisionServer:
         if cam_state and cam_state.response_sent:
             return  # Already sent
         
-        # Get detection data (use detection center, not tracker position, for cameras 1, 3)
-        pixel_size = self._get_pixel_size(camera_id)
-        center = detection.get_center()
-        x_mm = center[0] * pixel_size
-        y_mm = center[1] * pixel_size
-        rz = detection.get_orientation() if detection.get_orientation() is not None else 0.0  # Already in degrees
+        # Build response using ResponseBuilder
+        response_data = self.response_builder.build_first_detection_response(camera_id, detection, frame)
         
-        # Save result image on first detection
-        result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
-        try:
-            # For cameras 1, 3: use detection center (not tracker position) to match response data
-            # Create tracking_results with detection center position
-            tracking_results = []
-            tracking_result = {
-                "track_id": 0,
-                "position": {"x": center[0], "y": center[1]},  # Use detection center, not tracker position
-                "orientation": {"theta_deg": rz},  # Already in degrees
-                "bbox": detection.bbox
-            }
-            tracking_results.append(tracking_result)
-            
-            # For cameras 1, 3: draw only current point, not trajectory
-            draw_trajectory = camera_id not in [1, 3]
-            # Note: visualize_results internally copies frame via Visualizer.draw_single_object
-            frame_with_results = self.visualize_results(camera_id, frame, [detection], tracking_results, draw_trajectory=draw_trajectory)
-            cv2.imwrite(str(result_image_path), frame_with_results)
-        except Exception as e:
-            self.logger.warning(f"Failed to save result image for camera {camera_id}: {e}")
-        
-        # Send response (round to 3 decimal places)
-        response_data = {
-            "x": round(float(x_mm), 3),
-            "y": round(float(y_mm), 3),
-            "rz": round(float(rz), 3),
-            "result_image": str(result_image_path)
-        }
-        
+        # Send response
         cmd = Command.START_CAM_1 + camera_id - 1
         if self._send_response_to_client(cmd, success=True, data=response_data):
             self.logger.info(f"Camera {camera_id}: First detection response sent")
@@ -941,63 +752,35 @@ class VisionServer:
             # Update use_area_scan
             if "use_area_scan" in request:
                 self.use_area_scan = bool(request["use_area_scan"])
+                # Update TrackingManager
+                self.tracking_manager.use_area_scan = self.use_area_scan
             
-            # Initialize detector with config parameters
-            import torch
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            self.detector = YOLODetector(
-                str(self.model_path),
-                confidence_threshold=detector_config.get("confidence_threshold", 0.2),
-                device=device,
-                imgsz=detector_config.get("imgsz", 640),
-                target_classes=detector_config.get("target_classes", [0]),
-            )
+            # Store configs for EnhancedAMRTracker initialization
+            # All components (detector, tracker, calibration) will be initialized by EnhancedAMRTracker._initialize_components()
+            self.detector_config = detector_config
+            self.calibration_config = calibration_data  # Store calibration config for EnhancedAMRTracker
             
             # Store tracking config
             self.tracking_config = tracking_config
-            # Update camera2_trajectory maxlen
+            # Update camera2_trajectory maxlen and share with TrackingManager
             self.camera2_trajectory = deque(maxlen=self.tracking_config.camera2_trajectory_max_frames * 2)
+            self.tracking_manager.camera2_trajectory = self.camera2_trajectory
+            self.tracking_manager.camera2_trajectory_sent = False
             
             self.vision_active = True
+            # Update TrackingManager
+            self.tracking_manager.set_vision_active(True)
             
             self.logger.info(f"Vision started with product model: {product_model_name}")
             self.logger.info(f"  Model file: {self.model_path}")
             self.logger.info(f"  Tracking config loaded: {tracking_config}")
-            
-            if calibration_data and ENHANCED_VISUALIZATION_AVAILABLE:
-                try:
-                    calibration_path = calibration_data.get("calibration_data_path")
-                    if calibration_path and Path(calibration_path).exists():
-                        with open(calibration_path, "r") as f:
-                            calib_data = json.load(f)
-                        
-                        # Re-initialize size measurement and visualizer with product model calibration
-                        # calibration_image_size can be tuple or list, convert to tuple
-                        calib_img_size = calibration_data.get("calibration_image_size", (3840, 2160))
-                        if isinstance(calib_img_size, list):
-                            calib_img_size = tuple(calib_img_size)
-                        
-                        self.size_measurement = SizeMeasurement(
-                            homography=np.array(calib_data["homography"]),
-                            camera_height=calibration_data.get("camera_height", 0.0),
-                            pixel_size=calib_data.get("pixel_size", 1.0),
-                            calibration_image_size=calib_img_size,
-                        )
-                        self.logger.info(f"Size measurement initialized from product model config ({product_model_name}.json)")
-                        
-                        self.visualizer = Visualizer(
-                            homography=np.array(calib_data["homography"])
-                        )
-                        self.logger.info(f"Visualizer initialized from product model config ({product_model_name}.json)")
-                    else:
-                        self.logger.debug(f"Calibration data file not found: {calibration_path}")
-                except Exception as e:
-                    self.logger.warning(f"Error initializing visualization components from product model config: {e}")
+            if calibration_data:
+                self.logger.info(f"  Calibration config loaded: {calibration_data.get('calibration_data_path', 'N/A')}")
             
             # Pre-load pixel_sizes for all cameras from preset (efficient - done once at initialization)
             exec_config = self.config.execution if self.config and hasattr(self.config, 'execution') and self.config.execution else {}
             preset_name = self.preset_name or exec_config.get("use_preset")
-            self._load_camera_pixel_sizes(preset_name, product_model_name)
+            self.camera_manager.load_camera_pixel_sizes(preset_name, product_model_name)
             
             # Load visualize_stream from product model config (execution.visualize_stream)
             product_model_config = load_product_model_config(product_model_name)
@@ -1005,6 +788,8 @@ class VisionServer:
                 exec_config_from_product = product_model_config["execution"]
                 if "visualize_stream" in exec_config_from_product:
                     self.visualize_stream = exec_config_from_product["visualize_stream"]
+                    # Update TrackingManager
+                    self.tracking_manager.visualize_stream = self.visualize_stream
                     self.logger.info(f"visualize_stream set to {self.visualize_stream} from {product_model_name}.json")
                 else:
                     self.logger.debug(f"visualize_stream not found in {product_model_name}.json, using default: {self.visualize_stream}")
@@ -1016,25 +801,19 @@ class VisionServer:
                 try:
                     self.logger.info(f"Initializing camera {cam_id}...")
                     
-                    loader_mode, source, fps = self._get_camera_config(cam_id, product_model_name)
-                    #loader_mode = self._normalize_loader_mode(loader_mode)
+                    loader_mode, source, fps, config_path = self._get_camera_config(cam_id, product_model_name)
                     
                     # Initialize camera loader
-                    self._initialize_camera(cam_id, loader_mode=loader_mode, source=source, fps=fps)
+                    self._initialize_camera(cam_id, loader_mode=loader_mode, source=source, fps=fps, camera_config_path=config_path)
                     
                     # Check connection and send NOTIFY_CONNECTION
-                    loader = self.camera_loaders.get(cam_id)
-                    if loader and hasattr(loader, 'check_connection'):
-                        is_connected = loader.check_connection()
-                        if is_connected:
-                            self._send_notification(cam_id, True)
-                            self.logger.info(f"Camera {cam_id} connection confirmed - NOTIFY_CONNECTION sent")
-                        else:
-                            self._send_notification(cam_id, False, error_code="CONNECTION_FAILED", error_desc="Camera connection check failed")
-                            self.logger.warning(f"Camera {cam_id} connection check failed - NOTIFY_CONNECTION sent")
+                    is_connected = self.camera_manager.check_camera_connection(cam_id)
+                    if is_connected:
+                        self._send_notification(cam_id, True)
+                        self.logger.info(f"Camera {cam_id} connection confirmed - NOTIFY_CONNECTION sent")
                     else:
-                        self._send_notification(cam_id, False, error_code="LOADER_ERROR", error_desc="Loader does not support connection check")
-                        self.logger.warning(f"Camera {cam_id} loader does not support connection check")
+                        self._send_notification(cam_id, False, error_code="CONNECTION_FAILED", error_desc="Camera connection check failed")
+                        self.logger.warning(f"Camera {cam_id} connection check failed - NOTIFY_CONNECTION sent")
                     
                     # For cameras 1 and 3: create tracker instance (track_id=0) without initialization
                     # For camera 2: do not create tracker yet (will be created when cameras 1/3 stop)
@@ -1060,7 +839,7 @@ class VisionServer:
                 # Start camera 1 tracking thread
                 if 1 in self.trackers and 1 in self.camera_loaders:
                     if 1 not in self.tracking_threads or not self.tracking_threads[1].is_alive():
-                        self._start_camera_tracking(1)
+                        self.tracking_manager.start_tracking(1)
                         time.sleep(0.1)
             
             return self.protocol.create_response(
@@ -1075,34 +854,6 @@ class VisionServer:
                 error_desc=str(e)
             )
     
-    def _get_camera_config(self, camera_id: int, product_model_name: Optional[str] = None) -> tuple:
-        """
-        Get camera configuration (loader_mode, source, fps) from config file.
-        
-        Args:
-            camera_id: Camera ID (1, 2, or 3)
-            product_model_name: Product model name (optional, uses selected_model if None)
-        
-        Returns:
-            Tuple of (loader_mode, source, fps)
-        """
-        if product_model_name is None:
-            product_model_name = self.model_config.get_selected_model()
-        
-        # Use config_loader utility
-        loader_mode, source, fps = get_camera_config(
-            camera_id=camera_id,
-            product_model_name=product_model_name,
-            main_config_execution=self.config.execution if self.config and hasattr(self.config, 'execution') and self.config.execution else None,
-            preset_name=self.preset_name
-        )
-        
-        # If camera mode and source is not set, try to use device ID from product model config
-        if loader_mode == "camera" and not source and product_model_name:
-            source = self.model_config.get_camera_device_id(product_model_name, camera_id)
-            self.logger.info(f"Camera {camera_id}: Using device_id={source} from product config '{product_model_name}'")
-        
-        return loader_mode, source, fps
     
     def _handle_end_vision(self, request: Dict[str, Any]) -> bytes:
         """Handle END VISION command.
@@ -1117,6 +868,8 @@ class VisionServer:
         """
         try:
             self.vision_active = False
+            # Update TrackingManager
+            self.tracking_manager.set_vision_active(False)
             self.logger.info("END VISION command received")
             self._stop_all_cameras()
             # Reset all camera states
@@ -1165,7 +918,7 @@ class VisionServer:
                 # use_area_scan is true: start tracking thread only when client requests
                 # All cameras (1, 2, 3) can be started via START_CAM command
                 if camera_id not in self.tracking_threads or not self.tracking_threads[camera_id].is_alive():
-                    self._start_camera_tracking(camera_id)
+                    self.tracking_manager.start_tracking(camera_id)
                     time.sleep(0.1)
             else:
                 # use_area_scan is false: tracking threads are started automatically
@@ -1175,7 +928,7 @@ class VisionServer:
                 # Only start tracking thread for cameras 1 and 3 if not already running
                 if camera_id in [1, 3]:
                     if camera_id not in self.tracking_threads or not self.tracking_threads[camera_id].is_alive():
-                        self._start_camera_tracking(camera_id)
+                        self.tracking_manager.start_tracking(camera_id)
                         time.sleep(0.1)
                 # Camera 2: do not start tracking thread here (will be started when cameras 1/3 stop)
             
@@ -1183,9 +936,9 @@ class VisionServer:
             if self.use_area_scan:
                 # use_area_scan is true: client will send requests periodically
                 # Just respond to this request
-                data = self._get_tracking_data(camera_id)
+                data = self.response_builder.get_tracking_data(camera_id, self.use_area_scan)
                 result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
-                self._save_result_image(camera_id, result_image_path)
+                self.response_builder.save_result_image(camera_id, result_image_path)
                 
                 response_data = {
                     "x": data["x"],
@@ -1215,348 +968,28 @@ class VisionServer:
                 error_desc=str(e)
             )
     
-    def _initialize_camera(self, camera_id: int, loader_mode: str = "camera", source = None, fps: float = 30.0):
-        """Initialize camera and tracker.
+    def _initialize_camera(self, camera_id: int, loader_mode: str = "camera", source = None, fps: float = 30.0, camera_config_path: Optional[str] = None):
+        """Initialize camera and tracker."""
+        # Get detector and calibration configs (stored during START_VISION)
+        detector_config = getattr(self, 'detector_config', {})
+        calibration_config = getattr(self, 'calibration_config', None)
+        model_path = getattr(self, 'model_path', None)
         
-        Args:
-            camera_id: Camera ID (1, 2, or 3)
-            loader_mode: Loader mode ("camera", "video", "image_sequence")
-            source: Source path or device ID (depends on loader_mode)
-            fps: Frame rate for video/image sequence
-        """
-        # Default source if not provided
-        if source is None:
-            if loader_mode == "camera":
-                source = camera_id - 1  # Camera device index
-            else:
-                raise ValueError(f"Source must be provided for loader_mode: {loader_mode}")
-        
-        # Create loader based on mode
-        # Each camera gets its own independent loader instance
-        loader = create_sequence_loader(source, fps=fps, loader_mode=loader_mode)
-        
-        if loader is None:
-            raise RuntimeError(f"Failed to create loader for camera {camera_id} (mode: {loader_mode}, source: {source})")
-        
-        # Reset loader to start from first frame (important for video files)
-        # Each camera should start from frame 0 independently
-        if hasattr(loader, 'cap') and loader.cap is not None:
-            # For VideoFileLoader, reset to first frame
-            loader.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            loader.frame_number = 0
-        elif hasattr(loader, 'frame_number'):
-            # For ImageSequenceLoader, reset frame counter
-            loader.frame_number = 0
-        
-        self.camera_loaders[camera_id] = loader
-        self.trackers[camera_id] = {}  # Legacy, kept for compatibility
-        self.next_track_ids[camera_id] = 0
-        self.frame_numbers[camera_id] = 0
-        self.camera_status[camera_id] = True
-        
-        # Initialize EnhancedAMRTracker for this camera
-        pixel_size = self._get_pixel_size(camera_id)
-        fps = self._get_fps_from_loader(loader)
-        
-        # Get model path for this camera (can be customized per camera in the future)
-        model_path = str(self.model_path) if self.model_path else None
-        
-        self.amr_trackers[camera_id] = EnhancedAMRTracker(
-            config=self.config,
-            detector_type="yolo",
-            tracker_type="kalman",
-            pixel_size=pixel_size,
+        # Delegate to CameraManager
+        self.camera_manager.initialize_camera(
+            camera_id=camera_id,
+            loader_mode=loader_mode,
+            source=source,
+            fps=fps,
             model_path=model_path,
+            detector_config=detector_config,
+            calibration_config=calibration_config,
+            camera_config_path=camera_config_path
         )
         
         self.logger.info(f"Camera {camera_id} initialized with EnhancedAMRTracker")
-        
-        # Note: Connection notification is not sent automatically
-        # Client can check camera status via START CAM response
     
-    def _tracking_loop(self, camera_id: int):
-        """Main tracking loop for camera.
-
-        Refactored to use helper methods for better readability and maintainability.
-        """
-        loader = self.camera_loaders.get(camera_id)
-        if not loader:
-            return
-
-        trackers = self.trackers[camera_id]
-        frame_number = 0
-
-        self.logger.info(f"Camera {camera_id} tracking started")
-
-        while self.vision_active and camera_id in self.camera_loaders:
-            try:
-                ret, frame = loader.read()
-                if not ret:
-                    # No more frames available, exit tracking loop and start next camera
-                    self.logger.info(f"Camera {camera_id}: No more frames available. Exiting tracking loop.")
-                    # For Camera 2, send trajectory data if available before exiting
-                    if camera_id == 2:
-                        self._send_camera2_trajectory(
-                            camera_id,
-                            reason="No more frames available"
-                        )
-                    # Start next camera if not use_area_scan
-                    if not self.use_area_scan:
-                        if camera_id == 1 or camera_id == 3:
-                            self._start_next_camera_after_1_3(camera_id)
-                        elif camera_id == 2:
-                            self._start_camera_3_after_2()
-                        else:
-                            self.logger.error(f"Camera {camera_id}: Unknown camera ID. Exiting tracking loop.")
-                            return False
-                    break
-
-                frame_number += 1
-                self.frame_numbers[camera_id] = frame_number
-
-                # Get frame timestamp
-                frame_timestamp = time.time()
-                if hasattr(loader, 'get_timestamp'):
-                    loader_timestamp = loader.get_timestamp()
-                    if loader_timestamp is not None:
-                        frame_timestamp = loader_timestamp
-
-                # Use EnhancedAMRTracker for detection and tracking
-                amr_tracker = self.amr_trackers.get(camera_id)
-                if amr_tracker:
-                    # Detect objects using EnhancedAMRTracker
-                    detections = amr_tracker.detect_objects(
-                        frame=frame,
-                        frame_number=frame_number,
-                        timestamp=frame_timestamp
-                    )
-                    
-                    # Track objects using EnhancedAMRTracker
-                    tracking_results = amr_tracker.track_objects(
-                        frame=frame,
-                        detections=detections,
-                        frame_number=frame_number
-                    )
-                    
-                    # Sync EnhancedAMRTracker's internal tracker to trackers dict for compatibility
-                    # This allows existing methods to work with EnhancedAMRTracker
-                    if amr_tracker.tracker and amr_tracker.track_id is not None:
-                        track_id = amr_tracker.track_id
-                        if track_id not in trackers:
-                            trackers[track_id] = amr_tracker.tracker
-                        else:
-                            # Update reference
-                            trackers[track_id] = amr_tracker.tracker
-                    else:
-                        # Clear trackers if no active tracking
-                        trackers.clear()
-                    
-                    # Visualize results using EnhancedAMRTracker
-                    vis_frame = amr_tracker.visualize_results(
-                        frame=frame,
-                        detections=detections,
-                        tracking_results=tracking_results
-                    )
-                else:
-                    # Fallback to legacy method if EnhancedAMRTracker not available
-                    detections = self.detector.detect(
-                        frame,
-                        frame_number=frame_number,
-                        timestamp=frame_timestamp
-                    )
-                    
-                    # Update trackers using helper method
-                    tracking_results = self._update_trackers(
-                        camera_id, trackers, detections, frame,
-                        frame_number, frame_timestamp, loader
-                    )
-                    
-                    # Visualize results
-                    vis_frame = self.visualize_results(camera_id, frame, detections, tracking_results)
-
-                has_detection = len(detections) > 0
-                cam_state = self.camera_state_manager.get_or_create(camera_id)
-
-                # Update detection state
-                if has_detection:
-                    if not (not self.use_area_scan and camera_id in [1, 3]):
-                        self.latest_detections[camera_id] = detections[0]
-                    if camera_id in [1, 3] and not self.use_area_scan:
-                        cam_state.reset_detection_loss()
-                else:
-                    if camera_id in [1, 3] and not self.use_area_scan:
-                        cam_state.increment_detection_loss()
-                vis_frame_original = vis_frame  # Keep reference for camera 2
-                
-                if self.visualize_stream:
-                    # Resize for display if needed
-                    height, width = vis_frame.shape[:2]
-                    if width > 1920 or height > 1080:
-                        scale = min(1920 / width, 1080 / height)
-                        vis_frame = cv2.resize(vis_frame, (int(width * scale), int(height * scale)))
-
-                    # Show tracking window
-                    window_name = f"Camera {camera_id} - AMR Tracking"
-                    cv2.imshow(window_name, vis_frame)
-                    # cv2.waitKey is required for cv2.imshow to update the window
-                    cv2.waitKey(1)
-
-                # Handle key press
-                # key = cv2.waitKey(1) & 0xFF
-                # if key == ord("q"):
-                #     self.logger.info(f"Camera {camera_id}: 'q' pressed, stopping tracking")
-                #     break
-                # elif key == ord("s"):
-                #     snapshot_path = f"snapshot_cam{camera_id}_{frame_number:06d}.jpg"
-                #     cv2.imwrite(snapshot_path, vis_frame)
-                #     self.logger.info(f"Camera {camera_id}: Snapshot saved: {snapshot_path}")
-                
-                # Camera-specific logic using helper methods
-                if not self.use_area_scan:
-                    if camera_id in [1, 3]:
-                        if not self._handle_camera_1_3_tracking(
-                            camera_id, trackers, detections, tracking_results, frame, cam_state
-                        ):
-                            break  # Stop tracking loop
-                    elif camera_id == 2:
-                        if not self._handle_camera_2_tracking(
-                            camera_id, trackers, tracking_results, has_detection,
-                            vis_frame_original, detections, cam_state
-                        ):
-                            break  # Stop tracking loop
-                
-                # Clean up lost trackers
-                # For EnhancedAMRTracker, the cleanup is handled internally
-                # For legacy trackers, clean up lost ones
-                if amr_tracker:
-                    # Sync EnhancedAMRTracker state to trackers dict
-                    if amr_tracker.tracker and amr_tracker.track_id is not None:
-                        track_id = amr_tracker.track_id
-                        if track_id not in trackers:
-                            trackers[track_id] = amr_tracker.tracker
-                        else:
-                            trackers[track_id] = amr_tracker.tracker
-                    elif amr_tracker.track_id is None:
-                        # Tracker was lost, clear trackers dict
-                        trackers.clear()
-                else:
-                    trackers_to_remove = [
-                        track_id for track_id, tracker in trackers.items()
-                        if tracker.is_lost(max_frames_lost=self.tracking_config.detection_loss_threshold_frames)
-                    ]
-                    
-                    for track_id in trackers_to_remove:
-                        del trackers[track_id]
-                
-                # Small delay to prevent CPU overload
-                time.sleep(0.01)
-                
-            except Exception as e:
-                self.logger.warning(f"Camera {camera_id} tracking error: {e}")
-                time.sleep(0.1)
-        
-        self.logger.info(f"Camera {camera_id} tracking stopped")
-        
-        # Close tracking window for this camera
-        window_name = f"Camera {camera_id} - AMR Tracking"
-        try:
-            cv2.destroyWindow(window_name)
-        except cv2.error:
-            pass  # Window may not exist
     
-    def _start_camera_tracking(self, camera_id: int):
-        """Start tracking thread for a camera."""
-        if camera_id not in self.tracking_threads or not self.tracking_threads[camera_id].is_alive():
-            thread = threading.Thread(
-                target=self._tracking_loop,
-                args=(camera_id,),
-                daemon=True
-            )
-            thread.start()
-            self.tracking_threads[camera_id] = thread
-            self.logger.info(f"Camera {camera_id} tracking thread started")
-    
-    def _get_tracking_data(self, camera_id: int) -> Dict[str, float]:
-        """Get current tracking data for camera.
-        
-        For cameras 1, 3 (use_area_scan=false): return detection data
-        For camera 2: return tracker data
-        
-        Returns:
-            Dictionary with x, y (in mm) and rz (yaw angle in degrees)
-            rz = rotation around Z-axis = yaw angle (in degrees)
-        """
-        # Cameras 1, 3: use detection data (not tracker) when use_area_scan is false
-        self.logger.debug(f"Camera {camera_id}: use_area_scan={self.use_area_scan}, camera_id in [1,3]={camera_id in [1, 3]}")
-        if camera_id in [1, 3] and not self.use_area_scan:
-            detection = self.latest_detections.get(camera_id)
-            self.logger.debug(f"Camera {camera_id}: latest_detections has data: {detection is not None}")
-            if detection is not None:
-                center = detection.get_center()
-                orientation = detection.get_orientation()
-                
-                # Convert to mm
-                pixel_size = self._get_pixel_size(camera_id)
-                x_mm = center[0] * pixel_size
-                y_mm = center[1] * pixel_size
-                rz_deg = orientation if orientation is not None else 0.0  # Already in degrees
-                
-                self.logger.debug(f"Camera {camera_id}: Returning DETECTION data: x={x_mm:.2f}, y={y_mm:.2f}, rz={rz_deg:.4f}deg")
-                return {
-                    "x": round(float(x_mm), 3),
-                    "y": round(float(y_mm), 3),
-                    "rz": round(float(rz_deg), 3)  # in degrees
-                }
-            else:
-                # No detection yet
-                self.logger.debug(f"Camera {camera_id}: No detection available, returning zeros")
-                return {"x": 0.0, "y": 0.0, "rz": 0.0}
-        
-        # Camera 2 or use_area_scan=true: use tracker data
-        # Try EnhancedAMRTracker first, then fallback to legacy trackers
-        amr_tracker = self.amr_trackers.get(camera_id)
-        if amr_tracker and amr_tracker.tracker and amr_tracker.track_id is not None:
-            # Use EnhancedAMRTracker's internal tracker
-            tracker = amr_tracker.tracker
-            state = tracker.kf.statePost.flatten()
-            
-            # Convert to mm if config available
-            pixel_size = self._get_pixel_size(camera_id)
-            x_mm = state[0] * pixel_size
-            y_mm = state[1] * pixel_size
-            rz_deg = state[2]  # rz = yaw = rotation around Z-axis (in degrees)
-            
-            self.logger.debug(f"Camera {camera_id}: Returning EnhancedAMRTracker data: x={x_mm:.2f}, y={y_mm:.2f}, rz={rz_deg:.4f}deg")
-            return {
-                "x": round(float(x_mm), 3),
-                "y": round(float(y_mm), 3),
-                "rz": round(float(rz_deg), 3)  # yaw angle in degrees
-            }
-        
-        # Fallback to legacy trackers
-        trackers = self.trackers.get(camera_id, {})
-        
-        if not trackers:
-            # Return default values if no tracker
-            self.logger.debug(f"Camera {camera_id}: No tracker available, returning zeros")
-            return {"x": 0.0, "y": 0.0, "rz": 0.0}
-        
-        # Get first tracker (primary object)
-        tracker = next(iter(trackers.values()))
-        state = tracker.kf.statePost.flatten()
-        
-        # Convert to mm if config available
-        pixel_size = self._get_pixel_size(camera_id)
-        x_mm = state[0] * pixel_size
-        y_mm = state[1] * pixel_size
-        rz_deg = state[2]  # rz = yaw = rotation around Z-axis (in degrees)
-        
-        self.logger.debug(f"Camera {camera_id}: Returning TRACKER data: x={x_mm:.2f}, y={y_mm:.2f}, rz={rz_deg:.4f}deg")
-        return {
-            "x": round(float(x_mm), 3),
-            "y": round(float(y_mm), 3),
-            "rz": round(float(rz_deg), 3)  # yaw angle in degrees
-        }
     
     def _handle_calc_result(self, request: Dict[str, Any]) -> bytes:
         """Handle CALC RESULT command.
@@ -1648,98 +1081,7 @@ class VisionServer:
                 error_desc=str(e)
             )
     
-    def _save_result_image(self, camera_id: int, image_path: Path, frame: Optional[np.ndarray] = None, detections: Optional[List[Detection]] = None, tracking_results: Optional[List[Dict]] = None):
-        """Save result image (overwrite existing file)."""
-        try:
-            # Get frame if not provided
-            if frame is None:
-                loader = self.camera_loaders.get(camera_id)
-                if loader:
-                    ret, frame = loader.read()
-                    if not ret or frame is None:
-                        return
-                else:
-                    return
-            
-            # Get detections and tracking results if not provided
-            if detections is None:
-                detections = []
-                if camera_id in self.latest_detections:
-                    detections = [self.latest_detections[camera_id]]
-            
-            if tracking_results is None:
-                trackers = self.trackers.get(camera_id, {})
-                tracking_results = []
-                for track_id, tracker in trackers.items():
-                    state = tracker.kf.statePost.flatten()
-                    bbox = detections[0].bbox if detections else None
-                    tracking_result = {
-                        "track_id": track_id,
-                        "position": {"x": state[0], "y": state[1]},
-                        "orientation": {"theta_deg": state[2]},  # Already in degrees
-                        "bbox": bbox
-                    }
-                    tracking_results.append(tracking_result)
-            
-            # Draw tracking results on frame using visualize_results
-            # For cameras 1, 3: draw only current point, not trajectory
-            draw_trajectory = camera_id not in [1, 3]
-            # Note: visualize_results internally copies frame via Visualizer.draw_detections
-            frame_with_results = self.visualize_results(camera_id, frame, detections, tracking_results, draw_trajectory=draw_trajectory)
-            cv2.imwrite(str(image_path), frame_with_results)
-            self.logger.info(f"Result image saved: {image_path}")
-        except Exception as e:
-            self.logger.warning(f"Failed to save result image: {e}")
     
-    def visualize_results(
-        self, camera_id: int, frame: np.ndarray, detections: List[Detection], tracking_results: List[Dict], draw_trajectory: bool = True
-    ) -> np.ndarray:
-        """Visualize results using appropriate visualizer (same as main.py).
-        
-        Args:
-            camera_id: Camera ID
-            frame: Input frame
-            detections: List of detections
-            tracking_results: List of tracking results
-            draw_trajectory: Whether to draw trajectory (default: True). Set to False for cameras 1, 3 to show only current point.
-        """
-        # Filter out uninitialized trackers (state at origin: 0, 0, 0)
-        filtered_tracking_results = []
-        for result in tracking_results:
-            position = result.get("position", {})
-            if position:
-                x = position.get("x", 0)
-                y = position.get("y", 0)
-                # Skip if position is at origin (uninitialized tracker)
-                if x == 0.0 and y == 0.0:
-                    continue
-            filtered_tracking_results.append(result)
-        
-        if self.visualizer is not None:
-            # For cameras 1, 3: do not draw tracking information, only detections
-            # For camera 2: draw tracking information with trajectory
-            if camera_id == 2:
-                # Camera 2: use tracking results with trajectory, but force track_id to 0
-                # (draw_single_object only draws when track_id == 0)
-                camera2_trackings = []
-                for result in filtered_tracking_results:
-                    result_copy = result.copy()
-                    result_copy["track_id"] = 0
-                    camera2_trackings.append(result_copy)
-                vis_frame = self.visualizer.draw_single_object(
-                    frame, detections, camera2_trackings
-                )
-            else:
-                # Camera 1, 3: create empty tracking dicts for each detection (to draw detections only)
-                empty_trackings = [{"track_id": 0, "trajectory": []} for _ in detections]
-                vis_frame = self.visualizer.draw_single_object(
-                    frame, detections, empty_trackings
-                )
-        else:
-            # Fallback: return frame as-is if visualizer is not available
-            vis_frame = frame.copy()
-        
-        return vis_frame
     
     def _stop_all_cameras(self):
         """Stop all camera tracking."""
@@ -1748,15 +1090,8 @@ class VisionServer:
         # vision_active is already set to False in _handle_end_vision
         # This will cause tracking loops to exit (while self.vision_active and ...)
         
-        # Wait for tracking threads to finish first (before closing windows)
-        # This ensures cv2.waitKey is no longer blocking
-        for camera_id in list(self.tracking_threads.keys()):
-            thread = self.tracking_threads.get(camera_id)
-            if thread and thread.is_alive():
-                self.logger.info(f"Waiting for camera {camera_id} tracking thread to finish...")
-                thread.join(timeout=2.0)  # Wait up to 2 seconds
-                if thread.is_alive():
-                    self.logger.warning(f"Camera {camera_id} tracking thread did not finish within timeout")
+        # Stop all tracking threads via TrackingManager
+        self.tracking_manager.stop_all_tracking(timeout=2.0)
         
         # Stop all periodic response threads
         for camera_id in list(self.periodic_response_threads.keys()):
@@ -1781,73 +1116,18 @@ class VisionServer:
             self._send_notification(camera_id, False, error_code="VISION_ENDED", error_desc="Vision ended")
             self.logger.info(f"Camera {camera_id} disconnection notified - NOTIFY_CONNECTION sent")
             # Stop camera
-            self._stop_camera(camera_id)
+            self.camera_manager.release_camera(camera_id)
         
         # Clear tracking threads dictionary
         self.tracking_threads.clear()
         self.periodic_response_threads.clear()
         
+        # Release all cameras via CameraManager
+        self.camera_manager.release_all_cameras()
+        
         self.logger.info("All cameras stopped")
     
-    def _stop_camera(self, camera_id: int):
-        """Stop camera tracking."""
-        if camera_id in self.camera_loaders:
-            loader = self.camera_loaders[camera_id]
-            if hasattr(loader, 'release'):
-                loader.release()
-            del self.camera_loaders[camera_id]
-        
-        if camera_id in self.trackers:
-            del self.trackers[camera_id]
-        
-        self.camera_status[camera_id] = False
-        # Note: NOTIFY_CONNECTION is sent in _stop_all_cameras before calling _stop_camera
     
-    # def _periodic_response_loop(self, camera_id: int):
-    #     """Periodically send tracking data when use_area_scan is false.
-        
-    #     For cameras 1, 3: send detection result once and exit.
-    #     For camera 2: send trajectory data when detection is lost for 30+ frames.
-    #     """
-    #     # Cameras 1, 3: send detection result once and exit
-    #     if camera_id in [1, 3]:
-    #         # Wait for detection to be available
-    #         max_wait_time = 5.0  # Wait up to 5 seconds for detection
-    #         wait_start = time.time()
-    #         while time.time() - wait_start < max_wait_time:
-    #             data = self._get_tracking_data(camera_id)
-    #             if not (data["x"] == 0.0 and data["y"] == 0.0 and data["rz"] == 0.0):
-    #                 # Detection available, send once and exit
-    #                 # Image should already be saved in _tracking_loop on first detection
-    #                 result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
-                    
-    #                 response_data = {
-    #                     "x": data["x"],
-    #                     "y": data["y"],
-    #                     "rz": data["rz"],
-    #                     "result_image": str(result_image_path)
-    #                 }
-                    
-    #                 cmd = Command.START_CAM_1 + camera_id - 1
-    #                 if self._send_response_to_client(cmd, success=True, data=response_data):
-    #                     self.logger.info(f"Camera {camera_id}: Detection result sent to client (one-time)")
-                    
-    #                 # Exit after sending once
-    #                 return
-                
-    #             time.sleep(0.1)  # Check every 100ms
-            
-    #         # No detection available after waiting
-    #         self.logger.warning(f"Camera {camera_id}: No detection available after {max_wait_time}s, exiting periodic response loop")
-    #         return
-        
-    #     # Camera 2: does not use periodic response loop
-    #     # Trajectory data is sent directly from _tracking_loop when detection is lost for 30+ frames
-    #     elif camera_id == 2:
-    #         # Camera 2 should not have a periodic response loop
-    #         # It sends data directly from _tracking_loop
-    #         self.logger.warning(f"Camera {camera_id}: Periodic response loop should not be called for camera 2")
-    #         return
     
     def _send_notification(self, camera_id: int, is_connected: bool, 
                           error_code: Optional[str] = None,

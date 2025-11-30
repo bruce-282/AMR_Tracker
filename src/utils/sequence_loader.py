@@ -276,7 +276,10 @@ class NovitecCameraLoader(BaseLoader):
 
 
 def create_sequence_loader(
-    source: Union[str, int], fps: float = 30.0, loader_mode: str = "auto"
+    source: Union[str, int], 
+    fps: float = 30.0, 
+    loader_mode: str = "auto",
+    config: Optional[dict] = None
 ) -> Optional[BaseLoader]:
     """
     Create appropriate sequence loader based on source and mode
@@ -285,15 +288,14 @@ def create_sequence_loader(
         source: Video source (file path, device ID, or sequence path)
         fps: Frame rate for image sequences
         loader_mode: Loader mode ("auto", "camera_device", "video_file", "image_sequence")
+        config: Optional configuration dictionary (for camera loaders)
 
     Returns:
         Appropriate loader instance or None if failed
     """
     try:
-      
-
         if loader_mode == "camera":
-            return create_camera_device_loader()
+            return create_camera_device_loader(source=source, config=config)
         elif loader_mode == "video":
             return create_video_file_loader(source=source)
         elif loader_mode == "sequence":
@@ -328,7 +330,7 @@ def create_video_file_loader(source: str) -> Optional[BaseLoader]:
         print("[OK] Video file loader created")
         return loader
     except Exception as e:
-        print(f"Novitec camera loader failed: {e}")
+        print(f"Video file loader failed: {e}")
         return None
 
 def create_image_sequence_loader(
