@@ -7,6 +7,7 @@
     "calibration_data_path": "calibration_data.json"
   },
   "detector": {
+    "detector_type": "yolo",
     "model_path": "weights/zoom1/best.pt",
     "confidence_threshold": 0.5,
     "imgsz": 1536,

@@ -211,9 +211,12 @@ class CameraManager:
         
         model_path_str = str(model_path) if model_path else None
         
+        # Get detector_type from detector_config, default to "yolo"
+        detector_type = (detector_config or {}).get("detector_type", "yolo")
+        
         self.amr_trackers[camera_id] = EnhancedAMRTracker(
             config=self.config,
-            detector_type="yolo",
+            detector_type=detector_type,
             tracker_type="kalman",
             pixel_size=pixel_size,
             model_path=model_path_str,

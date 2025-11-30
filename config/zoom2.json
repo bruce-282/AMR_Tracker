@@ -6,11 +6,18 @@
     "camera_height": 0.0,
     "calibration_data_path": "calibration_data.json"
   },
+
   "detector": {
-    "model_path": "weights/zoom1/best.pt",
-    "confidence_threshold": 0.2,
-    "imgsz": 640,
-    "target_classes": [0]
+    "detector_type": "binary",
+    "threshold": 80,
+    "min_area": 400,
+    "width_height_ratio_min": 0.5,
+    "width_height_ratio_max": 2.0,
+    "mask_area_ratio": 0.5,
+    "inverse": true,
+    "use_adaptive": false,
+    "adaptive_block_size": 11,
+    "adaptive_c": 30.0
   },
   "tracker": {
     "speed_threshold_pix_per_frame": 5.0,

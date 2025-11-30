@@ -6,10 +6,11 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 
+import cv2
 import numpy as np
 
 from config import SystemConfig
-from src.core.detection import Detection, YOLODetector
+from src.core.detection import Detection, YOLODetector, BinaryDetector
 from src.core.measurement.size_measurement import SizeMeasurement
 from src.core.tracking import KalmanTracker, MAX_FRAMES_LOST
 from src.visualization import Visualizer
@@ -107,9 +108,25 @@ class EnhancedAMRTracker:
                 raise ImportError("ultralytics module is not installed.")
             except FileNotFoundError:
                 raise FileNotFoundError(f"weights file not found: {self.model_path}")
+        elif self.detector_type == "binary":
+            # Initialize binary detector
+            # Get binary detector parameters from detector_config
+            self.detector = BinaryDetector(
+                threshold=self.detector_config.get("threshold", 50),
+                min_area=self.detector_config.get("min_area", 1000),
+                max_area=self.detector_config.get("max_area", None),
+                width_height_ratio_min=self.detector_config.get("width_height_ratio_min", 0.8),
+                width_height_ratio_max=self.detector_config.get("width_height_ratio_max", 1.2),
+                mask_area_ratio=self.detector_config.get("mask_area_ratio", 0.9),
+                inverse=self.detector_config.get("inverse", True),  # True: dark objects, False: bright objects
+                use_adaptive=self.detector_config.get("use_adaptive", True),  # Use adaptive threshold
+                adaptive_block_size=self.detector_config.get("adaptive_block_size", 11),
+                adaptive_c=self.detector_config.get("adaptive_c", 2.0),
+            )
+            logger.info("Binary detector initialized")
         else:
             raise ValueError(
-                f"Unsupported detector type: {self.detector_type}. Only 'yolo' is supported."
+                f"Unsupported detector type: {self.detector_type}. Supported types: 'yolo', 'binary'"
             )
 
         # Initialize tracker
@@ -319,6 +336,32 @@ class EnhancedAMRTracker:
                 if "track_id" in result:
                     if result["track_id"] == 0:
                         vis_frame = self.tracker.draw_visualization(vis_frame, result)
+        
+        # If using binary detector, overlay binary debug info in corner
+        if isinstance(self.detector, BinaryDetector):
+            debug_image = self.detector.get_debug_image(frame)
+            if debug_image is not None:
+                # Resize debug image to fit in corner (larger size - about 1/3 of width)
+                h, w = vis_frame.shape[:2]
+                debug_h, debug_w = debug_image.shape[:2]
+                # Use larger scale for better visibility
+                scale = min(w // 3 / debug_w, h // 3 / debug_h)
+                if scale < 1.0:
+                    new_w = int(debug_w * scale)
+                    new_h = int(debug_h * scale)
+                    debug_resized = cv2.resize(debug_image, (new_w, new_h))
+                else:
+                    debug_resized = debug_image
+                
+                # Place in top-right corner
+                dh, dw = debug_resized.shape[:2]
+                y_offset = 10
+                x_offset = w - dw - 10
+                
+                # Create overlay with transparency
+                overlay = vis_frame.copy()
+                overlay[y_offset:y_offset+dh, x_offset:x_offset+dw] = debug_resized
+                vis_frame = cv2.addWeighted(vis_frame, 0.7, overlay, 0.3, 0)
 
         return vis_frame
 

@@ -138,11 +138,15 @@ class VisionServer:
         self.response_builder = ResponseBuilder(
             camera_manager=self.camera_manager,
             tracking_manager=self.tracking_manager,
-            result_base_path=self.result_base_path
+            result_base_path=self.result_base_path,
+            debug_base_path=self.debug_base_path
         )
         
         # Protocol handler
         self.protocol = ProtocolHandler()
+        
+        # Periodic response threads (for area scan mode)
+        self.periodic_response_threads: Dict[int, threading.Thread] = {}
     
     # ==================== Property Delegation ====================
     # Properties delegate to manager attributes for cleaner access
@@ -761,21 +765,32 @@ class VisionServer:
                     self.debug_base_path = Path(exec_config["debug_base_path"])
                     self.debug_base_path.mkdir(parents=True, exist_ok=True)
                     self.logger.info(f"Debug base path set to: {self.debug_base_path}")
+                    # Update ResponseBuilder's debug_base_path
+                    self.response_builder.debug_base_path = self.debug_base_path
             
             # Add image_undistortion to calibration_data so it can be passed to loaders
             if calibration_data:
                 calibration_data["enable_undistortion"] = image_undistortion
             
-            # Get model path from detector config
-            model_path_str = detector_config.get("model_path")
+            # Get detector type and model path from detector config
+            detector_type = detector_config.get("detector_type", "yolo")
             self.logger.info(f"Detector config: {detector_config}")
-            self.model_path = Path(model_path_str)
             
-            if not self.model_path.exists():
-                raise FileNotFoundError(
-                    f"Model file not found: {self.model_path} "
-                    f"(product model: {product_model_name})"
-                )
+            # Model path is only required for YOLO detector
+            if detector_type == "yolo":
+                model_path_str = detector_config.get("model_path")
+                if not model_path_str:
+                    raise ValueError("model_path is required for YOLO detector")
+                self.model_path = Path(model_path_str)
+                
+                if not self.model_path.exists():
+                    raise FileNotFoundError(
+                        f"Model file not found: {self.model_path} "
+                        f"(product model: {product_model_name})"
+                    )
+            else:
+                # Binary detector doesn't need model_path
+                self.model_path = None
             
             # Update use_area_scan
             if "use_area_scan" in request:
@@ -1007,6 +1022,14 @@ class VisionServer:
         calibration_config = getattr(self, 'calibration_config', None)
         model_path = getattr(self, 'model_path', None)
         
+        # For binary detector, model_path can be None
+        detector_type = detector_config.get("detector_type", "yolo")
+        if detector_type == "binary" and model_path is None:
+            # Binary detector doesn't need model_path, this is OK
+            pass
+        elif detector_type == "yolo" and model_path is None:
+            raise ValueError("model_path is required for YOLO detector")
+        
         # Delegate to CameraManager
         self.camera_manager.initialize_camera(
             camera_id=camera_id,
@@ -1015,7 +1038,6 @@ class VisionServer:
             fps=fps,
             model_path=model_path,
             detector_config=detector_config,
-            #calibration_config=calibration_config,
             camera_config_path=camera_config_path
         )
         

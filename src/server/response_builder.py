@@ -20,7 +20,8 @@ class ResponseBuilder:
         self,
         camera_manager: CameraManager,
         tracking_manager: TrackingManager,
-        result_base_path: Path
+        result_base_path: Path,
+        debug_base_path: Optional[Path] = None
     ):
         """
         Initialize response builder.
@@ -29,10 +30,12 @@ class ResponseBuilder:
             camera_manager: Camera manager instance
             tracking_manager: Tracking manager instance
             result_base_path: Base path for result images
+            debug_base_path: Base path for debug images (optional)
         """
         self.camera_manager = camera_manager
         self.tracking_manager = tracking_manager
         self.result_base_path = result_base_path
+        self.debug_base_path = debug_base_path
     
     def get_tracking_data(self, camera_id: int, use_area_scan: bool) -> Dict[str, float]:
         """
@@ -220,6 +223,10 @@ class ResponseBuilder:
                 logger.info(f"Result image saved: {image_path}")
             else:
                 logger.error(f"Failed to save result image: {image_path} (cv2.imwrite returned False)")
+            
+            # Save binary detector debug image if using binary detector
+            self._save_binary_debug_image(camera_id, frame)
+            
         except Exception as e:
             logger.error(f"Failed to save result image: {e}", exc_info=True)
     
@@ -286,4 +293,41 @@ class ResponseBuilder:
         
         # Final fallback: return frame as-is
         return frame.copy()
+    
+    def _save_binary_debug_image(self, camera_id: int, frame: np.ndarray):
+        """
+        Save binary detector debug image if binary detector is being used.
+        
+        Args:
+            camera_id: Camera ID
+            frame: Original frame
+        """
+        if self.debug_base_path is None:
+            return
+        
+        try:
+            amr_tracker = self.camera_manager.amr_trackers.get(camera_id)
+            if not amr_tracker or not amr_tracker.detector:
+                return
+            
+            # Check if detector is BinaryDetector
+            from src.core.detection import BinaryDetector
+            if not isinstance(amr_tracker.detector, BinaryDetector):
+                return
+            
+            # Get debug image from binary detector
+            debug_image = amr_tracker.detector.get_debug_image(frame)
+            if debug_image is None:
+                return
+            
+            # Save debug image
+            debug_path = self.debug_base_path / f"cam_{camera_id}_binary_debug.png"
+            debug_path.parent.mkdir(parents=True, exist_ok=True)
+            success = cv2.imwrite(str(debug_path), debug_image)
+            if success:
+                logger.info(f"Binary debug image saved: {debug_path}")
+            else:
+                logger.warning(f"Failed to save binary debug image: {debug_path}")
+        except Exception as e:
+            logger.debug(f"Could not save binary debug image: {e}")
 
