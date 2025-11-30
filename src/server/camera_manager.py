@@ -115,7 +115,7 @@ class CameraManager:
         fps: float = 30.0,
         model_path: Optional[Path] = None,
         detector_config: Optional[Dict] = None,
-        calibration_config: Optional[Dict] = None,
+        enable_undistortion: bool = False,
         camera_config_path: Optional[str] = None
     ):
         """
@@ -128,7 +128,7 @@ class CameraManager:
             fps: Frame rate
             model_path: Path to model file
             detector_config: Detector configuration
-            calibration_config: Calibration configuration
+            enable_undistortion: Whether to enable image undistortion
             camera_config_path: Path to camera config file (e.g., camera1_config.json)
         """
         # Default source if not provided
@@ -153,36 +153,31 @@ class CameraManager:
             except Exception as e:
                 logger.warning(f"Camera {camera_id}: Failed to load config from {camera_config_path}: {e}")
         
-        # Load undistortion parameters from calibration config
-        enable_undistortion = False
+        # Load undistortion parameters from camera config
         camera_matrix = None
         dist_coeffs = None
         
-        if calibration_config:
-            # Check if image_undistortion is enabled (from execution config)
-            # This will be set in vision_server.py from product model config
-            enable_undistortion = calibration_config.get("enable_undistortion", False)
-            
-            if enable_undistortion:
-                # Load calibration data from file
-                calibration_data_path = calibration_config.get("calibration_data_path")
-                if calibration_data_path:
-                    try:
-                        calib_file = Path(calibration_data_path)
-                        if calib_file.exists():
-                            import json
-                            import numpy as np
-                            with open(calib_file, 'r', encoding='utf-8') as f:
-                                calib_data = json.load(f)
-                            
-                            camera_matrix = np.array(calib_data.get("camera_matrix"))
-                            dist_coeffs = np.array(calib_data.get("dist_coeffs"))
-                            
-                            logger.info(f"Camera {camera_id}: Loaded undistortion parameters from {calibration_data_path}")
-                        else:
-                            logger.warning(f"Camera {camera_id}: Calibration data file not found: {calibration_data_path}")
-                    except Exception as e:
-                        logger.warning(f"Camera {camera_id}: Failed to load calibration data: {e}")
+        if enable_undistortion and camera_config:
+            # Read calibration parameters from camera config file
+            try:
+                import numpy as np
+                if "calibration" in camera_config:
+                    calib = camera_config["calibration"]
+                    # CameraMatrix is in camera config
+                    if "CameraMatrix" in calib:
+                        camera_matrix = np.array(calib["CameraMatrix"])
+                    # DistortionCoefficients is in camera config
+                    if "DistortionCoefficients" in calib:
+                        dist_coeffs = np.array(calib["DistortionCoefficients"])
+                    
+                    if camera_matrix is not None and dist_coeffs is not None:
+                        logger.info(f"Camera {camera_id}: Loaded undistortion parameters from {camera_config_path}")
+                    else:
+                        logger.warning(f"Camera {camera_id}: Missing calibration parameters in {camera_config_path}")
+                else:
+                    logger.warning(f"Camera {camera_id}: No calibration section in {camera_config_path}")
+            except Exception as e:
+                logger.warning(f"Camera {camera_id}: Failed to load calibration from camera config: {e}")
         
         # Create loader with config and undistortion parameters
         loader = create_sequence_loader(
@@ -223,7 +218,6 @@ class CameraManager:
             pixel_size=pixel_size,
             model_path=model_path_str,
             detector_config=detector_config or {},
-            calibration_config=calibration_config,
             fps=fps,
         )
         

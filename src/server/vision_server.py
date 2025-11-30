@@ -997,7 +997,7 @@ class VisionServer:
             fps=fps,
             model_path=model_path,
             detector_config=detector_config,
-            calibration_config=calibration_config,
+            #calibration_config=calibration_config,
             camera_config_path=camera_config_path
         )
         
