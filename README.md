@@ -6,25 +6,46 @@ AMR Tracker는 자율주행 로봇(AGV/AMR)을 실시간으로 감지, 추적, �
 
 ## 🏗️ 시스템 구조
 
-### 핵심 컴포넌트
+### 프로젝트 구조
 
 ```
 AMR_Tracker/
-├── main.py                    # 메인 실행 파일 (기본/고급 모드)
-├── agv_system.py              # AGV 측정 시스템 (고급 모드)
-├── sequence_loader.py         # 다양한 비디오 소스 로더
-├── utils/
-│   └── config.py             # 시스템 설정 관리
-├── detection/
-│   └── agv_detector.py       # AGV 감지 모듈
-├── measurement/
-│   ├── size_measurement.py   # 물리적 크기 측정
-│   └── speed_tracker.py      # 속도 및 궤적 추적
-├── calibration/
-│   ├── camera_calibrator.py  # 카메라 내부 파라미터 보정
-│   └── homography_calibrator.py # 지면 평면 보정
-└── visualization/
-    └── display.py            # 결과 시각화
+├── main.py                          # 메인 실행 파일
+├── run_server.py                    # TCP/IP 서버 실행 파일
+├── config/                          # 설정 파일 디렉토리
+│   ├── zoom1.json                   # 제품 모델 설정 (zoom1)
+│   ├── zoom2.json                   # 제품 모델 설정 (zoom2)
+│   ├── camera1_config.json          # 카메라 1 설정
+│   └── model_config.json            # 모델 목록 설정
+├── src/
+│   ├── core/                        # 핵심 추적 시스템
+│   │   ├── amr_tracker.py           # EnhancedAMRTracker (통합 추적 시스템)
+│   │   ├── detection/               # 객체 감지 모듈
+│   │   │   ├── yolo_detector.py    # YOLO 기반 감지
+│   │   │   ├── binary_detector.py  # 이진화 기반 감지
+│   │   │   └── detection.py        # Detection 클래스
+│   │   ├── tracking/                # 객체 추적 모듈
+│   │   │   ├── kalman_tracker.py   # 칼만 필터 추적
+│   │   │   └── association.py      # 객체 연결
+│   │   ├── measurement/             # 측정 모듈
+│   │   │   └── size_measurement.py # 크기 측정
+│   │   └── calibration/             # 보정 모듈
+│   │       ├── camera_calibrator.py # 카메라 보정
+│   │       └── homography_calibrator.py # 호모그래피 보정
+│   ├── server/                      # TCP/IP 서버 모듈
+│   │   ├── vision_server.py        # VisionServer (메인 서버)
+│   │   ├── camera_manager.py        # 카메라 관리
+│   │   ├── tracking_manager.py      # 추적 관리
+│   │   ├── response_builder.py     # 응답 생성
+│   │   ├── model_config.py          # 모델 설정 관리
+│   │   └── protocol.py             # 프로토콜 처리
+│   ├── utils/                       # 유틸리티 모듈
+│   │   ├── sequence_loader.py      # 비디오 소스 로더
+│   │   └── config_loader.py        # 설정 로더
+│   └── visualization/               # 시각화 모듈
+│       └── display.py              # 결과 표시
+└── submodules/                      # 서브모듈
+    └── novitec_camera_module/       # Novitec 카메라 SDK
 ```
 
 ## 🔧 주요 기능
@@ -51,70 +72,81 @@ AMR_Tracker/
 - **Novitec 카메라**: 산업용 고성능 카메라 (자동 감지)
 
 ### 5. 다양한 감지 방법
-- **YOLO 기반**: 딥러닝 객체 감지
-- **색상 기반**: HSV 색상 공간을 활용한 AGV 감지
-- **컨투어 기반**: 형태 분석을 통한 객체 감지
+- **YOLO 기반**: 딥러닝 객체 감지 (YOLODetector)
+- **이진화 기반**: Adaptive threshold를 활용한 객체 감지 (BinaryDetector)
+  - 어두운 객체/밝은 객체 모두 지원
+  - 조명 불균일 환경에 적합
 
 ## 🚀 사용 방법
 
-### 기본 모드 (Basic Mode)
+### 기본 모드 (Standalone)
 ```bash
 # 웹캠 사용
-python main.py --mode basic --source 0
+python main.py --source 0
 
 # 비디오 파일 사용
-python main.py --mode basic --source "data/video.mp4"
+python main.py --source "data/video.mp4"
 
-# 카메라 사용 (Novitec 카메라가 있으면 자동으로 사용, 없으면 일반 카메라)
-python main.py --mode basic --source 0 --loader-mode camera
-
-# 정지 모드 (속도 측정 없음)
-python main.py --mode basic --stationary-mode
+# 이미지 시퀀스 사용
+python main.py --source "data/images/" --loader-mode image_sequence
 ```
 
-### 고급 모드 (Enhanced Mode)
+### TCP/IP 서버 모드
 ```bash
-# 보정 실행
-python agv_system.py calibrate
+# 서버 실행 (기본 포트 10000)
+python run_server.py
 
-# 측정 실행
-python agv_system.py measure --source "data/video.mp4"
+# 특정 호스트/포트로 실행
+python run_server.py --host 0.0.0.0 --port 10000
+
+# 특정 프리셋 사용
+python run_server.py --preset video_tracking
 ```
 
-### 프리셋 사용
-```bash
-# 고급 정지 모드
-python main.py --preset enhanced_stationary
-
-# 고급 추적 모드
-python main.py --preset enhanced_tracking
-
-# 기본 추적 모드
-python main.py --preset basic_tracking
-```
+### 서버 클라이언트 통신
+서버는 TCP/IP 소켓을 통해 JSON 프로토콜로 통신합니다:
+- `START_VISION`: 추적 시작
+- `STOP_VISION`: 추적 중지
+- `GET_STATUS`: 상태 조회
+- `GET_TRACKING_DATA`: 추적 데이터 조회
 
 ## 📊 시스템 동작 방식
 
 ### 1. 감지 단계 (Detection)
 ```python
 # YOLO 기반 감지
-detector = ultralytics.YOLO("yolov8n.pt")
-results = detector(frame, classes=[2, 7])  # 자동차, 트럭만 감지
+from src.core.detection import YOLODetector
+detector = YOLODetector(model_path="weights/best.pt")
+detections = detector.detect(frame, frame_number, timestamp)
 
-# 색상 기반 감지
-detector = AGVDetector(min_area=1000)
+# 이진화 기반 감지
+from src.core.detection import BinaryDetector
+detector = BinaryDetector(
+    threshold=100,
+    use_adaptive=True,
+    adaptive_block_size=11,
+    adaptive_c=20.0,
+    inverse=True  # True: 어두운 객체, False: 밝은 객체
+)
 detections = detector.detect(frame, frame_number, timestamp)
 ```
 
 ### 2. 추적 단계 (Tracking)
 ```python
-# 칼만 필터 초기화
-kf = KalmanFilter(dim_x=6, dim_z=3)  # [x, y, θ, vx, vy, ω]
-# 상태 벡터: [위치x, 위치y, 각도, 속도x, 속도y, 각속도]
+# EnhancedAMRTracker 사용 (통합 시스템)
+from src.core.amr_tracker import EnhancedAMRTracker
 
-# 예측 및 업데이트
-kf.predict()
-kf.update(measurement)
+tracker = EnhancedAMRTracker(
+    detector_type="yolo",  # 또는 "binary"
+    detector_config={...},
+    tracking_config={...},
+    pixel_size=0.1,
+    fps=30.0
+)
+
+# 객체 감지 및 추적
+detections = tracker.detect_objects(frame, frame_number)
+tracking_results = tracker.track_objects(frame, detections, frame_number)
 ```
 
 ### 3. 측정 단계 (Measurement)
@@ -132,31 +164,52 @@ height_mm = pixel_height * pixels_per_mm
 - 속도 벡터 화살표
 - 궤적 표시
 - 측정 정보 오버레이
+- 이진화 디버그 이미지 (BinaryDetector 사용 시)
 
 ## ⚙️ 설정 파일
 
-### tracker_config.json
+### 제품 모델 설정 (config/zoom1.json)
 ```json
 {
-  "calibration": {
-    "checkerboard_size": [9, 6],
-    "square_size": 25.0,
-    "camera_height": 2000.0
+  "detector": {
+    "detector_type": "binary",
+    "threshold": 100,
+    "min_area": 700,
+    "width_height_ratio_min": 0.8,
+    "width_height_ratio_max": 1.2,
+    "mask_area_ratio": 0.9,
+    "inverse": true,
+    "use_adaptive": true,
+    "adaptive_block_size": 11,
+    "adaptive_c": 20.0
   },
-  "measurement": {
-    "min_agv_area": 1000,
-    "fps": 30
+  "tracker": {
+    "speed_threshold_pix_per_frame": 5.0,
+    "max_frames_lost": 500
   },
   "execution": {
-    "presets": {
-      "enhanced_stationary": {
-        "mode": "enhanced",
-        "detector": "yolo",
-        "tracker": "kalman",
-        "stationary_mode": true
-      }
-    }
+    "use_preset": "video_tracking",
+    "image_undistortion": true,
+    "result_base_path": "C:/CMES_AI/Result",
+    "summary_base_path": "C:/CMES_AI/Summary",
+    "debug_base_path": "C:/CMES_AI/Debug"
   }
+}
+```
+
+### 모델 설정 (config/model_config.json)
+```json
+{
+  "model_list": ["zoom1", "zoom2"],
+  "selected_model": "zoom1"
+}
+```
+
+### 카메라 설정 (config/camera1_config.json)
+```json
+{
+  "CameraMatrix": [[...], [...], [...]],
+  "DistortionCoefficients": [...]
 }
 ```
 
@@ -226,17 +279,20 @@ git submodule update --init --recursive
 uv pip install -e submodules/novitec_camera_module
 ```
 
+자세한 내용은 [README_Novitec_Camera.md](README_Novitec_Camera.md)를 참조하세요.
+
 ## 📁 데이터 구조
 
 ### 입력 데이터
 - **비디오 파일**: MP4, AVI, MKV 등
 - **이미지 시퀀스**: PNG, JPG 등
 - **웹캠**: 실시간 카메라 입력
+- **Novitec 카메라**: 산업용 고성능 카메라
 
 ### 출력 데이터
-- **CSV 로그**: 추적 결과 저장
-- **비디오 녹화**: 측정 과정 녹화
-- **스냅샷**: 특정 프레임 저장
+- **결과 이미지**: `C:/CMES_AI/Result/cam_{camera_id}_result.png`
+- **요약 데이터**: `C:/CMES_AI/Summary/`
+- **디버그 이미지**: `C:/CMES_AI/Debug/cam_{camera_id}_binary_debug.png` (BinaryDetector 사용 시)
 
 ## 🎯 사용 사례
 
@@ -257,27 +313,37 @@ uv pip install -e submodules/novitec_camera_module
 
 ## 🛠️ 고급 설정
 
-### 칼만 필터 튜닝
-```python
-# 프로세스 노이즈 조정
-kf.Q[0, 0] = kf.Q[1, 1] = 0.1  # 위치 노이즈
-kf.Q[3, 3] = kf.Q[4, 4] = 1.0  # 속도 노이즈
-
-# 측정 노이즈 조정
-kf.R[0, 0] = kf.R[1, 1] = 10   # 위치 측정 노이즈
-kf.R[2, 2] = 0.1              # 각도 측정 노이즈
+### 이진화 디텍터 튜닝
+```json
+{
+  "detector": {
+    "detector_type": "binary",
+    "use_adaptive": true,
+    "adaptive_block_size": 11,  // 홀수 (3, 5, 7, 11, 15, 21 등)
+    "adaptive_c": 30.0,          // 완전 검은 물체: 30-50, 일반: 2-10
+    "inverse": true,              // true: 어두운 객체, false: 밝은 객체
+    "threshold": 100,             // use_adaptive=false일 때만 사용
+    "min_area": 700
+  }
+}
 ```
 
+### 칼만 필터 튜닝
+칼만 필터 파라미터는 `config/zoom1.json`의 `tracker` 섹션에서 설정할 수 있습니다:
+- `speed_threshold_pix_per_frame`: 속도 임계값
+- `max_frames_lost`: 최대 손실 프레임 수
+- `detection_loss_threshold_frames`: 감지 손실 임계값
+
 ### 감지 임계값 조정
-```python
-# 최소 객체 크기
-min_area = 1000  # 픽셀
-
-# 최대 추적 거리
-max_distance = 500  # 픽셀
-
-# 신뢰도 임계값
-confidence_threshold = 0.5
+```json
+{
+  "detector": {
+    "min_area": 1000,              // 최소 객체 크기 (픽셀)
+    "width_height_ratio_min": 0.8,  // 최소 가로/세로 비율
+    "width_height_ratio_max": 1.2, // 최대 가로/세로 비율
+    "mask_area_ratio": 0.9         // 마스크/바운딩박스 비율
+  }
+}
 ```
 
 ## 🐛 문제 해결
@@ -286,11 +352,22 @@ confidence_threshold = 0.5
 1. **카메라 연결 실패**: 카메라 인덱스 확인
 2. **보정 실패**: 체커보드 크기 및 품질 확인
 3. **추적 실패**: 조명 조건 및 객체 크기 확인
+4. **이진화 검출 실패**: `adaptive_c` 값 조정 (완전 검은 물체: 30-50)
 
 ### 성능 최적화
 - GPU 가속 사용 (CUDA 지원)
 - 해상도 조정
 - 프레임 스킵 옵션
+
+### OpenMP 오류
+```
+OMP: Error #15: Initializing libiomp5md.dll
+```
+이 오류는 자동으로 처리되지만, 수동으로 설정하려면:
+```python
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+```
 
 ## 📝 라이선스
 
@@ -303,3 +380,7 @@ confidence_threshold = 0.5
 ## 📞 지원
 
 기술적 지원이나 질문이 있으시면 이슈를 생성해 주세요.
+
+## 🔗 관련 문서
+
+- [Novitec 카메라 사용 가이드](README_Novitec_Camera.md)

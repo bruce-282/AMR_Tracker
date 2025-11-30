@@ -58,17 +58,24 @@ uv sync
 ### 3. 카메라 연결 확인
 ```bash
 # 카메라 테스트 실행
-python src/utils/novitec_camera_loader.py
+python src/utils/sequence_loader.py
 ```
 
 ## 📖 사용법
 
-### 기본 사용법
+### 기본 사용법 (Sequence Loader)
 ```python
-from src.utils.novitec_camera_loader import create_novitec_camera_loader
+from src.utils.sequence_loader import create_sequence_loader
 
-# 카메라 로더 생성
-loader = create_novitec_camera_loader(camera_index=0, timeout=2000)
+# Novitec 카메라 로더 생성
+loader = create_sequence_loader(
+    loader_mode="camera",
+    source=0,  # 카메라 인덱스
+    config=None,  # 카메라 설정 파일 경로 (선택사항)
+    enable_undistortion=False,  # 이미지 왜곡 보정
+    camera_matrix=None,  # 카메라 매트릭스
+    dist_coeffs=None  # 왜곡 계수
+)
 
 if loader:
     try:
@@ -83,83 +90,101 @@ if loader:
         loader.release()
 ```
 
-### Context Manager 사용
-```python
-from src.utils.novitec_camera_loader import create_novitec_camera_loader
+### Vision Server에서 사용
+Vision Server는 설정 파일을 통해 Novitec 카메라를 자동으로 사용합니다:
 
-with create_novitec_camera_loader() as loader:
-    if loader:
-        ret, frame = loader.read()
-        if ret:
-            # 프레임 처리
-            process_frame(frame)
+```json
+{
+  "execution": {
+    "use_preset": "camera_tracking",
+    "presets": {
+      "camera_tracking": {
+        "loader_mode": "camera",
+        "camera_1": {
+          "id": 0,
+          "config": "config/camera1_config.json",
+          "measurement": {
+            "fps": 30.0,
+            "pixel_size": 0.1
+          }
+        }
+      }
+    }
+  }
+}
 ```
 
 ### 카메라 정보 확인
 ```python
-from src.utils.novitec_camera_loader import list_novitec_cameras
+from src.utils.sequence_loader import create_camera_device_loader
 
-# 사용 가능한 카메라 목록
-cameras = list_novitec_cameras()
-for camera in cameras:
-    print(f"카메라 {camera['index']}: {camera['model_name']} - {camera['serial_number']}")
+# Novitec 카메라 로더 생성
+loader = create_camera_device_loader(
+    camera_index=0,
+    config="config/camera1_config.json"  # 선택사항
+)
+
+if loader:
+    info = loader.get_camera_info()
+    print(f"카메라 모델: {info.get('model_name')}")
+    print(f"시리얼 번호: {info.get('serial_number')}")
+    loader.release()
 ```
 
 ## 🔧 API 참조
 
-### NovitecCameraLoader 클래스
+### Sequence Loader 통합
 
-#### 초기화
+Novitec 카메라는 `BaseLoader` 인터페이스를 통해 통합되어 있습니다:
+
 ```python
-loader = NovitecCameraLoader(camera_index=0, timeout=2000)
+from src.utils.sequence_loader import BaseLoader, create_sequence_loader
+
+# 로더 생성
+loader = create_sequence_loader(
+    loader_mode="camera",
+    source=0,
+    config="config/camera1_config.json"
+)
+
+# BaseLoader 인터페이스 사용
+if isinstance(loader, BaseLoader):
+    ret, frame = loader.read()
+    if ret:
+        # 프레임 처리
+        process_frame(frame)
+    
+    # 리셋 (비디오/이미지 시퀀스의 경우)
+    if hasattr(loader, 'reset'):
+        loader.reset()
+    
+    # 해제
+    loader.release()
 ```
 
-**매개변수:**
-- `camera_index` (int): 사용할 카메라 인덱스 (기본값: 0)
-- `timeout` (int): 이미지 획득 타임아웃 (ms, 기본값: 2000)
+### 이미지 왜곡 보정
 
-#### 주요 메서드
+Novitec 카메라 로더는 이미지 왜곡 보정을 지원합니다:
 
-##### `initialize() -> bool`
-카메라를 초기화하고 연결합니다.
 ```python
-success = loader.initialize()
-```
+import json
+from pathlib import Path
 
-##### `read() -> Tuple[bool, Optional[np.ndarray]]`
-다음 프레임을 읽습니다.
-```python
-ret, frame = loader.read()
-if ret and frame is not None:
-    # frame은 (height, width, 3) 형태의 BGR 이미지
-    process_frame(frame)
-```
+# 카메라 설정 파일 읽기
+with open("config/camera1_config.json", 'r') as f:
+    camera_config = json.load(f)
 
-##### `get_camera_info() -> dict`
-카메라 정보를 반환합니다.
-```python
-info = loader.get_camera_info()
-# {'model_name': '...', 'serial_number': '...', 'camera_index': 0, 'connected': True}
-```
+camera_matrix = np.array(camera_config["CameraMatrix"])
+dist_coeffs = np.array(camera_config["DistortionCoefficients"])
 
-##### `release()`
-리소스를 해제합니다.
-```python
-loader.release()
-```
-
-### 유틸리티 함수
-
-#### `create_novitec_camera_loader(camera_index=0, timeout=2000)`
-카메라 로더를 생성하고 초기화합니다.
-```python
-loader = create_novitec_camera_loader(camera_index=0)
-```
-
-#### `list_novitec_cameras() -> list`
-사용 가능한 카메라 목록을 반환합니다.
-```python
-cameras = list_novitec_cameras()
+# 왜곡 보정 활성화
+loader = create_sequence_loader(
+    loader_mode="camera",
+    source=0,
+    enable_undistortion=True,
+    camera_matrix=camera_matrix,
+    dist_coeffs=dist_coeffs
+)
 ```
 
 ## 🎯 지원되는 이미지 포맷
@@ -175,17 +200,17 @@ cameras = list_novitec_cameras()
 - 카메라가 다른 프로그램에서 사용 중이면 연결이 실패할 수 있습니다
 
 ### 2. 타임아웃 설정
-- `timeout` 값이 너무 작으면 이미지 획득이 실패할 수 있습니다
-- 기본값 2000ms는 대부분의 경우에 적합합니다
+- 타임아웃은 Novitec SDK 내부에서 관리됩니다
+- 기본값은 대부분의 경우에 적합합니다
 
 ### 3. 리소스 관리
-- 사용 후 반드시 `release()` 메서드를 호출하거나 context manager를 사용하세요
+- 사용 후 반드시 `release()` 메서드를 호출하세요
 - 카메라 연결을 해제하지 않으면 다른 프로그램에서 사용할 수 없습니다
 
 ### 4. 에러 처리
 ```python
 try:
-    loader = create_novitec_camera_loader()
+    loader = create_sequence_loader(loader_mode="camera", source=0)
     if loader is None:
         print("카메라 연결 실패")
         return
@@ -209,9 +234,9 @@ finally:
 3. Device Manager에서 카메라가 인식되는지 확인
 
 ### 이미지 획득 실패
-1. `timeout` 값을 늘려보세요 (3000ms 이상)
-2. 다른 프로그램에서 카메라를 사용 중인지 확인
-3. 카메라 케이블 연결 상태 확인
+1. 다른 프로그램에서 카메라를 사용 중인지 확인
+2. 카메라 케이블 연결 상태 확인
+3. 카메라 전원 상태 확인
 
 ### SDK 모듈을 찾을 수 없는 경우
 ```python
@@ -223,18 +248,75 @@ print(f"Novitec 경로: {novitec_path}")
 print(f"경로 존재: {novitec_path.exists()}")
 ```
 
+### 이미지 왜곡 보정 오류
+1. `camera1_config.json` 파일이 올바른지 확인
+2. `CameraMatrix`와 `DistortionCoefficients` 형식 확인
+3. `enable_undistortion`이 `true`로 설정되었는지 확인
+
 ## 📁 파일 구조
+
 ```
-src/utils/novitec_camera_loader.py    # 메인 모듈
-submodules/novitec_camera_module/     # Novitec SDK
-├── novitec_camera/                   # SDK 라이브러리
-│   ├── *.dll                        # Windows DLL 파일들
-│   └── drivers/                     # USB3 드라이버
-└── src/novitec_camera_binding.cpp   # Python 바인딩
+src/utils/sequence_loader.py         # 통합 시퀀스 로더
+├── BaseLoader                       # 기본 로더 인터페이스
+├── NovitecCameraLoader             # Novitec 카메라 로더
+├── VideoFileLoader                 # 비디오 파일 로더
+└── ImageSequenceLoader             # 이미지 시퀀스 로더
+
+submodules/novitec_camera_module/   # Novitec SDK
+├── novitec_camera/                 # SDK 라이브러리
+│   ├── *.dll                      # Windows DLL 파일들
+│   └── drivers/                   # USB3 드라이버
+└── src/novitec_camera_binding.cpp  # Python 바인딩
+
+config/
+├── camera1_config.json            # 카메라 1 설정 (왜곡 보정용)
+└── zoom1.json                     # 제품 모델 설정
 ```
 
 ## 🔗 관련 파일
-- `main.py`: AMR 트래킹 시스템 메인
+
+- `main.py`: AMR 트래킹 시스템 메인 (Standalone 모드)
+- `run_server.py`: TCP/IP 서버 실행
+- `src/server/vision_server.py`: Vision Server 메인
+- `src/server/camera_manager.py`: 카메라 관리
+- `src/core/amr_tracker.py`: EnhancedAMRTracker (통합 추적 시스템)
 - `src/core/detection/`: 객체 감지 모듈
 - `src/core/tracking/`: 객체 추적 모듈
 - `config/`: 설정 파일들
+
+## 📝 설정 파일 예시
+
+### camera1_config.json
+```json
+{
+  "CameraMatrix": [
+    [1000.0, 0.0, 640.0],
+    [0.0, 1000.0, 360.0],
+    [0.0, 0.0, 1.0]
+  ],
+  "DistortionCoefficients": [0.0, 0.0, 0.0, 0.0, 0.0]
+}
+```
+
+### zoom1.json (일부)
+```json
+{
+  "execution": {
+    "use_preset": "camera_tracking",
+    "image_undistortion": true,
+    "presets": {
+      "camera_tracking": {
+        "loader_mode": "camera",
+        "camera_1": {
+          "id": 0,
+          "config": "config/camera1_config.json",
+          "measurement": {
+            "fps": 30.0,
+            "pixel_size": 0.1
+          }
+        }
+      }
+    }
+  }
+}
+```
