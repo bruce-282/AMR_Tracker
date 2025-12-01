@@ -81,17 +81,19 @@ class KalmanTracker:
     Tracks position, velocity, and orientation using a Kalman filter.
     """
 
-    def __init__(self, fps=30, pixel_size=1.0, track_id=0):
+    def __init__(self, fps=30, pixel_size=1.0, distance_map_data=None, track_id=0):
         """
         Initialize Kalman tracker
 
         Args:
             fps: Camera frame rate (initial value, can be updated from timestamps)
-            pixel_size: Pixel size in mm (1 pixel = ? mm)
+            pixel_size: Pixel size in mm (1 pixel = ? mm) - used if distance_map_data is None
+            distance_map_data: Distance map data dict from PixelDistanceMapper.load_distance_map() (optional)
             track_id: Unique ID for this tracker
         """
         self.fps = fps
         self.pixel_size = pixel_size
+        self.distance_map_data = distance_map_data
         self.track_id = track_id
         self.kf = self.init_kalman()
 
@@ -449,7 +451,18 @@ class KalmanTracker:
             linear_speed_pix = (
                 np.sqrt(state[3] ** 2 + state[4] ** 2) * self.fps
             )  # pixels/sec
-            linear_speed_mm = linear_speed_pix * self.pixel_size  # mm/s
+            # Convert pixel speed to mm/s
+            if self.distance_map_data:
+                # Use distance map: average pixel_size from distance map
+                # For speed calculation, use a representative pixel_size from the map
+                # (e.g., center of image or average)
+                distance_map = self.distance_map_data['distance_map']
+                h, w = distance_map.shape
+                # Use center pixel as reference
+                center_pix_size = distance_map[h//2, w//2] / np.sqrt((h//2)**2 + (w//2)**2) if (h//2)**2 + (w//2)**2 > 0 else self.pixel_size
+                linear_speed_mm = linear_speed_pix * center_pix_size  # mm/s
+            else:
+                linear_speed_mm = linear_speed_pix * self.pixel_size  # mm/s
 
             # Angular speed is already in deg/frame, convert to deg/sec
             angular_speed_deg = abs(state[5]) * self.fps  # deg/sec
@@ -461,13 +474,31 @@ class KalmanTracker:
             angular_speed_rad = 0
             angular_speed_deg = 0
 
+        # Convert pixel position to mm
+        if self.distance_map_data:
+            # Use distance map to get actual world coordinates
+            x_pix, y_pix = int(state[0]), int(state[1])
+            dx_map = self.distance_map_data['dx_map']
+            dy_map = self.distance_map_data['dy_map']
+            h, w = dx_map.shape
+            if 0 <= y_pix < h and 0 <= x_pix < w:
+                x_mm = float(dx_map[y_pix, x_pix])
+                y_mm = float(dy_map[y_pix, x_pix])
+            else:
+                # Out of bounds, fallback to pixel_size
+                x_mm = state[0] * self.pixel_size
+                y_mm = state[1] * self.pixel_size
+        else:
+            x_mm = state[0] * self.pixel_size
+            y_mm = state[1] * self.pixel_size
+        
         # Prepare output
         results = {
             "position": {
                 "x": state[0],
                 "y": state[1],
-                "x_mm": state[0] * self.pixel_size,
-                "y_mm": state[1] * self.pixel_size,
+                "x_mm": x_mm,
+                "y_mm": y_mm,
             },
             "orientation": {
                 "theta_deg": state[2],  # Already in degrees

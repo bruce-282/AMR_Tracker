@@ -249,6 +249,73 @@ def get_camera_pixel_sizes(
     return result
 
 
+def get_camera_distance_map_paths(
+    product_model_name: Optional[str],
+    main_config_execution: Optional[Dict[str, Any]],
+    preset_name: Optional[str] = None
+) -> Dict[int, Optional[str]]:
+    """
+    Get distance_map_path for all cameras from preset configuration.
+    
+    Priority:
+    1. Product model config file (config/{product_model_name}.json)
+    2. Main config file (tracker_config.json)
+    
+    Args:
+        product_model_name: Product model name (e.g., "zoom1")
+        main_config_execution: Execution config from main config file
+        preset_name: Preset name to use
+    
+    Returns:
+        Dictionary mapping camera_id -> distance_map_path (None if not set)
+    """
+    result = {}
+    
+    exec_config = get_execution_config(product_model_name, main_config_execution)
+    
+    if not exec_config:
+        # No config available
+        for camera_id in [1, 2, 3]:
+            result[camera_id] = None
+        return result
+    
+    # Get preset name
+    if not preset_name:
+        preset_name = exec_config.get("use_preset")
+    
+    if not preset_name:
+        # No preset
+        for camera_id in [1, 2, 3]:
+            result[camera_id] = None
+        return result
+    
+    presets = exec_config.get("presets", {})
+    preset = presets.get(preset_name, {})
+    if not preset:
+        # Preset not found
+        for camera_id in [1, 2, 3]:
+            result[camera_id] = None
+        return result
+    
+    # Load distance_map_path for each camera from preset
+    for camera_id in [1, 2, 3]:
+        camera_key = f"camera_{camera_id}"
+        camera_config = preset.get(camera_key, {})
+        
+        if isinstance(camera_config, dict):
+            measurement = camera_config.get("measurement", {})
+            if isinstance(measurement, dict) and "distance_map_path" in measurement:
+                distance_map_path = measurement.get("distance_map_path")
+                result[camera_id] = distance_map_path
+                logger.debug(f"Camera {camera_id}: distance_map_path={distance_map_path} from preset '{preset_name}'")
+            else:
+                result[camera_id] = None
+        else:
+            result[camera_id] = None
+    
+    return result
+
+
 def load_tracking_config(
     product_model_name: Optional[str],
     main_config_tracking: Optional[Any]

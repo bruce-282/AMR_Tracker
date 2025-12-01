@@ -35,6 +35,7 @@ class EnhancedAMRTracker:
         detector_type: str = "yolo",
         tracker_type: str = "kalman",
         pixel_size: float = 1.0,
+        distance_map_path: Optional[str] = None,
         model_path: Optional[str] = None,
         detector_config: Optional[Dict[str, Any]] = None,
         calibration_config: Optional[Dict[str, Any]] = None,
@@ -47,7 +48,8 @@ class EnhancedAMRTracker:
             config: System configuration
             detector_type: Type of detector ("yolo")
             tracker_type: Type of tracker ("kalman", "speed")
-            pixel_size: Pixel size in mm
+            pixel_size: Pixel size in mm (used if distance_map_path is None)
+            distance_map_path: Path to distance map .npz file (optional, overrides pixel_size)
             model_path: Path to YOLO model file (default: "weights/zoom1/best.pt")
             detector_config: Detector configuration dictionary (optional)
             calibration_config: Calibration configuration dictionary (optional)
@@ -57,6 +59,8 @@ class EnhancedAMRTracker:
         self.detector_type = detector_type
         self.tracker_type = tracker_type
         self.pixel_size = pixel_size
+        self.distance_map_path = distance_map_path
+        self.distance_map_data = None  # Will be loaded if distance_map_path is provided
 
         # Initialize components (will be set in _initialize_components)
         self.detector = None
@@ -79,7 +83,28 @@ class EnhancedAMRTracker:
         else:
             self.fps = 30
 
+        # Load distance map if path is provided
+        if self.distance_map_path:
+            self._load_distance_map()
+
         self._initialize_components()
+    
+    def _load_distance_map(self):
+        """Load distance map from file."""
+        try:
+            from scripts.pixel_distance_mapper import PixelDistanceMapper
+            self.distance_map_data = PixelDistanceMapper.load_distance_map(self.distance_map_path)
+            if self.distance_map_data:
+                logger.info(f"Distance map loaded from: {self.distance_map_path}")
+                logger.info(f"  Image shape: {self.distance_map_data['image_shape']}")
+                logger.info(f"  Reference point: ({self.distance_map_data['reference_world'][0]:.2f}, {self.distance_map_data['reference_world'][1]:.2f}) mm")
+            else:
+                logger.warning(f"Failed to load distance map from: {self.distance_map_path}")
+                self.distance_map_path = None
+        except Exception as e:
+            logger.error(f"Error loading distance map from {self.distance_map_path}: {e}")
+            self.distance_map_path = None
+            self.distance_map_data = None
 
     def _initialize_components(self):
         """Initialize all system components"""
@@ -134,9 +159,13 @@ class EnhancedAMRTracker:
             self.tracker = KalmanTracker(
                 fps=self.fps,
                 pixel_size=self.pixel_size,
+                distance_map_data=self.distance_map_data,
                 track_id=0,
             )
-            logger.info(f"Kalman filter tracker initialized (fps={self.fps}, pixel_size={self.pixel_size})")
+            if self.distance_map_data:
+                logger.info(f"Kalman filter tracker initialized (fps={self.fps}, using distance map)")
+            else:
+                logger.info(f"Kalman filter tracker initialized (fps={self.fps}, pixel_size={self.pixel_size})")
         else:
             raise ValueError(
                 f"Unsupported tracker type: {self.tracker_type}. Only 'kalman' is supported."
@@ -180,10 +209,17 @@ class EnhancedAMRTracker:
                 if isinstance(calibration_image_size, list):
                     calibration_image_size = tuple(calibration_image_size)
 
+                # Use distance map if available, otherwise use pixel_size from calibration
+                pixel_size_for_measurement = calibration_data.get("pixel_size", 1.0)
+                if self.distance_map_data:
+                    # Distance map will be used instead of pixel_size
+                    pixel_size_for_measurement = 1.0  # Placeholder, actual conversion uses distance map
+                
                 self.size_measurement = SizeMeasurement(
                     homography=np.array(calibration_data["homography"]),
                     camera_height=camera_height,
-                    pixel_size=calibration_data.get("pixel_size", 1.0),
+                    pixel_size=pixel_size_for_measurement,
+                    distance_map_data=self.distance_map_data,
                     calibration_image_size=calibration_image_size,
                 )
                 logger.info("Size measurement initialized from calibration config")

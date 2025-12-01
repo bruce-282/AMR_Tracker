@@ -6,7 +6,7 @@ from typing import Dict, Optional, Tuple, Any
 import cv2
 
 from src.utils.sequence_loader import create_sequence_loader, BaseLoader
-from src.utils.config_loader import get_camera_config, get_camera_pixel_sizes
+from src.utils.config_loader import get_camera_config, get_camera_pixel_sizes, get_camera_distance_map_paths
 from src.core.amr_tracker import EnhancedAMRTracker
 from .model_config import ModelConfig
 from config import SystemConfig
@@ -39,6 +39,7 @@ class CameraManager:
         self.camera_loaders: Dict[int, BaseLoader] = {}
         self.amr_trackers: Dict[int, EnhancedAMRTracker] = {}
         self.camera_pixel_sizes: Dict[int, float] = {}
+        self.camera_distance_map_paths: Dict[int, Optional[str]] = {}
         self.frame_numbers: Dict[int, int] = {}
         self.camera_status: Dict[int, bool] = {1: False, 2: False, 3: False}
         
@@ -91,6 +92,28 @@ class CameraManager:
         )
         
         self.camera_pixel_sizes.update(pixel_sizes)
+    
+    def load_camera_distance_map_paths(self, preset_name: Optional[str] = None, product_model_name: Optional[str] = None):
+        """Pre-load distance map paths for all cameras."""
+        if product_model_name is None:
+            product_model_name = self.model_config.get_selected_model()
+        
+        if preset_name is None:
+            preset_name = self.preset_name
+        
+        distance_map_paths = get_camera_distance_map_paths(
+            product_model_name=product_model_name,
+            main_config_execution=self.config.execution if self.config and hasattr(self.config, 'execution') and self.config.execution else None,
+            preset_name=preset_name
+        )
+        
+        self.camera_distance_map_paths.update(distance_map_paths)
+    
+    def get_distance_map_path(self, camera_id: Optional[int] = None) -> Optional[str]:
+        """Get distance map path for a camera."""
+        if camera_id and camera_id in self.camera_distance_map_paths:
+            return self.camera_distance_map_paths[camera_id]
+        return None
     
     def get_pixel_size(self, camera_id: Optional[int] = None) -> float:
         """Get pixel size for a camera."""

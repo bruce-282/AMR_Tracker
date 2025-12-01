@@ -18,6 +18,7 @@ class SizeMeasurement:
         homography: np.ndarray,
         camera_height: float = None,
         pixel_size: float = 1.0,
+        distance_map_data: Optional[Dict] = None,
         calibration_image_size: tuple = None,
     ):
         """
@@ -26,12 +27,14 @@ class SizeMeasurement:
         Args:
             homography: Homography matrix for ground plane
             camera_height: Height of camera above ground in mm
-            pixel_size: Pixel size in mm (from calibration)
+            pixel_size: Pixel size in mm (from calibration, used if distance_map_data is None)
+            distance_map_data: Distance map data dict from PixelDistanceMapper.load_distance_map() (optional)
             calibration_image_size: Original image size used for calibration (width, height)
         """
         self.H = homography
         self.camera_height = camera_height
         self.pixel_size = pixel_size
+        self.distance_map_data = distance_map_data
         self.calibration_image_size = calibration_image_size
 
     def measure(

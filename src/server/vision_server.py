@@ -824,10 +824,11 @@ class VisionServer:
                 else:
                     self.logger.info(f"  Image undistortion: DISABLED")
             
-            # Pre-load pixel_sizes for all cameras from preset (efficient - done once at initialization)
+            # Pre-load pixel_sizes and distance_map_paths for all cameras from preset (efficient - done once at initialization)
             exec_config = self.config.execution if self.config and hasattr(self.config, 'execution') and self.config.execution else {}
             preset_name = self.preset_name or exec_config.get("use_preset")
             self.camera_manager.load_camera_pixel_sizes(preset_name, product_model_name)
+            self.camera_manager.load_camera_distance_map_paths(preset_name, product_model_name)
             
             # Load visualize_stream from product model config (execution.visualize_stream)
             product_model_config = load_product_model_config(product_model_name)

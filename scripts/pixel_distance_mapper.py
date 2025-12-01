@@ -1,8 +1,9 @@
 import numpy as np
 import cv2
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Dict
 from functools import wraps
 from enum import Enum
+from pathlib import Path
 
 
 def requires_calibration(method):
@@ -230,11 +231,17 @@ class PixelDistanceMapper:
         self.H = None
         self.H_inv = None
         self.reference_world = np.array([0.0, 0.0])
+        # 미리 계산된 distance map
+        self.distance_map = None
+        self.dx_map = None
+        self.dy_map = None
+        self.image_shape = None
     
     def calibrate_with_known_points(
         self,
         image_points: np.ndarray,
-        world_points: np.ndarray
+        world_points: np.ndarray,
+        image_shape: Optional[Tuple[int, int]] = None
     ) -> bool:
         if len(image_points) < 4:
             print("최소 4개 점 필요!")
@@ -257,7 +264,33 @@ class PixelDistanceMapper:
         
         print(f"캘리브레이션 완료!")
         print(f"  Reprojection error: mean={errors.mean():.2f}mm, max={errors.max():.2f}mm")
+        
+        # Distance map 미리 계산
+        if image_shape is not None:
+            self.initialize_distance_map(image_shape)
+        
         return True
+    
+    @requires_calibration
+    def initialize_distance_map(self, image_shape: Tuple[int, int]):
+        """Distance map을 미리 계산하여 저장"""
+        h, w = image_shape
+        self.image_shape = image_shape
+        
+        print(f"Distance map 계산 중... ({w}x{h})")
+        u_coords, v_coords = np.meshgrid(np.arange(w), np.arange(h))
+        world_x, world_y = self.pixel_to_world(
+            u_coords.flatten().astype(np.float32),
+            v_coords.flatten().astype(np.float32)
+        )
+        
+        # X, Y 거리 맵
+        self.dx_map = (world_x - self.reference_world[0]).reshape(h, w)
+        self.dy_map = (world_y - self.reference_world[1]).reshape(h, w)
+        
+        # 전체 거리 맵
+        self.distance_map = np.sqrt(self.dx_map**2 + self.dy_map**2)
+        print("Distance map 계산 완료!")
     
     def _pixel_to_world_single(self, u: float, v: float) -> np.ndarray:
         pt = np.array([[[u, v]]], dtype=np.float32)
@@ -274,26 +307,169 @@ class PixelDistanceMapper:
     
     @requires_calibration
     def get_distance(self, u: int, v: int) -> float:
-        world_pt = self._pixel_to_world_single(u, v)
-        return float(np.linalg.norm(world_pt - self.reference_world))
+        """픽셀 좌표에서 기준점까지의 거리 (mm)"""
+        if self.distance_map is not None:
+            # 미리 계산된 맵 사용
+            if 0 <= v < self.distance_map.shape[0] and 0 <= u < self.distance_map.shape[1]:
+                return float(self.distance_map[v, u])
+            else:
+                # 범위 밖이면 직접 계산
+                world_pt = self._pixel_to_world_single(u, v)
+                return float(np.linalg.norm(world_pt - self.reference_world))
+        else:
+            # 맵이 없으면 직접 계산
+            world_pt = self._pixel_to_world_single(u, v)
+            return float(np.linalg.norm(world_pt - self.reference_world))
     
     @requires_calibration
     def get_xy_distance(self, u: int, v: int) -> Tuple[float, float]:
-        world_pt = self._pixel_to_world_single(u, v)
-        diff = world_pt - self.reference_world
-        return float(diff[0]), float(diff[1])
+        """픽셀 좌표에서 기준점까지의 X, Y 거리 (mm)"""
+        if self.dx_map is not None and self.dy_map is not None:
+            # 미리 계산된 맵 사용
+            if 0 <= v < self.dx_map.shape[0] and 0 <= u < self.dx_map.shape[1]:
+                return float(self.dx_map[v, u]), float(self.dy_map[v, u])
+            else:
+                # 범위 밖이면 직접 계산
+                world_pt = self._pixel_to_world_single(u, v)
+                diff = world_pt - self.reference_world
+                return float(diff[0]), float(diff[1])
+        else:
+            # 맵이 없으면 직접 계산
+            world_pt = self._pixel_to_world_single(u, v)
+            diff = world_pt - self.reference_world
+            return float(diff[0]), float(diff[1])
     
     @requires_calibration
-    def create_distance_map(self, image_shape: Tuple[int, int]) -> np.ndarray:
-        h, w = image_shape
-        u_coords, v_coords = np.meshgrid(np.arange(w), np.arange(h))
-        world_x, world_y = self.pixel_to_world(
-            u_coords.flatten().astype(np.float32),
-            v_coords.flatten().astype(np.float32)
-        )
-        dx = world_x - self.reference_world[0]
-        dy = world_y - self.reference_world[1]
-        return np.sqrt(dx**2 + dy**2).reshape(h, w)
+    def create_distance_map(self, image_shape: Optional[Tuple[int, int]] = None) -> np.ndarray:
+        """Distance map 생성 (이미 계산되어 있으면 반환)"""
+        if image_shape is None:
+            if self.distance_map is not None:
+                return self.distance_map
+            else:
+                raise ValueError("image_shape가 필요하거나 먼저 initialize_distance_map()을 호출하세요.")
+        
+        # 이미 같은 크기로 계산되어 있으면 반환
+        if self.distance_map is not None and self.image_shape == image_shape:
+            return self.distance_map
+        
+        # 새로 계산
+        self.initialize_distance_map(image_shape)
+        return self.distance_map
+    
+    @requires_calibration
+    def save_distance_map(self, filepath: str) -> bool:
+        """
+        Distance map을 .npz 파일로 저장
+        
+        Args:
+            filepath: 저장할 파일 경로 (.npz 확장자 권장)
+        
+        Returns:
+            저장 성공 여부
+        """
+        if self.distance_map is None:
+            print("오류: Distance map이 계산되지 않았습니다. 먼저 initialize_distance_map()을 호출하세요.")
+            return False
+        
+        try:
+            # 메타데이터와 함께 저장
+            np.savez_compressed(
+                filepath,
+                distance_map=self.distance_map,
+                dx_map=self.dx_map,
+                dy_map=self.dy_map,
+                image_shape=np.array(self.image_shape),
+                reference_world=self.reference_world,
+                camera_matrix=self.K,
+                dist_coeffs=self.dist,
+                homography=self.H
+            )
+            print(f"Distance map 저장 완료: {filepath}")
+            print(f"  이미지 크기: {self.image_shape}")
+            print(f"  기준점: ({self.reference_world[0]:.2f}, {self.reference_world[1]:.2f}) mm")
+            return True
+        except Exception as e:
+            print(f"Distance map 저장 실패: {e}")
+            return False
+    
+    @staticmethod
+    def load_distance_map(filepath: str) -> Optional[Dict[str, np.ndarray]]:
+        """
+        Distance map을 .npz 파일에서 로드
+        
+        Args:
+            filepath: 로드할 파일 경로
+        
+        Returns:
+            로드된 데이터 딕셔너리 또는 None (실패 시)
+            {
+                'distance_map': np.ndarray,
+                'dx_map': np.ndarray,
+                'dy_map': np.ndarray,
+                'image_shape': np.ndarray,
+                'reference_world': np.ndarray,
+                'camera_matrix': np.ndarray (선택적),
+                'dist_coeffs': np.ndarray (선택적),
+                'homography': np.ndarray (선택적)
+            }
+        """
+        try:
+            data = np.load(filepath)
+            result = {
+                'distance_map': data['distance_map'],
+                'dx_map': data['dx_map'],
+                'dy_map': data['dy_map'],
+                'image_shape': tuple(data['image_shape']),
+                'reference_world': data['reference_world']
+            }
+            
+            # 선택적 데이터
+            if 'camera_matrix' in data:
+                result['camera_matrix'] = data['camera_matrix']
+            if 'dist_coeffs' in data:
+                result['dist_coeffs'] = data['dist_coeffs']
+            if 'homography' in data:
+                result['homography'] = data['homography']
+            
+            print(f"Distance map 로드 완료: {filepath}")
+            print(f"  이미지 크기: {result['image_shape']}")
+            print(f"  기준점: ({result['reference_world'][0]:.2f}, {result['reference_world'][1]:.2f}) mm")
+            return result
+        except Exception as e:
+            print(f"Distance map 로드 실패: {e}")
+            return None
+    
+    @requires_calibration
+    def load_distance_map_to_self(self, filepath: str) -> bool:
+        """
+        Distance map을 로드하여 현재 인스턴스에 설정
+        
+        Args:
+            filepath: 로드할 파일 경로
+        
+        Returns:
+            로드 성공 여부
+        """
+        data = self.load_distance_map(filepath)
+        if data is None:
+            return False
+        
+        self.distance_map = data['distance_map']
+        self.dx_map = data['dx_map']
+        self.dy_map = data['dy_map']
+        self.image_shape = data['image_shape']
+        self.reference_world = data['reference_world']
+        
+        # 선택적 데이터 설정
+        if 'camera_matrix' in data:
+            self.K = data['camera_matrix']
+        if 'dist_coeffs' in data:
+            self.dist = data['dist_coeffs']
+        if 'homography' in data:
+            self.H = data['homography']
+            self.H_inv = np.linalg.inv(self.H)
+        
+        return True
 
 
 def input_world_coordinates(n_points: int) -> np.ndarray:
@@ -370,10 +546,26 @@ if __name__ == "__main__":
     
     # ===== 캘리브레이션 =====
     mapper = PixelDistanceMapper(camera_matrix, dist_coeffs)
-    success = mapper.calibrate_with_known_points(image_points, world_points)
+    success = mapper.calibrate_with_known_points(image_points, world_points, image_shape=(h, w))
     
     if not success:
         exit(1)
+    
+    # ===== Distance Map 저장 (선택적) =====
+    # 저장할 경로 설정 (None이면 저장 안 함)
+    DISTANCE_MAP_PATH = "data/distance_map.npz"
+    
+    if DISTANCE_MAP_PATH:
+        print(f"\n=== Distance Map 저장 ===")
+        success = mapper.save_distance_map(DISTANCE_MAP_PATH)
+        if success:
+            print(f"✓ 저장 완료: {DISTANCE_MAP_PATH}")
+        else:
+            print(f"✗ 저장 실패: {DISTANCE_MAP_PATH}")
+    else:
+        print(f"\n=== Distance Map 저장 건너뜀 ===")
+        print(f"  저장하려면 DISTANCE_MAP_PATH를 설정하세요.")
+        print(f"  예: DISTANCE_MAP_PATH = 'config/distance_map_camera1.npz'")
     
     # ===== 테스트 모드 =====
     print("\n=== 테스트: 클릭하면 거리 표시 (ESC 종료) ===")
