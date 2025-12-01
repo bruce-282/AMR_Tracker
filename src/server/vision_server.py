@@ -830,6 +830,27 @@ class VisionServer:
             self.camera_manager.load_camera_pixel_sizes(preset_name, product_model_name)
             self.camera_manager.load_camera_distance_map_paths(preset_name, product_model_name)
             
+            # Log loaded distance map paths
+            for camera_id in [1, 2, 3]:
+                distance_map_path = self.camera_manager.get_distance_map_path(camera_id)
+                if distance_map_path:
+                    # Try to load distance map to get info
+                    try:
+                        from scripts.pixel_distance_mapper import PixelDistanceMapper
+                        distance_map_data = PixelDistanceMapper.load_distance_map(distance_map_path)
+                        if distance_map_data:
+                            image_shape = distance_map_data.get('image_shape', 'unknown')
+                            reference_world = distance_map_data.get('reference_world', [1, 1])
+                            self.logger.info(f"Camera {camera_id}: Using distance_map_path={distance_map_path}")
+                            self.logger.info(f"  Image shape: {image_shape}, Reference point: ({reference_world[0]:.2f}, {reference_world[1]:.2f}) mm")
+                        else:
+                            self.logger.warning(f"Camera {camera_id}: Failed to load distance_map_path={distance_map_path}")
+                    except Exception as e:
+                        self.logger.warning(f"Camera {camera_id}: Error loading distance_map_path={distance_map_path}: {e}")
+                else:
+                    pixel_size = self.camera_manager.get_pixel_size(camera_id)
+                    self.logger.info(f"Camera {camera_id}: Using pixel_size={pixel_size} (no distance_map_path)")
+             
             # Load visualize_stream from product model config (execution.visualize_stream)
             product_model_config = load_product_model_config(product_model_name)
             if product_model_config and "execution" in product_model_config:
