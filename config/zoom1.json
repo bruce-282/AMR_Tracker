@@ -6,12 +6,18 @@
     "camera_height": 0.0,
     "calibration_data_path": "calibration_data.json"
   },
+
   "detector": {
-    "detector_type": "yolo",
-    "model_path": "weights/zoom1/best.pt",
-    "confidence_threshold": 0.5,
-    "imgsz": 1536,
-    "target_classes": [0]
+    "detector_type": "binary",
+    "threshold": 80,
+    "min_area": 400,
+    "width_height_ratio_min": 0.5,
+    "width_height_ratio_max": 2.0,
+    "mask_area_ratio": 0.5,
+    "inverse": true,
+    "use_adaptive": false,
+    "adaptive_block_size": 11,
+    "adaptive_c": 30.0
   },
   "tracker": {
     "speed_threshold_pix_per_frame": 5.0,
@@ -27,9 +33,9 @@
   },
   "execution": {
     "visualize_stream": true,
-    "result_base_path": "C:\\Users\\junda\\OneDrive\\문서\\cmes_repo\\AMR_Tracker\\output\\Result",
-    "summary_base_path": "C:\\Users\\junda\\OneDrive\\문서\\cmes_repo\\AMR_Tracker\\output\\Summary",
-    "debug_base_path": "C:\\Users\\junda\\OneDrive\\문서\\cmes_repo\\AMR_Tracker\\output\\Debug",
+    "result_base_path": "output/Result",
+    "summary_base_path": "output/Summary",
+    "debug_base_path": "output/Debug",
     "image_undistortion": false,
     "presets": {
 
