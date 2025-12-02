@@ -38,7 +38,6 @@ echo.
 REM Check if CUDA is available
 nvcc --version >nul 2>&1
 if %errorLevel% neq 0 (
-    echo [WARNING] CUDA compiler (nvcc) not found in PATH.
     echo This might be okay if CUDA is installed but PATH is not set.
     echo Continuing with PyTorch installation...
     echo.

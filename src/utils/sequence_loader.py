@@ -9,7 +9,7 @@ import glob
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Dict
 from enum import Enum
 import time
 import numpy as np
@@ -257,6 +257,29 @@ class ImageSequenceLoader(BaseLoader):
 
 class NovitecCameraLoader(BaseLoader):
     """Loader for Novitec industrial cameras"""
+    
+    # 클래스 레벨에서 모든 인스턴스 추적
+    _all_instances: Dict[str, 'NovitecCameraLoader'] = {}
+    
+    @classmethod
+    def _stop_all_other_streams(cls, current_device_id: str):
+        """현재 카메라를 제외한 다른 모든 카메라의 스트림 중지 및 disconnect"""
+        for device_id, loader in cls._all_instances.items():
+            if device_id != current_device_id and getattr(loader, '_stream_started', False):
+                try:
+                    if loader.camera:
+                        print(f"[INFO] Stopping and disconnecting {device_id} (switching to {current_device_id})")
+                        # 스트림 중지
+                        if hasattr(loader.camera, 'stop_stream'):
+                            loader.camera.stop_stream()
+                        # 완전히 disconnect
+                        if hasattr(loader.camera, 'disconnect'):
+                            loader.camera.disconnect()
+                        loader._stream_started = False
+                        loader.camera._is_streaming = False
+                        loader._connected = False
+                except Exception as e:
+                    print(f"[WARN] Failed to stop/disconnect {device_id}: {e}")
 
     def __init__(self, device_id: str, config: Optional[dict] = None, enable_undistortion: bool = False, camera_matrix: Optional[np.ndarray] = None, dist_coeffs: Optional[np.ndarray] = None):
         """
@@ -282,9 +305,14 @@ class NovitecCameraLoader(BaseLoader):
         self.initialized = False
 
         self._initialize()
+        
+        # 클래스 레벨에서 인스턴스 등록
+        NovitecCameraLoader._all_instances[device_id] = self
 
     def _initialize(self):
         """Initialize Novitec camera"""
+        
+        print(f"[INFO] NovitecCameraLoader._initialize() - device_id={self.device_id}, id(self)={id(self)}")
 
         # Create NovitecCamera instance
         self.camera = NovitecCamera(
@@ -294,10 +322,19 @@ class NovitecCameraLoader(BaseLoader):
         )
         if not self.camera:
             raise RuntimeError(f"Failed to create Novitec camera: {self.device_id}")
+        
+        print(f"[INFO] NovitecCamera created - device_id={self.device_id}, id(camera)={id(self.camera)}, id(_device)={id(self.camera._device) if hasattr(self.camera, '_device') else 'N/A'}")
 
         # Connect to camera
         if not self.camera.connect():
             raise RuntimeError(f"Failed to connect to Novitec camera: {self.device_id}")
+        
+        print(f"[INFO] NovitecCamera connected - device_id={self.device_id}, id(_device)={id(self.camera._device) if hasattr(self.camera, '_device') else 'N/A'}")
+
+        # start_stream은 여기서 호출하지 않음 - read() 호출 시 필요할 때만 시작
+        # Novitec SDK가 한 번에 하나의 카메라만 스트리밍 지원하기 때문
+        self._stream_started = False
+        self._connected = True
 
         self.initialized = True
         self.is_connected = True
@@ -331,6 +368,36 @@ class NovitecCameraLoader(BaseLoader):
             return False, None
 
         try:
+            # 스트림이 시작되지 않았으면 시작
+            if not getattr(self, '_stream_started', False):
+                print(f"[INFO] Starting stream for {self.device_id}...")
+                # 다른 모든 카메라의 스트림 중지 및 disconnect (Novitec SDK는 한 번에 하나만 지원)
+                NovitecCameraLoader._stop_all_other_streams(self.device_id)
+                
+                # disconnect 상태면 다시 connect
+                if not getattr(self, '_connected', True) or not self.camera.is_connected:
+                    print(f"[INFO] Re-connecting camera {self.device_id}...")
+                    if not self.camera.connect():
+                        print(f"[ERROR] Failed to re-connect camera {self.device_id}")
+                        return False, None
+                    self._connected = True
+                    print(f"[INFO] Camera {self.device_id} re-connected successfully")
+                
+                stream_result = self.camera.start_stream()
+                if stream_result:
+                    self._stream_started = True
+                    self.camera._is_streaming = True
+                    print(f"[INFO] Stream started successfully for {self.device_id}")
+                else:
+                    # 이미 시작된 경우도 처리
+                    self._stream_started = True
+                    self.camera._is_streaming = True
+                    print(f"[WARN] start_stream returned False for {self.device_id}, but continuing...")
+            
+            # 첫 프레임에서만 로그 출력
+            if self.frame_number == 0:
+                print(f"[INFO] NovitecCameraLoader.read() FIRST FRAME - device_id={self.device_id}")
+            
             # Capture image using NovitecCamera API
             data = self.camera.capture(output_formats=["image"])
 
@@ -341,6 +408,15 @@ class NovitecCameraLoader(BaseLoader):
 
             # Ensure frame is in correct format (BGR for OpenCV)
             if frame is not None and len(frame.shape) == 3:
+                # 첫 프레임을 파일로 저장 (디버그용)
+                if self.frame_number == 0:
+                    debug_path = f"output/Debug/first_frame_{self.device_id}.png"
+                    try:
+                        cv2.imwrite(debug_path, frame)
+                        print(f"[DEBUG] First frame saved: {debug_path} (device_id={self.device_id})")
+                    except Exception as e:
+                        print(f"[WARN] Failed to save debug frame: {e}")
+                
                 # Apply undistortion if enabled
                 frame = self._undistort_frame(frame)
                 self.frame_number += 1

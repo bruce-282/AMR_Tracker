@@ -1052,6 +1052,11 @@ class VisionServer:
         elif detector_type == "yolo" and model_path is None:
             raise ValueError("model_path is required for YOLO detector")
         
+        # Get enable_undistortion from config
+        enable_undistortion = False
+        if self.config and hasattr(self.config, 'execution') and self.config.execution:
+            enable_undistortion = getattr(self.config.execution, 'image_undistortion', False)
+        
         # Delegate to CameraManager
         self.camera_manager.initialize_camera(
             camera_id=camera_id,
@@ -1060,6 +1065,7 @@ class VisionServer:
             fps=fps,
             model_path=model_path,
             detector_config=detector_config,
+            enable_undistortion=enable_undistortion,
             camera_config_path=camera_config_path
         )
         

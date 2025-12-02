@@ -223,6 +223,11 @@ class CameraManager:
             loader.frame_number = 0
         
         self.camera_loaders[camera_id] = loader
+        
+        # Debug: loader 저장 확인
+        loader_device_id = getattr(loader, 'device_id', 'unknown')
+        logger.info(f"Camera {camera_id}: Stored loader with device_id={loader_device_id}, source={source}, id(loader)={id(loader)}")
+        
         self.trackers[camera_id] = {}  # For compatibility with existing code
         self.next_track_ids[camera_id] = 0
         self.frame_numbers[camera_id] = 0
