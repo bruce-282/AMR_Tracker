@@ -128,6 +128,19 @@ class TrackingManager:
                     logger.info(f"Camera {camera_id}: No more frames available. Exiting tracking loop.")
                     self._handle_no_frames(camera_id)
                     break
+
+                # 모든 카메라에서 프레임얻어 와보기. 아래 예시시
+                # for cam_id, cam_loader in self.camera_manager.camera_loaders.items():
+                #     if cam_id != camera_id:
+                #         ret, frame = cam_loader.read()
+                #         if not ret:
+                #             logger.info(f"Camera {cam_id}: No more frames available. Exiting tracking loop.")
+                #             self._handle_no_frames(cam_id)
+                #             break
+                #        imwrite(f"output/Debug/frame_{cam_id}.png", frame)
+                #        print(f"Camera {cam_id}: Frame saved successfully")
+
+
                 
                 frame_number += 1
                 self.camera_manager.frame_numbers[camera_id] = frame_number

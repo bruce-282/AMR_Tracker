@@ -371,8 +371,6 @@ class NovitecCameraLoader(BaseLoader):
             # 스트림이 시작되지 않았으면 시작
             if not getattr(self, '_stream_started', False):
                 print(f"[INFO] Starting stream for {self.device_id}...")
-                # 다른 모든 카메라의 스트림 중지 및 disconnect (Novitec SDK는 한 번에 하나만 지원)
-                NovitecCameraLoader._stop_all_other_streams(self.device_id)
                 
                 # disconnect 상태면 다시 connect
                 if not getattr(self, '_connected', True) or not self.camera.is_connected:

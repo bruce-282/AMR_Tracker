@@ -31,7 +31,7 @@
       "camera_tracking": {
         "loader_mode": "camera",
         "camera_1": {
-          "id": "I3ZEB19D",
+          "id": "I3ZEB19C",
           "config": "config/camera_config.json",
           "measurement": {
               "min_agv_area": 1000,
@@ -40,7 +40,7 @@
             }
         },
         "camera_2": {
-          "id": "I3ZEB19D",
+          "id": "I3ZEB1AD",
           "config": "config/camera_config.json",
           "measurement": {
               "min_agv_area": 1000,
