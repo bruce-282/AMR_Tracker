@@ -48,8 +48,8 @@
             }
         },
         "camera_2": {
-          "id": "I3ZEB19D",
-          "config": "config/camera_config.json",
+          "id": "data/round_course.mp4",
+          "config": "config/video_config.json",
           "measurement": {
               "min_agv_area": 1000,
               "max_tracking_distance": 500,

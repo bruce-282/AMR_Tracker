@@ -339,23 +339,10 @@ class NovitecCameraLoader(BaseLoader):
         self.initialized = True
         self.is_connected = True
         
-        # Initialize undistortion maps if enabled (read first frame to get image size)
-        if self.enable_undistortion and self.camera_matrix is not None and self.dist_coeffs is not None:
-            try:
-                data = self.camera.capture(output_formats=["image"])
-                if data and "image" in data:
-                    first_frame = data["image"]
-                    if first_frame is not None and len(first_frame.shape) == 3:
-                        h, w = first_frame.shape[:2]
-                        self._initialize_undistort_maps(w, h)
-                    else:
-                        print(f"[WARN] Could not read first frame to initialize undistortion maps")
-                else:
-                    print(f"[WARN] Could not capture first frame to initialize undistortion maps")
-            except Exception as e:
-                print(f"[WARN] Error initializing undistortion maps: {e}")
+        # 언디스토션 맵 초기화는 read()에서 첫 프레임을 읽을 때 수행
+        # (여기서 capture()를 호출하면 start_stream()이 호출되어 마지막 카메라만 활성화됨)
         
-        print(f"[OK] Novitec camera initialized and streaming: {self.device_id}")
+        print(f"[OK] Novitec camera initialized (connected, not streaming yet): {self.device_id}")
 
     def read(self):
         """
@@ -392,12 +379,48 @@ class NovitecCameraLoader(BaseLoader):
                     self.camera._is_streaming = True
                     print(f"[WARN] start_stream returned False for {self.device_id}, but continuing...")
             
+            # 매번 capture() 전에 해당 디바이스로 확실히 전환 (Novitec SDK가 전역 상태 사용 가능)
+            # 다른 카메라가 활성화되어 있으면 disconnect 후 reconnect
+            if not getattr(self, '_last_active_device', None) == self.device_id:
+                print(f"[INFO] Switching to device {self.device_id} (was {getattr(self, '_last_active_device', 'None')})")
+                # 다른 카메라들 중지
+                NovitecCameraLoader._stop_all_other_streams(self.device_id)
+                # 현재 카메라 reconnect (SDK 내부 상태 리셋)
+                if self.camera.is_connected:
+                    self.camera.disconnect()
+                if not self.camera.connect():
+                    print(f"[ERROR] Failed to connect to {self.device_id}")
+                    return False, None
+                # 스트림 재시작
+                if not self.camera.start_stream():
+                    print(f"[WARN] start_stream failed for {self.device_id}, but continuing...")
+                self._stream_started = True
+                self.camera._is_streaming = True
+                self._last_active_device = self.device_id
+                # 스트림이 안정화될 때까지 대기 (첫 프레임 준비 시간)
+                time.sleep(0.1)
+                print(f"[INFO] Switched to device {self.device_id}")
+            
             # 첫 프레임에서만 로그 출력
             if self.frame_number == 0:
-                print(f"[INFO] NovitecCameraLoader.read() FIRST FRAME - device_id={self.device_id}")
+                device_obj_id = id(self.camera._device) if hasattr(self.camera, '_device') and self.camera._device else 'N/A'
+                print(f"[INFO] NovitecCameraLoader.read() FIRST FRAME - device_id={self.device_id}, id(_device)={device_obj_id}")
             
-            # Capture image using NovitecCamera API
-            data = self.camera.capture(output_formats=["image"])
+            # Capture image using NovitecCamera API - 어떤 디바이스에서 capture하는지 확인
+            if self.frame_number < 3:  # 처음 3프레임만 로그
+                device_obj_id = id(self.camera._device) if hasattr(self.camera, '_device') and self.camera._device else 'N/A'
+                print(f"[DEBUG] capture() called on device_id={self.device_id}, id(_device)={device_obj_id}")
+            
+            # capture() 실패 시 재시도 (최대 3회)
+            max_retries = 3
+            data = None
+            for retry in range(max_retries):
+                data = self.camera.capture(output_formats=["image"])
+                if data and "image" in data:
+                    break
+                if retry < max_retries - 1:
+                    print(f"[WARN] capture() failed for {self.device_id}, retrying ({retry+1}/{max_retries})...")
+                    time.sleep(0.05)  # 짧은 대기 후 재시도
 
             if not data or "image" not in data:
                 return False, None

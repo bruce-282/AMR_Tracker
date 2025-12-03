@@ -103,14 +103,7 @@ class TrackingManager:
         print(f"[INFO] _tracking_loop START - camera_id={camera_id}")
         print(f"[INFO]   loader: device_id={loader_device_id}, id(loader)={id(loader)}, id(camera)={loader_camera_id}, id(_device)={loader_device_obj_id}")
         
-        # Debug: 모든 loaders 확인
-        print(f"[INFO]   All camera_loaders:")
-        for cam_id, ldr in self.camera_manager.camera_loaders.items():
-            ldr_device_id = getattr(ldr, 'device_id', 'unknown')
-            ldr_camera_id = id(getattr(ldr, 'camera', None))
-            ldr_device_obj_id = id(getattr(ldr.camera, '_device', None)) if hasattr(ldr, 'camera') and ldr.camera else 'N/A'
-            print(f"[INFO]     [{cam_id}] device_id={ldr_device_id}, id(loader)={id(ldr)}, id(camera)={ldr_camera_id}, id(_device)={ldr_device_obj_id}")
-        
+
         amr_tracker = self.camera_manager.amr_trackers.get(camera_id)
         if not amr_tracker:
             logger.error(f"Camera {camera_id}: EnhancedAMRTracker not found")

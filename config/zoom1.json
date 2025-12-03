@@ -9,7 +9,7 @@
 
   "detector": {
     "detector_type": "binary",
-    "threshold": 80,
+    "threshold": 40,
     "min_area": 400,
     "width_height_ratio_min": 0.5,
     "width_height_ratio_max": 2.0,
@@ -33,9 +33,9 @@
   },
   "execution": {
     "visualize_stream": true,
-    "result_base_path": "output/Result",
-    "summary_base_path": "output/Summary",
-    "debug_base_path": "output/Debug",
+    "result_base_path": "C:/CMES_AI/Result",
+    "summary_base_path": "C:/CMES_AI/Summary",
+    "debug_base_path": "C:/CMES_AI/Debug",
     "image_undistortion": true,
     "use_preset": "camera_tracking",
     "presets": {
