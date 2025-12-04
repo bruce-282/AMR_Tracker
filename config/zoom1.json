@@ -7,22 +7,38 @@
     "calibration_data_path": "calibration_data.json"
   },
   "detector": {
-    "model_path": "weights/zoom1/best.pt", 
+    "_comment": "YOLO detector parameters",
+    "model_path": "weights/zoom1/best.pt",
+    "_desc_model_path": "Path to YOLO model weights file",
     "confidence_threshold": 0.4,
+    "_desc_confidence": "Minimum confidence score (0-1) for detection",
     "imgsz": 1280,
+    "_desc_imgsz": "Input image size for YOLO inference",
     "target_classes": [0],
+    "_desc_target_classes": "Class IDs to detect (0=AGV)",
     "min_area": 600,
+    "_desc_min_area": "Minimum detection area in pixels (filters small noise)",
     "max_area": null,
+    "_desc_max_area": "Maximum detection area in pixels (null=no limit)",
     "width_height_ratio_tolerance": 0.7,
-    "mask_area_ratio": 0.5
+    "_desc_wh_ratio": "Width/height ratio tolerance. Ratio must be within 1.0 ± this value",
+    "mask_area_ratio": 0.5,
+    "_desc_mask_area": "Minimum ratio of mask area to bbox area (filters poorly segmented objects)"
   },
   "tracker": {
+    "_comment": "Kalman tracker parameters for AMR tracking",
     "speed_threshold_pix_per_frame": 5.0,
+    "_desc_speed_thresh": "Speed threshold (pix/frame) - next camera starts when speed exceeds this after response sent",
     "speed_near_zero_threshold": 3.0,
+    "_desc_near_zero": "Speed (pix/frame) below this is considered 'stopped'",
     "speed_zero_frames_threshold": 20,
+    "_desc_zero_frames": "Consecutive frames speed must be near zero before sending stop response (정지 판정 프레임 수)",
     "detection_loss_threshold_frames": 30,
+    "_desc_detection_loss": "Frames without detection before considering object lost",
     "max_frames_lost": 500,
-    "camera2_trajectory_max_frames": 500
+    "_desc_max_lost": "Maximum frames to keep tracking without detection before removing tracker",
+    "camera2_trajectory_max_frames": 500,
+    "_desc_cam2_traj": "Maximum trajectory points to collect for Camera 2"
   },
   "execution": {
     "visualize_stream": true,

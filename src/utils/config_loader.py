@@ -9,13 +9,18 @@ from config import TrackingConfig, CalibrationConfig
 
 logger = logging.getLogger(__name__)
 
+# Cache for loaded product model configs (avoids reading same JSON file multiple times)
+_product_model_config_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
-def load_product_model_config(product_model_name: str) -> Optional[Dict[str, Any]]:
+
+def load_product_model_config(product_model_name: str, use_cache: bool = True) -> Optional[Dict[str, Any]]:
     """
     Load product model configuration file (config/{product_model_name}.json).
+    Uses caching to avoid reading the same file multiple times.
     
     Args:
         product_model_name: Product model name (e.g., "zoom1")
+        use_cache: Whether to use cached config (default True)
     
     Returns:
         Dictionary with config data, or None if file not found or error
@@ -23,19 +28,35 @@ def load_product_model_config(product_model_name: str) -> Optional[Dict[str, Any
     if not product_model_name:
         return None
     
+    # Return cached config if available
+    if use_cache and product_model_name in _product_model_config_cache:
+        logger.debug(f"Using cached product model config for {product_model_name}")
+        return _product_model_config_cache[product_model_name]
+    
     product_config_path = Path("config") / f"{product_model_name}.json"
     if not product_config_path.exists():
         logger.debug(f"Product model config file not found: {product_config_path}")
+        _product_model_config_cache[product_model_name] = None
         return None
     
     try:
         with open(product_config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
         logger.debug(f"Loaded product model config from {product_config_path}")
+        # Cache the loaded config
+        _product_model_config_cache[product_model_name] = config
         return config
     except Exception as e:
         logger.warning(f"Failed to load product model config from {product_config_path}: {e}")
+        _product_model_config_cache[product_model_name] = None
         return None
+
+
+def clear_config_cache():
+    """Clear the product model config cache. Useful for testing or config reload."""
+    global _product_model_config_cache
+    _product_model_config_cache.clear()
+    logger.debug("Product model config cache cleared")
 
 
 def get_execution_config(
@@ -411,6 +432,8 @@ def load_tracking_config(
         product_config = load_product_model_config(product_model_name)
         if product_config and "tracker" in product_config:
             tracker_data = product_config["tracker"]
+            # Filter out comment/description keys (e.g., _comment, _desc_*)
+            tracker_data = {k: v for k, v in tracker_data.items() if not k.startswith("_")}
             logger.info(f"Loaded tracking config from product model config ({product_model_name}.json)")
             return TrackingConfig(**tracker_data)
     

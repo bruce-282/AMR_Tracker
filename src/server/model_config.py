@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any
 
 from config import TrackingConfig
+from src.utils.config_loader import load_product_model_config
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +223,8 @@ class ModelConfig:
             product_config = self._load_product_model_config_file(product_model_name)
             if product_config and "tracker" in product_config:
                 tracker_data = product_config["tracker"]
+                # Filter out comment/description keys (e.g., _comment, _desc_*)
+                tracker_data = {k: v for k, v in tracker_data.items() if not k.startswith("_")}
                 logger.info(f"Loaded tracking config from product model config ({product_model_name}.json)")
                 return TrackingConfig(**tracker_data)
         
@@ -275,6 +278,7 @@ class ModelConfig:
     def _load_product_model_config_file(self, product_model_name: str) -> Optional[Dict[str, Any]]:
         """
         Load product model configuration file (config/{product_model_name}.json).
+        Uses cached loader from config_loader module.
         
         Args:
             product_model_name: Product model name (e.g., "zoom1")
@@ -282,22 +286,7 @@ class ModelConfig:
         Returns:
             Dictionary with config data, or None if file not found or error
         """
-        if not product_model_name:
-            return None
-        
-        product_config_path = Path("config") / f"{product_model_name}.json"
-        if not product_config_path.exists():
-            logger.debug(f"Product model config file not found: {product_config_path}")
-            return None
-        
-        try:
-            with open(product_config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            logger.debug(f"Loaded product model config from {product_config_path}")
-            return config
-        except Exception as e:
-            logger.warning(f"Failed to load product model config from {product_config_path}: {e}")
-            return None
+        return load_product_model_config(product_model_name)
     
     def add_product_model(self, product_model_name: str):
         """Add product model to list."""
