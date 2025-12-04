@@ -9,6 +9,7 @@ echo Complete CUDA 12.8 + PyTorch Installation
 echo ============================================
 echo.
 echo This script will install:
+echo   0. Visual C++ Redistributable 2015-2022 (required for PyTorch)
 echo   1. CUDA 12.8.0
 echo   2. PyTorch with CUDA 12.8 support
 echo   3. cuDNN (optional)
@@ -17,9 +18,23 @@ echo Press any key to continue or Ctrl+C to cancel...
 pause >nul
 echo.
 
+REM Step 0: Install Visual C++ Redistributable
+echo ============================================
+echo Step 0/4: Installing Visual C++ Redistributable 2015-2022
+echo ============================================
+call install_vcredist.bat
+if %errorLevel% neq 0 (
+    echo [WARNING] Visual C++ Redistributable installation may have failed.
+    echo Continuing anyway...
+)
+echo.
+echo Press any key to continue to CUDA installation...
+pause >nul
+echo.
+
 REM Step 1: Install CUDA 12.8
 echo ============================================
-echo Step 1/3: Installing CUDA 12.8
+echo Step 1/4: Installing CUDA 12.8
 echo ============================================
 call install_cuda_12.8.bat
 if %errorLevel% neq 0 (
@@ -35,7 +50,7 @@ echo.
 
 REM Step 2: Install PyTorch
 echo ============================================
-echo Step 2/3: Installing PyTorch (CUDA 12.8)
+echo Step 2/4: Installing PyTorch (CUDA 12.8)
 echo ============================================
 call install_pytorch_cuda128.bat
 if %errorLevel% neq 0 (
@@ -51,7 +66,7 @@ echo.
 
 REM Step 3: Install cuDNN (optional)
 echo ============================================
-echo Step 3/3: Installing cuDNN (Optional)
+echo Step 3/4: Installing cuDNN (Optional)
 echo ============================================
 echo Do you want to install cuDNN? (Y/N)
 set /p install_cudnn="Enter choice: "
