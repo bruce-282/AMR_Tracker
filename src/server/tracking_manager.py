@@ -10,6 +10,7 @@ import numpy as np
 from src.core.detection import Detection
 from src.core.amr_tracker import EnhancedAMRTracker
 from src.utils.sequence_loader import BaseLoader
+from src.visualization.display import resize_frame_to_screen, get_screen_resolution
 from .camera_manager import CameraManager
 from .camera_state import CameraStateManager
 from config import TrackingConfig
@@ -191,9 +192,8 @@ class TrackingManager:
                 # Display visualization
                 if self.visualize_stream:
                     height, width = vis_frame.shape[:2]
-                    if width > 1920 or height > 1080:
-                        scale = min(1920 / width, 1080 / height)
-                        vis_frame = cv2.resize(vis_frame, (int(width * scale), int(height * scale)))
+                    # Auto-resize to fit screen resolution
+                    vis_frame, _ = resize_frame_to_screen(vis_frame, max_ratio=0.85)
                     
                     window_name = f"Camera {camera_id} - AMR Tracking"
                     cv2.imshow(window_name, vis_frame)

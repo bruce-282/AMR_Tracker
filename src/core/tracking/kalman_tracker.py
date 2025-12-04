@@ -665,7 +665,19 @@ class KalmanTracker:
 
             # Fit oriented bounding box
             rect = cv2.minAreaRect(largest_contour)
-            angle = rect[2]  # Already in degrees from OpenCV
+            center, (w, h), angle = rect
+            
+            # Normalize angle so that the LONG axis (major axis) is the reference
+            # When long axis is parallel to image horizontal (x-axis), angle should be 0
+            if h > w:
+                # Height is the long axis, rotate reference by 90 degrees
+                angle = angle - 90
+            
+            # Normalize to -90 ~ 90 range
+            while angle > 90:
+                angle -= 180
+            while angle < -90:
+                angle += 180
 
             # Store for continuity
             self.prev_angle = angle
@@ -678,10 +690,15 @@ class KalmanTracker:
 
     def handle_angle_continuity(self, new_angle):
         """
-        Handle angle continuity to avoid jumps (e.g., from 359° to 0°)
+        Handle angle continuity to avoid jumps in [-90, 90] range.
+        
+        For long-axis reference angle system:
+        - Range is [-90, 90] degrees
+        - Jump from 89 to -89 should be interpreted as +2 degrees rotation
+        - Jump from -89 to 89 should be interpreted as -2 degrees rotation
 
         Args:
-            new_angle: New angle in degrees
+            new_angle: New angle in degrees (already in -90~90 range)
 
         Returns:
             float: Continuous angle in degrees
@@ -692,11 +709,13 @@ class KalmanTracker:
         # Calculate angle difference
         angle_diff = new_angle - self.prev_angle
 
-        # Normalize to [-180, 180] degrees
-        while angle_diff > 180:
-            angle_diff -= 360
-        while angle_diff < -180:
-            angle_diff += 360
+        # Normalize to [-90, 90] range (half period for long-axis symmetry)
+        # Since object has 180-degree symmetry (front/back look same), 
+        # we use 180-degree period for continuity
+        while angle_diff > 90:
+            angle_diff -= 180
+        while angle_diff < -90:
+            angle_diff += 180
 
         # Apply offset
         continuous_angle = self.prev_angle + angle_diff
@@ -741,18 +760,22 @@ class KalmanTracker:
 
     def normalize_angle_deg(self, angle_deg):
         """
-        Normalize angle to [0, 360) degrees
+        Normalize angle to [-90, 90] degrees (long axis reference)
+        
+        When the long axis is horizontal (parallel to x-axis), angle is 0.
+        Range: -90 to 90 degrees.
 
         Args:
             angle_deg: Angle in degrees
 
         Returns:
-            float: Normalized angle
+            float: Normalized angle in [-90, 90] range
         """
-        while angle_deg < 0:
-            angle_deg += 360
-        while angle_deg >= 360:
-            angle_deg -= 360
+        # Normalize to -90 ~ 90 range
+        while angle_deg > 90:
+            angle_deg -= 180
+        while angle_deg < -90:
+            angle_deg += 180
         return angle_deg
 
     def draw_visualization(self, image, results):

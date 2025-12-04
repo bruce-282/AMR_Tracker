@@ -76,30 +76,50 @@ class Detection:
         
         Returns:
             Dictionary with center, width, height, angle, and box_points
+            - width: Long axis (major axis)
+            - height: Short axis (minor axis)
+            - angle: 0 when long axis is horizontal (parallel to x-axis)
         """
         try:
             if xywhr is None or len(xywhr) < 5:
                 return None
             
-            x_center, y_center, width, height, rotation_rad = xywhr[:5]
+            x_center, y_center, w, h, rotation_rad = xywhr[:5]
             center = (float(x_center), float(y_center))
-            width = float(width)
-            height = float(height)
+            w = float(w)
+            h = float(h)
             angle_rad = float(rotation_rad)
             angle_deg = np.rad2deg(angle_rad)
             
-            # Create box points from center, size, and angle
-            # OpenCV's minAreaRect uses angle in degrees, but we'll use radians internally
-            # Convert to OpenCV format: angle in degrees, measured from horizontal
-            rect = ((x_center, y_center), (width, height), np.rad2deg(angle_rad))
+            # Normalize angle so that the LONG axis (major axis) is the reference
+            # When long axis is parallel to image horizontal (x-axis), angle should be 0
+            if h > w:
+                # Height is the long axis, rotate reference by 90 degrees
+                normalized_angle = angle_deg - 90
+                long_axis = h
+                short_axis = w
+            else:
+                # Width is the long axis
+                normalized_angle = angle_deg
+                long_axis = w
+                short_axis = h
+            
+            # Normalize angle to -90 ~ 90 range
+            while normalized_angle > 90:
+                normalized_angle -= 180
+            while normalized_angle < -90:
+                normalized_angle += 180
+            
+            # Create box points from center, size, and original angle
+            rect = ((x_center, y_center), (w, h), angle_deg)
             box_points = cv2.boxPoints(rect).astype(np.float32)
             
             return {
                 "center": center,  # (x, y)
-                "width": width,
-                "height": height,
-                "angle": angle_deg,  # degrees
-                "angle_rad": angle_rad,  # radians
+                "width": long_axis,  # Long axis (major axis)
+                "height": short_axis,  # Short axis (minor axis)
+                "angle": normalized_angle,  # degrees (0 when long axis is horizontal)
+                "angle_rad": np.deg2rad(normalized_angle),  # radians
                 "box_points": box_points,  # 4 corner points
             }
         except Exception as e:
@@ -173,17 +193,41 @@ class Detection:
             
             # Get minAreaRect
             rect = cv2.minAreaRect(cnt)
-            center, (width, height), angle = rect
+            center, (w, h), angle = rect
+            
+            # Normalize angle so that the LONG axis (major axis) is the reference
+            # When long axis is parallel to image horizontal (x-axis), angle should be 0
+            # OpenCV minAreaRect: angle is for the first edge (width side)
+            # Range: 0 to 90 degrees (OpenCV 4.5+)
+            
+            if h > w:
+                # Height is the long axis
+                # Rotate by 90 to make long axis the reference
+                normalized_angle = angle - 90
+                # Swap so that 'width' always refers to long axis
+                long_axis = h
+                short_axis = w
+            else:
+                # Width is the long axis (or equal)
+                normalized_angle = angle
+                long_axis = w
+                short_axis = h
+            
+            # Normalize angle to -90 ~ 90 range
+            while normalized_angle > 90:
+                normalized_angle -= 180
+            while normalized_angle < -90:
+                normalized_angle += 180
             
             # Get box points
             box_points = cv2.boxPoints(rect).astype(np.float32)
             
             return {
                 "center": center,  # (x, y)
-                "width": width,
-                "height": height,
-                "angle": angle,  # degrees
-                "angle_rad": np.deg2rad(angle),  # radians
+                "width": long_axis,  # Long axis (major axis)
+                "height": short_axis,  # Short axis (minor axis)
+                "angle": normalized_angle,  # degrees (0 when long axis is horizontal)
+                "angle_rad": np.deg2rad(normalized_angle),  # radians
                 "box_points": box_points,  # 4 corner points
             }
         except Exception as e:

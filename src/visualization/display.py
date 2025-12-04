@@ -8,6 +8,67 @@ from matplotlib.patches import Rectangle, FancyArrowPatch
 import matplotlib.patches as mpatches
 
 
+def get_screen_resolution() -> Tuple[int, int]:
+    """
+    Get screen resolution. Returns (width, height).
+    Falls back to 1920x1080 if detection fails.
+    """
+    try:
+        # Windows
+        import ctypes
+        user32 = ctypes.windll.user32
+        user32.SetProcessDPIAware()
+        width = user32.GetSystemMetrics(0)
+        height = user32.GetSystemMetrics(1)
+        return (width, height)
+    except Exception:
+        pass
+    
+    # Fallback to common resolution
+    return (1920, 1080)
+
+
+def resize_frame_to_screen(
+    frame: np.ndarray,
+    max_ratio: float = 0.85,
+    screen_size: Optional[Tuple[int, int]] = None
+) -> Tuple[np.ndarray, float]:
+    """
+    Resize frame to fit within screen resolution.
+    
+    Args:
+        frame: Input frame
+        max_ratio: Maximum ratio of screen size to use (default 85%)
+        screen_size: Override screen size (width, height). Auto-detected if None.
+    
+    Returns:
+        Tuple of (resized frame, scale factor)
+    """
+    if screen_size is None:
+        screen_size = get_screen_resolution()
+    
+    screen_w, screen_h = screen_size
+    frame_h, frame_w = frame.shape[:2]
+    
+    # Calculate max allowed dimensions (leaving room for window borders/taskbar)
+    max_w = int(screen_w * max_ratio)
+    max_h = int(screen_h * max_ratio)
+    
+    # Calculate scale factor
+    scale_w = max_w / frame_w if frame_w > max_w else 1.0
+    scale_h = max_h / frame_h if frame_h > max_h else 1.0
+    scale = min(scale_w, scale_h)
+    
+    # Only resize if needed
+    if scale < 1.0:
+        new_w = int(frame_w * scale)
+        new_h = int(frame_h * scale)
+        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        return resized, scale
+    
+    return frame, 1.0
+
+
 class Visualizer:
     """
     Handles visualization of detection and measurement results.
@@ -217,7 +278,17 @@ class Visualizer:
             else:
                 angle = tracking.get("orientation", 0)
                 theta_deg = float(self._extract_angle_deg(angle))
-            lines.append(f"ID {track_id}  x={cx}, y={cy}, yaw={theta_deg:.1f}")
+            
+            # Get mm coordinates if available
+            position = tracking.get("position", {})
+            x_mm = position.get("x_mm")
+            y_mm = position.get("y_mm")
+            
+            # Build info string
+            if x_mm is not None and y_mm is not None:
+                lines.append(f"ID {track_id}  px({cx},{cy}) mm({x_mm:.1f},{y_mm:.1f}) yaw={theta_deg:.1f}")
+            else:
+                lines.append(f"ID {track_id}  px({cx},{cy}) yaw={theta_deg:.1f}")
 
         overlay_text = " | ".join(lines) if lines else ""
         if overlay_text:
