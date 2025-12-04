@@ -80,6 +80,6 @@ tmp/
 snapshot_*.jpg
 
 # Configuration files with sensitive data
-#config.json
-#calibration_data.json
+config.json
+calibration_data.json
 *.json.bak

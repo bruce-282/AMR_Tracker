@@ -283,10 +283,11 @@ class EnhancedAMRTracker:
                     # Create primary tracker
                     self.track_id = 0
 
-                    self.tracker.initialize_with_detection(
-                        best_detection.oriented_box_info["center"],
-                        best_detection.oriented_box_info["angle"],
-                    )
+                    # Safely get center and angle (oriented_box_info may be None for binary detector)
+                    center = best_detection.get_center()
+                    angle = best_detection.oriented_box_info["angle"] if best_detection.oriented_box_info else 0.0
+
+                    self.tracker.initialize_with_detection(center, angle)
                     self.next_track_id += 1
 
                     # Update with first detection
@@ -294,9 +295,9 @@ class EnhancedAMRTracker:
                     img_height, img_width = frame.shape[:2]
                     tracking_result = self.tracker.update(
                         bbox=best_detection.bbox,
-                        center=best_detection.oriented_box_info["center"],
+                        center=center,
                         frame_number=frame_number,
-                        theta=best_detection.oriented_box_info["angle"],
+                        theta=angle,
                         image_size=(img_width, img_height),
                     )
                     tracking_result["detection_type"] = getattr(
@@ -324,12 +325,13 @@ class EnhancedAMRTracker:
 
                     # Get image size for boundary checking
                     img_height, img_width = frame.shape[:2]
-                    # Get image size for boundary checking
-                    img_height, img_width = frame.shape[:2]
+                    # Safely get center and angle
+                    center = best_detection.get_center()
+                    angle = best_detection.oriented_box_info["angle"] if best_detection.oriented_box_info else 0.0
                     tracking_result = self.tracker.update(
                         bbox=best_detection.bbox,
-                        center=best_detection.oriented_box_info["center"],
-                        theta=best_detection.oriented_box_info["angle"],
+                        center=center,
+                        theta=angle,
                         frame_number=frame_number,
                         image_size=(img_width, img_height),
                     )
@@ -456,4 +458,3 @@ class EnhancedAMRTracker:
             self.visualizer.reset()
         self.track_id = None
         self.next_track_id = 0
-
