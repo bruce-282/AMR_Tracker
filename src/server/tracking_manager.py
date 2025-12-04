@@ -94,15 +94,6 @@ class TrackingManager:
         loader = self.camera_manager.camera_loaders.get(camera_id)
         if not loader:
             return
-        
-        # Debug: 어떤 loader가 사용되는지 확인
-        loader_device_id = getattr(loader, 'device_id', 'unknown')
-        loader_camera_id = id(getattr(loader, 'camera', None))
-        loader_device_obj_id = id(getattr(loader.camera, '_device', None)) if hasattr(loader, 'camera') and loader.camera else 'N/A'
-        
-        print(f"[INFO] _tracking_loop START - camera_id={camera_id}")
-        print(f"[INFO]   loader: device_id={loader_device_id}, id(loader)={id(loader)}, id(camera)={loader_camera_id}, id(_device)={loader_device_obj_id}")
-        
 
         amr_tracker = self.camera_manager.amr_trackers.get(camera_id)
         if not amr_tracker:

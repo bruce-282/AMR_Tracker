@@ -127,6 +127,10 @@ class EnhancedAMRTracker:
                     device=device,
                     imgsz=self.detector_config.get("imgsz", 1536),
                     target_classes=self.detector_config.get("target_classes", [0]),
+                    min_area=self.detector_config.get("min_area"),
+                    max_area=self.detector_config.get("max_area"),
+                    width_height_ratio_tolerance=self.detector_config.get("width_height_ratio_tolerance"),
+                    mask_area_ratio=self.detector_config.get("mask_area_ratio"),
                 )
                 logger.info("YOLO detector initialized")
             except ImportError:

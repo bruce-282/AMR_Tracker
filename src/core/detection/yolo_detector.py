@@ -7,8 +7,11 @@ for detecting AGVs and other objects in video frames.
 
 import cv2
 import numpy as np
+import logging
 from typing import List, Dict, Optional, Tuple
 from .detection import Detection
+
+logger = logging.getLogger(__name__)
 
 
 class YOLODetector:
@@ -26,6 +29,10 @@ class YOLODetector:
         device: str = "cuda",
         target_classes: Optional[List[int]] = None,
         imgsz: int = 768,
+        min_area: Optional[int] = None,
+        max_area: Optional[int] = None,
+        width_height_ratio_tolerance: Optional[float] = None,
+        mask_area_ratio: Optional[float] = None,
     ):
         """
         Initialize YOLO detector.
@@ -35,12 +42,21 @@ class YOLODetector:
             confidence_threshold: Minimum confidence for detections
             device: Device to run inference on ('cpu' or 'cuda')
             target_classes: List of class IDs to detect (None for all classes)
+            imgsz: Image size for inference
+            min_area: Minimum detection area (pixels)
+            max_area: Maximum detection area (pixels)
+            width_height_ratio_tolerance: Tolerance for width/height ratio (e.g., 0.2 means 1.0 ± 0.2)
+            mask_area_ratio: Minimum mask area ratio (mask_area / detection_area)
         """
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
         self.device = device
         self.target_classes = target_classes
         self.imgsz = imgsz
+        self.min_area = min_area
+        self.max_area = max_area
+        self.width_height_ratio_tolerance = width_height_ratio_tolerance
+        self.mask_area_ratio = mask_area_ratio
         self.model = None
         self._load_model()
 
@@ -207,13 +223,48 @@ class YOLODetector:
                             image_size=image_size,
                             xywhr=None,  # No xywhr for regular detection
                         )
-                        # if detection.get_area() < 1000:
-                        #     continue
-                        # width_height_ratio = detection.get_width() / detection.get_height()
-                        # if width_height_ratio < 0.8 or width_height_ratio > 1.2:
-                        #     continue
-                        # if mask_area < detection.get_area() * 0.9:
-                        #     continue
+                        
+                        # Apply filtering based on config
+                        detection_area = detection.get_area()
+                        
+                        # Filter by area
+                        if self.min_area is not None and detection_area < self.min_area:
+                            logger.debug(
+                                f"Detection filtered by min_area: area={detection_area:.0f} < min_area={self.min_area} "
+                                f"(bbox=[{x:.1f}, {y:.1f}, {w:.1f}, {h:.1f}], conf={conf:.3f})"
+                            )
+                            continue
+                        if self.max_area is not None and detection_area > self.max_area:
+                            logger.debug(
+                                f"Detection filtered by max_area: area={detection_area:.0f} > max_area={self.max_area} "
+                                f"(bbox=[{x:.1f}, {y:.1f}, {w:.1f}, {h:.1f}], conf={conf:.3f})"
+                            )
+                            continue
+                        
+                        # Filter by width/height ratio (1.0 ± tolerance)
+                        if self.width_height_ratio_tolerance is not None:
+                            width_height_ratio = detection.get_width() / detection.get_height()
+                            ratio_min = 1.0 - self.width_height_ratio_tolerance
+                            ratio_max = 1.0 + self.width_height_ratio_tolerance
+                            if width_height_ratio < ratio_min or width_height_ratio > ratio_max:
+                                logger.debug(
+                                    f"Detection filtered by width_height_ratio: ratio={width_height_ratio:.3f} "
+                                    f"not in [{ratio_min:.3f}, {ratio_max:.3f}] "
+                                    f"(bbox=[{x:.1f}, {y:.1f}, {w:.1f}, {h:.1f}], conf={conf:.3f})"
+                                )
+                                continue
+                        
+                        # Filter by mask area ratio
+                        if self.mask_area_ratio is not None and mask_area is not None:
+                            mask_ratio = mask_area / detection_area if detection_area > 0 else 0.0
+                            if mask_area < detection_area * self.mask_area_ratio:
+                                logger.debug(
+                                    f"Detection filtered by mask_area_ratio: mask_ratio={mask_ratio:.3f} "
+                                    f"< required={self.mask_area_ratio} "
+                                    f"(mask_area={mask_area:.0f}, detection_area={detection_area:.0f}, "
+                                    f"bbox=[{x:.1f}, {y:.1f}, {w:.1f}, {h:.1f}], conf={conf:.3f})"
+                                )
+                                continue
                         
                         detections.append(detection)
 

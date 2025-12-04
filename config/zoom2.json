@@ -56,7 +56,6 @@
           "id": "I3ZEB19C",
           "config": "config/camera1_config.json",
           "measurement": {
-              "min_agv_area": 1000,
               "fps": 30,
               "pixel_size": 1.0
             }
@@ -65,7 +64,6 @@
           "id": "I3ZEB1AD",
           "config": "config/camera2_config.json",
           "measurement": {
-              "min_agv_area": 500,
               "fps": 30,
               "pixel_size": 1.0
             }
@@ -74,7 +72,6 @@
           "id": "I3ZEB19D",
           "config": "config/camera3_config.json",
           "measurement": {
-              "min_agv_area": 500,
               "fps": 30,
               "pixel_size": 1.0
             }
@@ -86,7 +83,6 @@
           "id": "data/hd_ulsan_1203/cam1.mp4",
           "config": "config/video_config.json",
           "measurement": {
-              "min_agv_area": 1000,
               "fps": 30,
               "pixel_size": 0.5
             }
@@ -95,7 +91,6 @@
           "id": "data/hd_ulsan_1203/cam2.mp4",
           "config": "config/video_config.json",
           "measurement": {
-              "min_agv_area": 1000,
               "fps": 30,
               "pixel_size": 0.5
             }
@@ -104,7 +99,6 @@
           "id": "data/hd_ulsan_1203/cam3.mp4",
           "config": "config/video_config.json",
           "measurement": {
-              "min_agv_area": 1000,
               "fps": 30,
               "pixel_size": 0.5
             }
@@ -116,7 +110,6 @@
           "id": "data/0001_fixed",
           "config": "config/sequence_config.json",
           "measurement": {
-              "min_agv_area": 1000,
               "fps": 30,
               "pixel_size": 0.4455786347389221
             }

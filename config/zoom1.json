@@ -6,12 +6,15 @@
     "camera_height": 0.0,
     "calibration_data_path": "calibration_data.json"
   },
-
   "detector": {
     "model_path": "weights/zoom1/best.pt",
-    "confidence_threshold": 0.5,
+    "confidence_threshold": 0.7,
     "imgsz": 1280,
-    "target_classes": [0]
+    "target_classes": [0],
+    "min_area": 600,
+    "max_area": null,
+    "width_height_ratio_tolerance": 0.6,
+    "mask_area_ratio": 0.5
   },
   "tracker": {
     "speed_threshold_pix_per_frame": 5.0,
@@ -42,7 +45,6 @@
           "id": "I3ZEB19C",
           "config": "config/camera1_config.json",
           "measurement": {
-              "min_agv_area": 1000,
               "fps": 30,
               "pixel_size": 1.0
             }
@@ -51,7 +53,6 @@
           "id": "I3ZEB1AD",
           "config": "config/camera2_config.json",
           "measurement": {
-              "min_agv_area": 500,
               "fps": 30,
               "pixel_size": 1.0
             }
@@ -60,7 +61,6 @@
           "id": "I3ZEB19D",
           "config": "config/camera3_config.json",
           "measurement": {
-              "min_agv_area": 500,
               "fps": 30,
               "pixel_size": 1.0
             }
@@ -69,28 +69,25 @@
       "video_tracking": {
         "loader_mode": "video",
         "camera_1": {
-          "id": "data/hd_ulsan_1203/cam1.mp4",
+          "id": "data/251204_HD_AGV_Video/CAM1_day4_15PM_1.mp4",
           "config": "config/video_config.json",
           "measurement": {
-              "min_agv_area": 1000,
               "fps": 30,
               "pixel_size": 0.5
             }
         },
         "camera_2": {
-          "id": "data/hd_ulsan_1203/cam2.mp4",
+          "id": "data/251204_HD_AGV_Video/CAM2_day4_15PM_1.mp4",
           "config": "config/video_config.json",
           "measurement": {
-              "min_agv_area": 1000,
               "fps": 30,
               "pixel_size": 0.5
             }
         },
         "camera_3": {
-          "id": "data/hd_ulsan_1203/cam3.mp4",
+          "id": "data/251204_HD_AGV_Video/CAM3_day4_15PM_1.mp4",
           "config": "config/video_config.json",
           "measurement": {
-              "min_agv_area": 1000,
               "fps": 30,
               "pixel_size": 0.5
             }
@@ -102,7 +99,6 @@
           "id": "data/0001_fixed",
           "config": "config/sequence_config.json",
           "measurement": {
-              "min_agv_area": 1000,
               "fps": 30,
               "pixel_size": 0.4455786347389221
             }

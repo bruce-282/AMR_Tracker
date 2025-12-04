@@ -9,6 +9,7 @@ import numpy as np
 from src.core.detection import Detection
 from .camera_manager import CameraManager
 from .tracking_manager import TrackingManager
+from .protocol import ProtocolHandler, Command
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,8 @@ class ResponseBuilder:
         camera_manager: CameraManager,
         tracking_manager: TrackingManager,
         result_base_path: Path,
-        debug_base_path: Optional[Path] = None
+        debug_base_path: Optional[Path] = None,
+        protocol_handler: Optional[ProtocolHandler] = None
     ):
         """
         Initialize response builder.
@@ -31,11 +33,13 @@ class ResponseBuilder:
             tracking_manager: Tracking manager instance
             result_base_path: Base path for result images
             debug_base_path: Base path for debug images (optional)
+            protocol_handler: Protocol handler instance (optional, creates new if not provided)
         """
         self.camera_manager = camera_manager
         self.tracking_manager = tracking_manager
         self.result_base_path = result_base_path
         self.debug_base_path = debug_base_path
+        self.protocol = protocol_handler if protocol_handler else ProtocolHandler()
     
     def get_tracking_data(self, camera_id: int, use_area_scan: bool) -> Dict[str, float]:
         """

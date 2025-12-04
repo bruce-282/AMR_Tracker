@@ -144,9 +144,11 @@ class VisionServer:
                     if "log_base_path" in execution_config:
                         self.log_base_path = Path(execution_config["log_base_path"])
                         self.log_base_path.mkdir(parents=True, exist_ok=True)
+                        self.logger.info(f"Log base path: {self.log_base_path}")
                     else:
                         self.log_base_path = Path("C:/CMES_AI/Log")
                         self.log_base_path.mkdir(parents=True, exist_ok=True)
+                        self.logger.info(f"Log base path: {self.log_base_path}")
                     
                     if "log_level" in execution_config:
                         self.log_level = execution_config["log_level"].upper()
@@ -241,18 +243,35 @@ class VisionServer:
         self.camera2_trajectory = None
         self.camera2_trajectory_sent = False
         
+        # Protocol handler
+        self.protocol = ProtocolHandler()
+        
         self.response_builder = ResponseBuilder(
             camera_manager=self.camera_manager,
             tracking_manager=self.tracking_manager,
             result_base_path=self.result_base_path,
-            debug_base_path=self.debug_base_path
+            debug_base_path=self.debug_base_path,
+            protocol_handler=self.protocol
         )
-        
-        # Protocol handler
-        self.protocol = ProtocolHandler()
     
     def _setup_file_logging(self):
         """Setup file logging based on config."""
+        # Set log level for console handler (if exists)
+        log_level = getattr(logging, self.log_level, logging.DEBUG)
+        
+        # Suppress verbose logs from third-party libraries
+        logging.getLogger("numba").setLevel(logging.WARNING)
+        logging.getLogger("ultralytics").setLevel(logging.WARNING)
+        
+        # Update console handler level if it exists
+        for handler in self.logger.handlers:
+            if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+                handler.setLevel(log_level)
+        
+        # Update logger level
+        self.logger.setLevel(log_level)
+        
+        # Setup file logging if log_base_path is set
         if self.log_base_path is None:
             return
         
@@ -269,9 +288,6 @@ class VisionServer:
                 datefmt='%Y-%m-%d %H:%M:%S'
             )
             file_handler.setFormatter(file_formatter)
-            
-            # Set log level
-            log_level = getattr(logging, self.log_level, logging.DEBUG)
             file_handler.setLevel(log_level)
             
             # Add file handler to root logger to capture all logs
@@ -281,7 +297,6 @@ class VisionServer:
             
             # Also add to this logger
             self.logger.addHandler(file_handler)
-            self.logger.setLevel(log_level)
             
             self.logger.info(f"File logging enabled: {log_file} (level: {self.log_level})")
         except Exception as e:
@@ -400,7 +415,7 @@ class VisionServer:
 
         self.logger.info(
             f"Camera {camera_id}: Tracker created (track_id={track_id}, "
-            f"fps={fps:.2f}, pixel_size={self.camera_manager.get_pixel_size()})"
+            f"fps={fps:.2f}, pixel_size={self.camera_manager.get_pixel_size(camera_id)})"
         )
     
     def _ensure_camera_initialized(self, camera_id: int, product_model_name: Optional[str] = None) -> bool:
@@ -906,24 +921,9 @@ class VisionServer:
                 exec_config = product_model_config["execution"]
                 image_undistortion = exec_config.get("image_undistortion", False)
                 
-                # Update result paths from execution config
-                if "result_base_path" in exec_config:
-                    self.result_base_path = Path(exec_config["result_base_path"])
-                    self.result_base_path.mkdir(parents=True, exist_ok=True)
-                    self.response_builder.result_base_path = self.result_base_path
-                    self.logger.info(f"Result base path set to: {self.result_base_path}")
-                
-                if "summary_base_path" in exec_config:
-                    self.summary_base_path = Path(exec_config["summary_base_path"])
-                    self.summary_base_path.mkdir(parents=True, exist_ok=True)
-                    self.logger.info(f"Summary base path set to: {self.summary_base_path}")
-                
-                if "debug_base_path" in exec_config:
-                    self.debug_base_path = Path(exec_config["debug_base_path"])
-                    self.debug_base_path.mkdir(parents=True, exist_ok=True)
-                    self.logger.info(f"Debug base path set to: {self.debug_base_path}")
-                    # Update ResponseBuilder's debug_base_path
-                    self.response_builder.debug_base_path = self.debug_base_path
+                # Update ResponseBuilder paths (paths are already set in __init__)
+                self.response_builder.result_base_path = self.result_base_path
+                self.response_builder.debug_base_path = self.debug_base_path
             
             # Add image_undistortion to calibration_data so it can be passed to loaders
             if calibration_data:
@@ -1023,6 +1023,7 @@ class VisionServer:
                 self.logger.debug(f"execution config not found in {product_model_name}.json, using default: {self.visualize_stream}")
             
             # Initialize all 3 cameras and initialize trackers (without starting tracking threads)
+            failed_cameras = []
             for cam_id in [1, 2, 3]:
                 try:
                     self.logger.info(f"Initializing camera {cam_id}...")
@@ -1040,11 +1041,11 @@ class VisionServer:
                     else:
                         self._send_notification(cam_id, False, error_code="CONNECTION_FAILED", error_desc="Camera connection check failed")
                         self.logger.warning(f"Camera {cam_id} connection check failed - NOTIFY_CONNECTION sent")
+                        failed_cameras.append(cam_id)
                     
-                    # For cameras 1 and 3: create tracker instance (track_id=0) without initialization
-                    # For camera 2: do not create tracker yet (will be created when cameras 1/3 stop)
-                    if cam_id in [1, 3]:
-                        self._initialize_camera_tracker(cam_id, fps, track_id=0)
+                    # Create tracker instance (track_id=0) for all cameras
+                    # Note: Camera 2 tracker will be used when cameras 1/3 stop
+                    self._initialize_camera_tracker(cam_id, fps, track_id=0)
                     
                     self.logger.info(f"Camera {cam_id} initialized successfully")
                     
@@ -1052,11 +1053,31 @@ class VisionServer:
                     self.logger.error(f"Failed to initialize camera {cam_id}: {e}")
                     # Send NOTIFY_CONNECTION with error
                     self._send_notification(cam_id, False, error_code="INIT_ERROR", error_desc=str(e))
+                    failed_cameras.append(cam_id)
                     # Continue initializing other cameras even if one fails
             
-            # All cameras initialized
+            # Check if any cameras failed
+            if failed_cameras:
+                if not self.use_area_scan:
+                    # For non-area-scan mode, any camera failure should be reported
+                    error_msg = f"Failed to initialize cameras: {failed_cameras}. Cannot start tracking."
+                    self.logger.error(error_msg)
+                    return self.protocol.create_response(
+                        Command.START_VISION,
+                        success=False,
+                        error_code="CAM_INIT_ERROR",
+                        error_desc=error_msg
+                    )
+                else:
+                    # For area-scan mode, all cameras can be optional
+                    self.logger.warning(f"Some cameras failed to initialize: {failed_cameras}. Continuing with available cameras.")
+            
+            # All cameras initialized (or at least critical ones)
             elapsed_time = time.time() - start_time
-            self.logger.info(f"All cameras initialized. Total time: {elapsed_time:.3f}s")
+            if failed_cameras:
+                self.logger.info(f"Camera initialization completed with {len(failed_cameras)} failures. Total time: {elapsed_time:.3f}s")
+            else:
+                self.logger.info(f"All cameras initialized. Total time: {elapsed_time:.3f}s")
             
             # Stop all camera streams to ensure clean state (Novitec cameras only)
             # This prevents the last initialized camera from having an active stream
@@ -1067,14 +1088,24 @@ class VisionServer:
             if not self.use_area_scan:
                 self.logger.info("use_area_scan=false: Automatically starting camera 1 tracking")
                 
+                # Check if camera 1 is initialized before starting tracking
+                if 1 not in self.trackers or 1 not in self.camera_loaders:
+                    error_msg = "Camera 1 not initialized. Cannot start tracking."
+                    self.logger.error(error_msg)
+                    return self.protocol.create_response(
+                        Command.START_VISION,
+                        success=False,
+                        error_code="CAM_INIT_ERROR",
+                        error_desc=error_msg
+                    )
+                
                 # Start camera 1 tracking thread
-                if 1 in self.trackers and 1 in self.camera_loaders:
-                    if 1 not in self.tracking_threads or not self.tracking_threads[1].is_alive():
-                        # Explicitly start camera 1 stream before starting tracking
-                        # This ensures camera 1 stream is active and other streams are stopped
-                        self.camera_manager.start_camera_stream(1)
-                        self.tracking_manager.start_tracking(1)
-                        time.sleep(0.1)
+                if 1 not in self.tracking_threads or not self.tracking_threads[1].is_alive():
+                    # Explicitly start camera 1 stream before starting tracking
+                    # This ensures camera 1 stream is active and other streams are stopped
+                    self.camera_manager.start_camera_stream(1)
+                    self.tracking_manager.start_tracking(1)
+                    time.sleep(0.1)
             
             return self.protocol.create_response(
                 Command.START_VISION,
