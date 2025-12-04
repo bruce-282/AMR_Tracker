@@ -255,6 +255,268 @@ class ImageSequenceLoader(BaseLoader):
         print(f"[OK] Image sequence reset to beginning: {self.sequence_path}")
 
 
+# ============================================================================
+# Threaded Frame Buffer for Real-time Camera Streams
+# ============================================================================
+
+import threading
+import queue
+from dataclasses import dataclass
+from typing import Callable
+
+
+@dataclass
+class FrameData:
+    """Container for frame data with metadata."""
+    frame: np.ndarray
+    timestamp: float
+    frame_number: int
+
+
+class ThreadedFrameBuffer:
+    """
+    Producer-Consumer pattern frame buffer for real-time camera streams.
+    
+    Captures frames in a separate thread and buffers them in a queue.
+    When the queue is full, the oldest frames are dropped to maintain real-time performance.
+    
+    Usage:
+        buffer = ThreadedFrameBuffer(capture_func, max_size=30)
+        buffer.start()
+        
+        # In processing loop:
+        frame_data = buffer.get()  # Returns FrameData or None
+        if frame_data:
+            process(frame_data.frame)
+        
+        buffer.stop()
+    """
+    
+    def __init__(
+        self,
+        capture_func: Callable[[], tuple],
+        max_size: int = 30,
+        drop_policy: str = "oldest"
+    ):
+        """
+        Initialize frame buffer.
+        
+        Args:
+            capture_func: Function that returns (ret: bool, frame: np.ndarray)
+            max_size: Maximum number of frames to buffer (default: 30 = ~1 second at 30fps)
+            drop_policy: Policy when buffer is full:
+                - "oldest": Drop oldest frame, add new one (default, maintains real-time)
+                - "newest": Reject new frame (preserves history)
+        """
+        self.capture_func = capture_func
+        self.max_size = max_size
+        self.drop_policy = drop_policy
+        
+        # Thread-safe queue
+        self._queue: queue.Queue = queue.Queue(maxsize=max_size)
+        
+        # Control flags
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+        
+        # Statistics
+        self._captured_count = 0
+        self._dropped_count = 0
+        self._error_count = 0
+        self._frame_number = 0
+        
+        # Latency tracking
+        self._capture_times: list = []  # Recent capture timestamps for FPS calculation
+        self._max_capture_times = 30
+    
+    def start(self):
+        """Start the capture thread."""
+        with self._lock:
+            if self._running:
+                return
+            
+            self._running = True
+            self._thread = threading.Thread(target=self._capture_loop, daemon=True)
+            self._thread.start()
+            print(f"[INFO] ThreadedFrameBuffer started (max_size={self.max_size}, policy={self.drop_policy})")
+    
+    def stop(self, timeout: float = 2.0):
+        """
+        Stop the capture thread.
+        
+        Args:
+            timeout: Maximum time to wait for thread to finish
+        """
+        with self._lock:
+            if not self._running:
+                return
+            self._running = False
+        
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                print(f"[WARN] ThreadedFrameBuffer capture thread did not finish within {timeout}s")
+        
+        # Clear remaining frames
+        self._clear_queue()
+        
+        print(f"[INFO] ThreadedFrameBuffer stopped - captured={self._captured_count}, "
+              f"dropped={self._dropped_count}, errors={self._error_count}")
+    
+    def _capture_loop(self):
+        """Main capture loop running in separate thread."""
+        consecutive_errors = 0
+        max_consecutive_errors = 50
+        
+        while self._running:
+            try:
+                # Capture frame
+                capture_start = time.time()
+                ret, frame = self.capture_func()
+                
+                if not ret or frame is None:
+                    consecutive_errors += 1
+                    self._error_count += 1
+                    
+                    if consecutive_errors >= max_consecutive_errors:
+                        print(f"[ERROR] ThreadedFrameBuffer: {max_consecutive_errors} consecutive capture failures, stopping")
+                        self._running = False
+                        break
+                    
+                    # Brief sleep on error to avoid busy loop
+                    time.sleep(0.01)
+                    continue
+                
+                # Reset error counter on success
+                consecutive_errors = 0
+                
+                # Create frame data
+                self._frame_number += 1
+                frame_data = FrameData(
+                    frame=frame.copy(),  # Copy to avoid reference issues
+                    timestamp=capture_start,
+                    frame_number=self._frame_number
+                )
+                
+                # Try to add to queue
+                try:
+                    self._queue.put_nowait(frame_data)
+                    self._captured_count += 1
+                except queue.Full:
+                    # Queue is full, apply drop policy
+                    if self.drop_policy == "oldest":
+                        # Remove oldest frame and add new one
+                        try:
+                            self._queue.get_nowait()
+                            self._queue.put_nowait(frame_data)
+                            self._captured_count += 1
+                            self._dropped_count += 1
+                        except queue.Empty:
+                            pass
+                    else:
+                        # Drop new frame
+                        self._dropped_count += 1
+                
+                # Track capture times for FPS calculation
+                self._capture_times.append(capture_start)
+                if len(self._capture_times) > self._max_capture_times:
+                    self._capture_times.pop(0)
+                    
+            except Exception as e:
+                print(f"[ERROR] ThreadedFrameBuffer capture error: {e}")
+                self._error_count += 1
+                time.sleep(0.01)
+    
+    def get(self, timeout: float = 0.1) -> Optional[FrameData]:
+        """
+        Get a frame from the buffer.
+        
+        Args:
+            timeout: Maximum time to wait for a frame (seconds)
+        
+        Returns:
+            FrameData if available, None otherwise
+        """
+        try:
+            return self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+    
+    def get_nowait(self) -> Optional[FrameData]:
+        """
+        Get a frame without waiting.
+        
+        Returns:
+            FrameData if available, None if queue is empty
+        """
+        try:
+            return self._queue.get_nowait()
+        except queue.Empty:
+            return None
+    
+    def _clear_queue(self):
+        """Clear all frames from the queue."""
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+    
+    @property
+    def is_running(self) -> bool:
+        """Check if capture thread is running."""
+        return self._running
+    
+    @property
+    def queue_size(self) -> int:
+        """Get current number of frames in queue."""
+        return self._queue.qsize()
+    
+    @property
+    def is_full(self) -> bool:
+        """Check if queue is full."""
+        return self._queue.full()
+    
+    @property
+    def is_empty(self) -> bool:
+        """Check if queue is empty."""
+        return self._queue.empty()
+    
+    def get_stats(self) -> dict:
+        """Get buffer statistics."""
+        # Calculate actual capture FPS
+        capture_fps = 0.0
+        if len(self._capture_times) >= 2:
+            time_span = self._capture_times[-1] - self._capture_times[0]
+            if time_span > 0:
+                capture_fps = (len(self._capture_times) - 1) / time_span
+        
+        return {
+            "captured": self._captured_count,
+            "dropped": self._dropped_count,
+            "errors": self._error_count,
+            "queue_size": self.queue_size,
+            "max_size": self.max_size,
+            "capture_fps": round(capture_fps, 2),
+            "drop_rate": round(self._dropped_count / max(1, self._captured_count) * 100, 2)
+        }
+    
+    def get_latency(self) -> float:
+        """
+        Get estimated latency (time between capture and now for oldest frame in queue).
+        
+        Returns:
+            Latency in seconds, or 0 if queue is empty
+        """
+        if self.is_empty:
+            return 0.0
+        
+        # Peek at oldest frame without removing
+        # Note: This is a rough estimate as we can't peek without modifying queue
+        return self.queue_size / max(1, self.get_stats()["capture_fps"])
+
+
 class NovitecCameraLoader(BaseLoader):
     """Loader for Novitec industrial cameras"""
     
@@ -271,7 +533,18 @@ class NovitecCameraLoader(BaseLoader):
         # stop other streams. All cameras can stream independently.
         pass
 
-    def __init__(self, device_id: str, config: Optional[dict] = None, enable_undistortion: bool = False, camera_matrix: Optional[np.ndarray] = None, dist_coeffs: Optional[np.ndarray] = None, camera_index: Optional[int] = None):
+    def __init__(
+        self, 
+        device_id: str, 
+        config: Optional[dict] = None, 
+        enable_undistortion: bool = False, 
+        camera_matrix: Optional[np.ndarray] = None, 
+        dist_coeffs: Optional[np.ndarray] = None, 
+        camera_index: Optional[int] = None,
+        enable_buffering: bool = True,
+        buffer_size: int = 30,
+        buffer_drop_policy: str = "oldest"
+    ):
         """
         Initialize Novitec camera loader.
 
@@ -283,6 +556,13 @@ class NovitecCameraLoader(BaseLoader):
             dist_coeffs: Distortion coefficients for undistortion
             camera_index: Camera index (1, 2, or 3) to use separate DLL instances.
                          Each camera_index loads a separate DLL to avoid global state conflicts.
+            enable_buffering: Enable threaded frame buffering (default: True)
+                             When True, frames are captured in a separate thread and buffered.
+                             This prevents frame drops when processing is slower than capture.
+            buffer_size: Maximum number of frames to buffer (default: 30 = ~1 second at 30fps)
+            buffer_drop_policy: Policy when buffer is full:
+                               - "oldest": Drop oldest frame (maintains real-time)
+                               - "newest": Reject new frame (preserves history)
         """
         super().__init__(enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
 
@@ -296,6 +576,13 @@ class NovitecCameraLoader(BaseLoader):
         self.camera_index = camera_index  # Store camera_index for DLL isolation
         self.camera: Optional[NovitecCamera] = None
         self.initialized = False
+        
+        # Frame buffering settings
+        self.enable_buffering = enable_buffering
+        self.buffer_size = buffer_size
+        self.buffer_drop_policy = buffer_drop_policy
+        self._frame_buffer: Optional[ThreadedFrameBuffer] = None
+        self._last_frame_data: Optional[FrameData] = None  # For timestamp access
 
         self._initialize()
         
@@ -338,10 +625,32 @@ class NovitecCameraLoader(BaseLoader):
         
         print(f"[OK] Novitec camera initialized (connected, not streaming yet): {self.device_id}")
 
-    def read(self):
-        """
-        Read frame from Novitec camera.
+    def _ensure_stream_started(self) -> bool:
+        """Ensure camera stream is started. Returns True if stream is ready."""
+        if not self.initialized or not self.camera:
+            return False
+        
+        if not getattr(self, '_stream_started', False):
+            print(f"[INFO] Starting stream for {self.device_id} (camera_index={self.camera_index})...")
+            
+            stream_result = self.camera.start_stream()
+            if stream_result:
+                self._stream_started = True
+                self.camera._is_streaming = True
+                print(f"[INFO] Stream started successfully for {self.device_id}")
+            else:
+                # 이미 시작된 경우도 처리
+                self._stream_started = True
+                self.camera._is_streaming = True
+                print(f"[WARN] start_stream returned False for {self.device_id}, but continuing...")
+        
+        return self._stream_started
 
+    def _direct_capture(self) -> tuple:
+        """
+        Directly capture a frame from the camera (without buffering).
+        This is used by ThreadedFrameBuffer for the capture thread.
+        
         Returns:
             tuple: (ret, frame) where ret is bool and frame is numpy array (BGR format)
         """
@@ -349,86 +658,145 @@ class NovitecCameraLoader(BaseLoader):
             return False, None
 
         try:
-            # 스트림이 시작되지 않았으면 시작
-            # NOTE: Each camera uses a separate DLL (cam1, cam2, cam3), so no need for
-            # complex switching logic. Just start stream if not already started.
-            if not getattr(self, '_stream_started', False):
-                print(f"[INFO] Starting stream for {self.device_id} (camera_index={self.camera_index})...")
-                
-                stream_result = self.camera.start_stream()
-                if stream_result:
-                    self._stream_started = True
-                    self.camera._is_streaming = True
-                    print(f"[INFO] Stream started successfully for {self.device_id}")
-                else:
-                    # 이미 시작된 경우도 처리
-                    self._stream_started = True
-                    self.camera._is_streaming = True
-                    print(f"[WARN] start_stream returned False for {self.device_id}, but continuing...")
+            # Ensure stream is started
+            if not self._ensure_stream_started():
+                return False, None
             
-            # 첫 프레임에서만 로그 출력
-            if self.frame_number == 0:
-                device_obj_id = id(self.camera._device) if hasattr(self.camera, '_device') and self.camera._device else 'N/A'
-                print(f"[INFO] NovitecCameraLoader.read() FIRST FRAME - device_id={self.device_id}, id(_device)={device_obj_id}")
-            
-            # Capture image using NovitecCamera API - 어떤 디바이스에서 capture하는지 확인
-            if self.frame_number < 3:  # 처음 3프레임만 로그
-                device_obj_id = id(self.camera._device) if hasattr(self.camera, '_device') and self.camera._device else 'N/A'
-                print(f"[DEBUG] capture() called on device_id={self.device_id}, id(_device)={device_obj_id}")
-            
-            # capture() 실패 시 재시도 (최대 10회, 점진적 대기 시간 증가)
-            max_retries = 10
+            # capture() 실패 시 재시도 (최대 3회, 빠른 재시도)
+            max_retries = 3
             data = None
-            consecutive_failures = getattr(self, '_consecutive_failures', 0)
             
             for retry in range(max_retries):
                 try:
                     data = self.camera.capture(output_formats=["image"])
                     if data and "image" in data:
-                        # 성공 시 실패 카운터 리셋
-                        self._consecutive_failures = 0
                         break
                 except Exception as e:
-                    print(f"[WARN] capture() exception for {self.device_id}: {e}")
+                    if retry == 0:
+                        print(f"[WARN] _direct_capture() exception for {self.device_id}: {e}")
                 
                 if retry < max_retries - 1:
-                    
-                    wait_time = min(0.1 * (retry + 1), 1.0)
-                    print(f"[WARN] capture() failed for {self.device_id}, retrying ({retry+1}/{max_retries}) after {wait_time:.1f}s...")
-                    time.sleep(wait_time)
+                    time.sleep(0.005)  # 5ms 대기 후 재시도
 
             if not data or "image" not in data:
-                consecutive_failures += 1
-                self._consecutive_failures = consecutive_failures
-                
-                # 연속 실패가 너무 많으면 (10회 이상) 더 긴 대기
-                if consecutive_failures >= 10:
-                    print(f"[WARN] Too many consecutive failures ({consecutive_failures}) for {self.device_id}, waiting 0.5s...")
-                    time.sleep(0.5)
-                    self._consecutive_failures = 0  # 리셋
-                
-                # 프레임 건너뛰기 (False 반환하여 다음 프레임으로 진행)
                 return False, None
 
             frame = data["image"]
 
             # Ensure frame is in correct format (BGR for OpenCV)
             if frame is not None and len(frame.shape) == 3:
-                
                 # Apply undistortion if enabled
                 frame = self._undistort_frame(frame)
-                self.frame_number += 1
                 return True, frame
             else:
                 return False, None
 
         except Exception as e:
-            print(f"Error reading from Novitec camera: {e}")
+            print(f"Error in _direct_capture for {self.device_id}: {e}")
             return False, None
+
+    def start_buffering(self):
+        """Start the frame buffer capture thread."""
+        if not self.enable_buffering:
+            print(f"[INFO] Buffering is disabled for {self.device_id}")
+            return
+        
+        if self._frame_buffer is not None and self._frame_buffer.is_running:
+            print(f"[WARN] Frame buffer already running for {self.device_id}")
+            return
+        
+        # Ensure stream is started before buffering
+        if not self._ensure_stream_started():
+            print(f"[ERROR] Cannot start buffering: stream not started for {self.device_id}")
+            return
+        
+        # Create and start frame buffer
+        self._frame_buffer = ThreadedFrameBuffer(
+            capture_func=self._direct_capture,
+            max_size=self.buffer_size,
+            drop_policy=self.buffer_drop_policy
+        )
+        self._frame_buffer.start()
+        print(f"[OK] Frame buffering started for {self.device_id}")
+    
+    def stop_buffering(self):
+        """Stop the frame buffer capture thread."""
+        if self._frame_buffer is not None:
+            self._frame_buffer.stop()
+            self._frame_buffer = None
+            print(f"[OK] Frame buffering stopped for {self.device_id}")
+    
+    def get_buffer_stats(self) -> Optional[dict]:
+        """Get buffer statistics if buffering is enabled."""
+        if self._frame_buffer is not None:
+            return self._frame_buffer.get_stats()
+        return None
+
+    def read(self):
+        """
+        Read frame from Novitec camera.
+        
+        If buffering is enabled, returns frame from buffer.
+        Otherwise, captures directly from camera.
+
+        Returns:
+            tuple: (ret, frame) where ret is bool and frame is numpy array (BGR format)
+        """
+        if not self.initialized or not self.camera:
+            return False, None
+
+        # === Buffered mode ===
+        if self.enable_buffering and self._frame_buffer is not None and self._frame_buffer.is_running:
+            frame_data = self._frame_buffer.get(timeout=0.1)
+            
+            if frame_data is not None:
+                self._last_frame_data = frame_data
+                self.frame_number = frame_data.frame_number
+                
+                # Log stats periodically (every 100 frames)
+                if self.frame_number % 100 == 0:
+                    stats = self._frame_buffer.get_stats()
+                    print(f"[INFO] {self.device_id} buffer stats: queue={stats['queue_size']}/{stats['max_size']}, "
+                          f"fps={stats['capture_fps']}, dropped={stats['dropped']}")
+                
+                return True, frame_data.frame
+            else:
+                # No frame available from buffer
+                return False, None
+        
+        # === Direct capture mode (buffering disabled or buffer not started) ===
+        # Auto-start buffering on first read if enabled
+        if self.enable_buffering and self._frame_buffer is None:
+            self.start_buffering()
+            # Give buffer time to capture first frame
+            time.sleep(0.1)
+            return self.read()  # Recursive call to use buffer
+        
+        # Fallback to direct capture
+        ret, frame = self._direct_capture()
+        if ret:
+            self.frame_number += 1
+            
+            # 첫 프레임에서만 로그 출력
+            if self.frame_number == 1:
+                device_obj_id = id(self.camera._device) if hasattr(self.camera, '_device') and self.camera._device else 'N/A'
+                print(f"[INFO] NovitecCameraLoader.read() FIRST FRAME (direct) - device_id={self.device_id}, id(_device)={device_obj_id}")
+        
+        return ret, frame
+
+    def get_timestamp(self) -> Optional[float]:
+        """Get timestamp of the last read frame."""
+        if self._last_frame_data is not None:
+            return self._last_frame_data.timestamp
+        return None
 
     def release(self):
         """Release Novitec camera resources"""
         try:
+            # Stop frame buffer first
+            if self._frame_buffer is not None:
+                self.stop_buffering()
+            
             if self.camera:
                 # Stop stream if running
                 if self.camera._is_streaming:
@@ -436,13 +804,13 @@ class NovitecCameraLoader(BaseLoader):
                 # Disconnect
                 self.camera.disconnect()
                 self.camera = None
-                print("[OK] Novitec camera released")
+                print(f"[OK] Novitec camera released: {self.device_id}")
 
             self.initialized = False
             self.is_connected = False
 
         except Exception as e:
-            print(f"Error releasing Novitec camera: {e}")
+            print(f"Error releasing Novitec camera {self.device_id}: {e}")
 
     def is_opened(self):
         """Check if camera is opened and connected"""
@@ -459,7 +827,10 @@ def create_sequence_loader(
     enable_undistortion: bool = False,
     camera_matrix: Optional[np.ndarray] = None,
     dist_coeffs: Optional[np.ndarray] = None,
-    camera_index: Optional[int] = None
+    camera_index: Optional[int] = None,
+    enable_buffering: bool = True,
+    buffer_size: int = 30,
+    buffer_drop_policy: str = "oldest"
 ) -> Optional[BaseLoader]:
     """
     Create appropriate sequence loader based on source and mode
@@ -473,13 +844,26 @@ def create_sequence_loader(
         camera_matrix: Camera intrinsic matrix for undistortion
         dist_coeffs: Distortion coefficients for undistortion
         camera_index: Camera index (1, 2, or 3) for Novitec DLL isolation
+        enable_buffering: Enable threaded frame buffering for camera loaders (default: True)
+        buffer_size: Maximum number of frames to buffer (default: 30)
+        buffer_drop_policy: Policy when buffer is full ("oldest" or "newest")
 
     Returns:
         Appropriate loader instance or None if failed
     """
     try:
         if loader_mode == "camera":
-            return create_camera_device_loader(source=source, config=config, enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, camera_index=camera_index)
+            return create_camera_device_loader(
+                source=source, 
+                config=config, 
+                enable_undistortion=enable_undistortion, 
+                camera_matrix=camera_matrix, 
+                dist_coeffs=dist_coeffs, 
+                camera_index=camera_index,
+                enable_buffering=enable_buffering,
+                buffer_size=buffer_size,
+                buffer_drop_policy=buffer_drop_policy
+            )
         elif loader_mode == "video":
             return create_video_file_loader(source=source, enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
         elif loader_mode == "sequence":
@@ -494,13 +878,34 @@ def create_sequence_loader(
 
 
 def create_camera_device_loader(
-    source: str, config: Optional[dict] = None, enable_undistortion: bool = False, camera_matrix: Optional[np.ndarray] = None, dist_coeffs: Optional[np.ndarray] = None, camera_index: Optional[int] = None
+    source: str, 
+    config: Optional[dict] = None, 
+    enable_undistortion: bool = False, 
+    camera_matrix: Optional[np.ndarray] = None, 
+    dist_coeffs: Optional[np.ndarray] = None, 
+    camera_index: Optional[int] = None,
+    enable_buffering: bool = True,
+    buffer_size: int = 30,
+    buffer_drop_policy: str = "oldest"
 ) -> Optional[BaseLoader]:
     """Create camera device loader with Novitec fallback"""
 
     try:
-        loader = NovitecCameraLoader(device_id=source, config=config, enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, camera_index=camera_index)
-        print(f"[OK] Novitec camera loader created (camera_index={camera_index})")
+        loader = NovitecCameraLoader(
+            device_id=source, 
+            config=config, 
+            enable_undistortion=enable_undistortion, 
+            camera_matrix=camera_matrix, 
+            dist_coeffs=dist_coeffs, 
+            camera_index=camera_index,
+            enable_buffering=enable_buffering,
+            buffer_size=buffer_size,
+            buffer_drop_policy=buffer_drop_policy
+        )
+        buffering_str = f"buffering={'ON' if enable_buffering else 'OFF'}"
+        if enable_buffering:
+            buffering_str += f", buffer_size={buffer_size}, policy={buffer_drop_policy}"
+        print(f"[OK] Novitec camera loader created (camera_index={camera_index}, {buffering_str})")
         return loader
     except Exception as e:
         print(f"Novitec camera loader failed: {e}")

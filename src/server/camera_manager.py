@@ -287,6 +287,11 @@ class CameraManager:
         
         # Create loader with config and undistortion parameters
         # Pass camera_id as camera_index to load separate DLL for each Novitec camera
+        # Enable buffering for camera mode (real-time streams) to prevent frame drops
+        enable_buffering = (loader_mode == "camera")
+        buffer_size = 30  # ~1 second at 30fps
+        buffer_drop_policy = "oldest"  # Drop oldest frames when buffer is full (maintains real-time)
+        
         loader = create_sequence_loader(
             source, 
             fps=fps, 
@@ -295,7 +300,10 @@ class CameraManager:
             enable_undistortion=enable_undistortion,
             camera_matrix=camera_matrix,
             dist_coeffs=dist_coeffs,
-            camera_index=camera_id  # Use camera_id as camera_index for DLL isolation
+            camera_index=camera_id,  # Use camera_id as camera_index for DLL isolation
+            enable_buffering=enable_buffering,
+            buffer_size=buffer_size,
+            buffer_drop_policy=buffer_drop_policy
         )
         if loader is None:
             raise RuntimeError(f"Failed to create loader for camera {camera_id} (mode: {loader_mode}, source: {source})")
