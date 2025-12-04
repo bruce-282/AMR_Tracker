@@ -6,18 +6,28 @@
     "camera_height": 0.0,
     "calibration_data_path": "calibration_data.json"
   },
-
   "detector": {
+    "_comment": "Binary detector parameters - applied in vision_server.py -> EnhancedAMRTracker -> BinaryDetector",
     "detector_type": "binary",
-    "threshold": 80,
-    "min_area": 400,
+    "_comment_detector_type": "Detector type: 'binary' or 'yolo'. Used in vision_server.py:776 to select detector",
+    "threshold": 60,
+    "_comment_threshold": "Binary threshold value (0-255). Used only when use_adaptive=false. Lower values detect darker objects. Applied in binary_detector.py:111",
+    "min_area": 300,
+    "_comment_min_area": "Minimum area (pixels) for detected objects. Objects smaller than this are filtered out. Applied in binary_detector.py:127",
     "width_height_ratio_min": 0.5,
+    "_comment_width_height_ratio_min": "Minimum width/height ratio for bounding box. Objects with ratio < this are filtered. Applied in binary_detector.py:139",
     "width_height_ratio_max": 2.0,
+    "_comment_width_height_ratio_max": "Maximum width/height ratio for bounding box. Objects with ratio > this are filtered. Applied in binary_detector.py:139",
     "mask_area_ratio": 0.5,
+    "_comment_mask_area_ratio": "Minimum ratio of mask area to bbox area. Filters objects that don't fill their bounding box well. Applied in binary_detector.py:156",
     "inverse": true,
-    "use_adaptive": false,
-    "adaptive_block_size": 11,
-    "adaptive_c": 30.0
+    "_comment_inverse": "If true, detects dark objects (THRESH_BINARY_INV). If false, detects bright objects. Applied in binary_detector.py:98,110",
+    "use_adaptive": true,
+    "_comment_use_adaptive": "If true, use adaptive threshold (handles uneven lighting). If false, use simple threshold. Applied in binary_detector.py:95",
+    "adaptive_block_size": 111,
+    "_comment_adaptive_block_size": "Size of pixel neighborhood for adaptive threshold (must be odd). Used only when use_adaptive=true. Applied in binary_detector.py:105",
+    "adaptive_c": 4.0,
+    "_comment_adaptive_c": "Constant subtracted from mean in adaptive threshold. Used only when use_adaptive=true. Applied in binary_detector.py:106"
   },
   "tracker": {
     "speed_threshold_pix_per_frame": 5.0,
@@ -25,79 +35,78 @@
     "speed_zero_frames_threshold": 10,
     "detection_loss_threshold_frames": 30,
     "max_frames_lost": 500,
-    "camera2_trajectory_max_frames": 50,
+    "camera2_trajectory_max_frames": 500,
     "velocity_damping_threshold": 0.5,
     "velocity_damping_factor": 0.9,
     "velocity_damping_max": 5.0,
     "arrow_length": 50
   },
   "execution": {
-
+    "visualize_stream": true,
+    "result_base_path": "C:/CMES_AI/Result",
+    "summary_base_path": "C:/CMES_AI/Summary",
+    "debug_base_path": "C:/CMES_AI/Debug",
+    "image_undistortion": true,
+    "use_preset": "camera_tracking",
     "presets": {
 
       "camera_tracking": {
         "loader_mode": "camera",
         "camera_1": {
-          "id": "I3ZEB19D",
-          "config": "config/camera_config.json",
+          "id": "I3ZEB19C",
+          "config": "config/camera1_config.json",
           "measurement": {
               "min_agv_area": 1000,
-              "max_tracking_distance": 500,
               "fps": 30,
-              "pixel_size": 0.4455786347389221
+              "pixel_size": 1.0
             }
         },
         "camera_2": {
-          "id": "data/round_course.mp4",
-          "config": "config/video_config.json",
+          "id": "I3ZEB1AD",
+          "config": "config/camera2_config.json",
           "measurement": {
-              "min_agv_area": 1000,
-              "max_tracking_distance": 500,
+              "min_agv_area": 500,
               "fps": 30,
-              "pixel_size": 0.4455786347389221
+              "pixel_size": 1.0
             }
         },
         "camera_3": {
           "id": "I3ZEB19D",
-          "config": "config/camera_config.json",
+          "config": "config/camera3_config.json",
           "measurement": {
-              "min_agv_area": 1000,
-              "max_tracking_distance": 500,
+              "min_agv_area": 500,
               "fps": 30,
-              "pixel_size": 0.4455786347389221
+              "pixel_size": 1.0
             }
         }
       },
       "video_tracking": {
         "loader_mode": "video",
         "camera_1": {
-          "id": "data/novitec_capture_20251110_153214.mp4",
+          "id": "data/hd_ulsan_1203/cam1.mp4",
           "config": "config/video_config.json",
           "measurement": {
               "min_agv_area": 1000,
-              "max_tracking_distance": 500,
               "fps": 30,
-              "pixel_size": 0.4455786347389221
+              "pixel_size": 0.5
             }
         },
         "camera_2": {
-          "id": "data/round_course.mp4",
+          "id": "data/hd_ulsan_1203/cam2.mp4",
           "config": "config/video_config.json",
           "measurement": {
               "min_agv_area": 1000,
-              "max_tracking_distance": 500,
               "fps": 30,
-              "pixel_size": 0.4455786347389221
+              "pixel_size": 0.5
             }
         },
         "camera_3": {
-          "id": "data/novitec_capture_20251110_153214.mp4",
+          "id": "data/hd_ulsan_1203/cam3.mp4",
           "config": "config/video_config.json",
           "measurement": {
               "min_agv_area": 1000,
-              "max_tracking_distance": 500,
               "fps": 30,
-              "pixel_size": 0.4455786347389221
+              "pixel_size": 0.5
             }
         }
       },
@@ -108,7 +117,6 @@
           "config": "config/sequence_config.json",
           "measurement": {
               "min_agv_area": 1000,
-              "max_tracking_distance": 500,
               "fps": 30,
               "pixel_size": 0.4455786347389221
             }

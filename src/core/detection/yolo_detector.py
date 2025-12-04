@@ -207,13 +207,13 @@ class YOLODetector:
                             image_size=image_size,
                             xywhr=None,  # No xywhr for regular detection
                         )
-                        if detection.get_area() < 1000:
-                            continue
-                        width_height_ratio = detection.get_width() / detection.get_height()
-                        if width_height_ratio < 0.8 or width_height_ratio > 1.2:
-                            continue
-                        if mask_area < detection.get_area() * 0.9:
-                            continue
+                        # if detection.get_area() < 1000:
+                        #     continue
+                        # width_height_ratio = detection.get_width() / detection.get_height()
+                        # if width_height_ratio < 0.8 or width_height_ratio > 1.2:
+                        #     continue
+                        # if mask_area < detection.get_area() * 0.9:
+                        #     continue
                         
                         detections.append(detection)
 

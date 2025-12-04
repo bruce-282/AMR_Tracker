@@ -7,9 +7,9 @@
     "calibration_data_path": "calibration_data.json"
   },
   "detector": {
-    "model_path": "weights/zoom1/best.pt",
+    "model_path": "weights/zoom1/best_pixis.pt",
     "confidence_threshold": 0.2,
-    "imgsz": 640,
+    "imgsz": 1536,
     "target_classes": [0]
   },
   "tracker": {

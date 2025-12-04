@@ -18,19 +18,19 @@ class ModelConfig:
     """
     
     DEFAULT_CONFIG_PATH = "model_config.json"
-    DEFAULT_WEIGHTS_DIR = "weights"
+    DEFAULT_WEIGHTS_PATH = "weights/zoom1/best.pt"
     DEFAULT_MODEL_FILE = "best.pt"  # Default model file name in each product model folder
     
-    def __init__(self, config_path: Optional[str] = None, weights_dir: str = "weights"):
+    def __init__(self, config_path: Optional[str] = None, weights_path: str = DEFAULT_WEIGHTS_PATH):
         """
         Initialize model configuration.
         
         Args:
             config_path: Path to model config file
-            weights_dir: Base directory for model weights (default: "weights")
+            weights_path: Base directory for model weights (default: "weights/zoom1/best.pt")
         """
         self.config_path = Path(config_path or self.DEFAULT_CONFIG_PATH)
-        self.weights_dir = Path(weights_dir)
+        self.weights_path = Path(weights_path)
         self.model_list: List[str] = []  # Product model names (e.g., "zoom1", "zoom2")
         self.selected_model: Optional[str] = None  # Selected product model name
         self._load_config()
@@ -54,9 +54,9 @@ class ModelConfig:
     def _create_default_config(self):
         """Create default configuration."""
         # Check for existing product model folders
-        if self.weights_dir.exists():
+        if self.weights_path.exists():
             # Find folders in weights directory
-            folders = [d.name for d in self.weights_dir.iterdir() if d.is_dir()]
+            folders = [d.name for d in self.weights_path.iterdir() if d.is_dir()]
             if folders:
                 self.model_list = sorted(folders)
                 self.selected_model = self.model_list[0]

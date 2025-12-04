@@ -117,7 +117,7 @@ def main():
         "--log-level",
         type=str,
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        default="INFO",
+        default="DEBUG",
         help="Set logging level (default: INFO)",
     )
 

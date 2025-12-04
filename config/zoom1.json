@@ -8,27 +8,10 @@
   },
 
   "detector": {
-    "_comment": "Binary detector parameters - applied in vision_server.py -> EnhancedAMRTracker -> BinaryDetector",
-    "detector_type": "binary",
-    "_comment_detector_type": "Detector type: 'binary' or 'yolo'. Used in vision_server.py:776 to select detector",
-    "threshold": 40,
-    "_comment_threshold": "Binary threshold value (0-255). Used only when use_adaptive=false. Lower values detect darker objects. Applied in binary_detector.py:111",
-    "min_area": 300,
-    "_comment_min_area": "Minimum area (pixels) for detected objects. Objects smaller than this are filtered out. Applied in binary_detector.py:127",
-    "width_height_ratio_min": 0.5,
-    "_comment_width_height_ratio_min": "Minimum width/height ratio for bounding box. Objects with ratio < this are filtered. Applied in binary_detector.py:139",
-    "width_height_ratio_max": 2.0,
-    "_comment_width_height_ratio_max": "Maximum width/height ratio for bounding box. Objects with ratio > this are filtered. Applied in binary_detector.py:139",
-    "mask_area_ratio": 0.5,
-    "_comment_mask_area_ratio": "Minimum ratio of mask area to bbox area. Filters objects that don't fill their bounding box well. Applied in binary_detector.py:156",
-    "inverse": true,
-    "_comment_inverse": "If true, detects dark objects (THRESH_BINARY_INV). If false, detects bright objects. Applied in binary_detector.py:98,110",
-    "use_adaptive": false,
-    "_comment_use_adaptive": "If true, use adaptive threshold (handles uneven lighting). If false, use simple threshold. Applied in binary_detector.py:95",
-    "adaptive_block_size": 11,
-    "_comment_adaptive_block_size": "Size of pixel neighborhood for adaptive threshold (must be odd). Used only when use_adaptive=true. Applied in binary_detector.py:105",
-    "adaptive_c": 30.0,
-    "_comment_adaptive_c": "Constant subtracted from mean in adaptive threshold. Used only when use_adaptive=true. Applied in binary_detector.py:106"
+    "model_path": "weights/zoom1/best.pt",
+    "confidence_threshold": 0.1,
+    "imgsz": 1280,
+    "target_classes": [0]
   },
   "tracker": {
     "speed_threshold_pix_per_frame": 5.0,
@@ -84,7 +67,7 @@
       "video_tracking": {
         "loader_mode": "video",
         "camera_1": {
-          "id": "data/novitec_capture_20251110_153214.mp4",
+          "id": "data/hd_ulsan_1203/cam1.mp4",
           "config": "config/video_config.json",
           "measurement": {
               "min_agv_area": 1000,
@@ -93,7 +76,7 @@
             }
         },
         "camera_2": {
-          "id": "data/round_course.mp4",
+          "id": "data/hd_ulsan_1203/cam2.mp4",
           "config": "config/video_config.json",
           "measurement": {
               "min_agv_area": 1000,
@@ -102,7 +85,7 @@
             }
         },
         "camera_3": {
-          "id": "data/novitec_capture_20251110_153214.mp4",
+          "id": "data/hd_ulsan_1203/cam3.mp4",
           "config": "config/video_config.json",
           "measurement": {
               "min_agv_area": 1000,

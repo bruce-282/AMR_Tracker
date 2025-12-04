@@ -45,7 +45,7 @@ def main():
                                     datefmt='%Y-%m-%d %H:%M:%S')
         handler.setFormatter(formatter)
         logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
+        logger.setLevel(logging.DEBUG)
     
     logger.info("=" * 60)
     logger.info("Vision Tracking TCP/IP Server")

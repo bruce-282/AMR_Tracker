@@ -19,7 +19,7 @@ class VisionClient:
                                         datefmt='%Y-%m-%d %H:%M:%S')
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
-            self.logger.setLevel(logging.INFO)
+            self.logger.setLevel(logging.DEBUG)
         self.host = host
         self.port = port
         self.socket = None

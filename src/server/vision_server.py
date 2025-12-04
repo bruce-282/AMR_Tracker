@@ -31,6 +31,9 @@ from src.utils.config_loader import (
     load_product_model_config,
     get_camera_config,
     get_camera_pixel_sizes,
+    load_tracking_config,
+    load_calibration_config,
+    get_execution_config,
 )
 from config import SystemConfig, TrackingConfig
 
@@ -85,29 +88,97 @@ class VisionServer:
         self.config = None
         
         # Model configuration
-        self.model_config = ModelConfig()
+        self.model_config = ModelConfig(config_path="config/model_config.json", weights_path="weights")
         
-        # Result file paths
-        self.result_base_path = Path("C:/CMES_AI/Result")
-        self.result_base_path.mkdir(parents=True, exist_ok=True)
-
-        self.summary_base_path = Path("C:/CMES_AI/Summary")
-        self.summary_base_path.mkdir(parents=True, exist_ok=True)
-
-        # Debug data path (separate from studio results)
-        self.debug_base_path = Path("C:/CMES_AI/Debug")
-        self.debug_base_path.mkdir(parents=True, exist_ok=True)
+        # Load selected model's configuration and apply to SystemConfig
+        selected_model = self.model_config.get_selected_model()
+        if selected_model:
+            self.logger.info(f"Loading configuration from selected model: {selected_model}")
+            # Load product model config file
+            product_model_config = load_product_model_config(selected_model)
+            if product_model_config:
+                # Load configs using existing functions
+                self.tracking_config = load_tracking_config(selected_model, None)
+                calibration_data = load_calibration_config(selected_model, None)
+                execution_config = get_execution_config(selected_model, None)
+                
+                # Apply execution config settings
+                if execution_config:
+                    # Set visualize_stream
+                    if "visualize_stream" in execution_config:
+                        self.visualize_stream = bool(execution_config["visualize_stream"])
+                        self.logger.info(f"Visualize stream: {self.visualize_stream}")
+                    else:
+                        self.visualize_stream = True  # Default
+                    
+                    # Set result paths
+                    if "result_base_path" in execution_config:
+                        self.result_base_path = Path(execution_config["result_base_path"])
+                        self.result_base_path.mkdir(parents=True, exist_ok=True)
+                        self.logger.info(f"Result base path: {self.result_base_path}")
+                    else:
+                        self.result_base_path = Path("C:/CMES_AI/Result")
+                        self.result_base_path.mkdir(parents=True, exist_ok=True)
+                    
+                    if "summary_base_path" in execution_config:
+                        self.summary_base_path = Path(execution_config["summary_base_path"])
+                        self.summary_base_path.mkdir(parents=True, exist_ok=True)
+                        self.logger.info(f"Summary base path: {self.summary_base_path}")
+                    else:
+                        self.summary_base_path = Path("C:/CMES_AI/Summary")
+                        self.summary_base_path.mkdir(parents=True, exist_ok=True)
+                    
+                    if "debug_base_path" in execution_config:
+                        self.debug_base_path = Path(execution_config["debug_base_path"])
+                        self.debug_base_path.mkdir(parents=True, exist_ok=True)
+                        self.logger.info(f"Debug base path: {self.debug_base_path}")
+                    else:
+                        self.debug_base_path = Path("C:/CMES_AI/Debug")
+                        self.debug_base_path.mkdir(parents=True, exist_ok=True)
+                else:
+                    # Default paths if execution config not found
+                    self.visualize_stream = True  # Default
+                    self.result_base_path = Path("C:/CMES_AI/Result")
+                    self.result_base_path.mkdir(parents=True, exist_ok=True)
+                    self.summary_base_path = Path("C:/CMES_AI/Summary")
+                    self.summary_base_path.mkdir(parents=True, exist_ok=True)
+                    self.debug_base_path = Path("C:/CMES_AI/Debug")
+                    self.debug_base_path.mkdir(parents=True, exist_ok=True)
+            else:
+                # Default paths if config file not found
+                self.visualize_stream = True  # Default
+                self.result_base_path = Path("C:/CMES_AI/Result")
+                self.result_base_path.mkdir(parents=True, exist_ok=True)
+                self.summary_base_path = Path("C:/CMES_AI/Summary")
+                self.summary_base_path.mkdir(parents=True, exist_ok=True)
+                self.debug_base_path = Path("C:/CMES_AI/Debug")
+                self.debug_base_path.mkdir(parents=True, exist_ok=True)
+                self.tracking_config = DEFAULT_TRACKING_CONFIG
+                self.logger.warning(f"Failed to load config file for model: {selected_model}, using defaults")
+        else:
+            # Default paths if no model selected
+            self.visualize_stream = True  # Default
+            self.result_base_path = Path("C:/CMES_AI/Result")
+            self.result_base_path.mkdir(parents=True, exist_ok=True)
+            self.summary_base_path = Path("C:/CMES_AI/Summary")
+            self.summary_base_path.mkdir(parents=True, exist_ok=True)
+            self.debug_base_path = Path("C:/CMES_AI/Debug")
+            self.debug_base_path.mkdir(parents=True, exist_ok=True)
+            self.tracking_config = DEFAULT_TRACKING_CONFIG
+            self.logger.warning("No model selected in model_config.json, using defaults")
         
         # System state
         self.vision_active = False
         self.use_area_scan = False
-        self.visualize_stream = True  # Enable/disable visualization stream (cv2.imshow)
+        # visualize_stream is set above from config file (or default True)
         
         # Camera state manager - centralized state management for all cameras
         self.camera_state_manager = CameraStateManager()
 
-        # Tracking configuration
-        self.tracking_config = self.config.tracking if self.config and self.config.tracking else DEFAULT_TRACKING_CONFIG
+        # Tracking configuration is already set above from selected model config
+        # If not set, use default
+        if not hasattr(self, 'tracking_config') or self.tracking_config is None:
+            self.tracking_config = self.config.tracking if self.config and self.config.tracking else DEFAULT_TRACKING_CONFIG
 
         # Initialize managers (delegates for camera, tracking, and response handling)
         self.camera_manager = CameraManager(
