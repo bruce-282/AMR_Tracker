@@ -117,24 +117,49 @@ class ResponseBuilder:
         self,
         camera_id: int,
         detection: Detection,
+        tracking_result: Dict,
         frame: np.ndarray
     ) -> Dict[str, any]:
         """
         Build first detection response for cameras 1, 3.
         
+        Uses Kalman filtered position from tracking_result instead of raw detection position.
+        
         Args:
             camera_id: Camera ID
             detection: Detection object
+            tracking_result: Kalman filtered tracking result with position and orientation
             frame: Frame image
         
         Returns:
             Response data dictionary
         """
-        pixel_size = self.camera_manager.get_pixel_size(camera_id)
-        center = detection.get_center()
-        x_mm = center[0] * pixel_size
-        y_mm = center[1] * pixel_size
-        rz = detection.get_orientation() if detection.get_orientation() is not None else 0.0
+        # Use Kalman filtered position from tracking result (more accurate than raw detection)
+        position = tracking_result.get("position", {})
+        orientation = tracking_result.get("orientation", {})
+        
+        # Get mm coordinates directly from tracking result (already converted by Kalman tracker)
+        x_mm = position.get("x_mm", 0.0)
+        y_mm = position.get("y_mm", 0.0)
+        
+        # If x_mm/y_mm not available, fallback to pixel position * pixel_size
+        if x_mm == 0.0 and y_mm == 0.0:
+            pixel_size = self.camera_manager.get_pixel_size(camera_id)
+            x_pix = position.get("x", 0.0)
+            y_pix = position.get("y", 0.0)
+            x_mm = x_pix * pixel_size
+            y_mm = y_pix * pixel_size
+        
+        # Get orientation from tracking result (Kalman filtered)
+        rz = orientation.get("theta_normalized_deg", 0.0)
+        
+        # Get pixel position for visualization
+        center = (position.get("x", 0.0), position.get("y", 0.0))
+        
+        logger.info(
+            f"Camera {camera_id}: First detection response - "
+            f"position: ({x_mm:.2f}, {y_mm:.2f}) mm, yaw: {rz:.2f} deg (Kalman filtered)"
+        )
         
         # Save result image
         result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
@@ -143,7 +168,7 @@ class ResponseBuilder:
             result_image_path,
             frame=frame,
             detections=[detection],
-            tracking_results=self._create_tracking_result_from_detection(detection, center, rz)
+            tracking_results=[tracking_result] if tracking_result else self._create_tracking_result_from_detection(detection, center, rz)
         )
         
         return {

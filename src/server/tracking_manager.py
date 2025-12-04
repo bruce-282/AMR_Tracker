@@ -50,6 +50,10 @@ class TrackingManager:
         
         # Camera-specific data
         self.latest_detections: Dict[int, Detection] = {}
+        self.latest_tracking_results: Dict[int, Dict] = {}  # Store latest tracking result
+        self.stopped_tracking_results: Dict[int, Dict] = {}  # Store tracking result when speed first became near zero
+        self.stopped_detections: Dict[int, Detection] = {}  # Store detection when speed first became near zero
+        self.stopped_frames: Dict[int, np.ndarray] = {}  # Store frame when speed first became near zero
         self.camera2_trajectory = None  # Will be initialized with deque
         self.camera2_trajectory_sent = False
         self.last_frames: Dict[int, np.ndarray] = {}  # Store last frame for each camera
@@ -57,7 +61,8 @@ class TrackingManager:
         # Callbacks for camera-specific logic
         self.on_camera_1_3_stop: Optional[Callable[[int], None]] = None
         self.on_camera_2_stop: Optional[Callable[[], None]] = None
-        self.on_camera_1_3_first_detection: Optional[Callable[[int, Detection, np.ndarray], None]] = None
+        # Callback signature: (camera_id, detection, tracking_result, frame)
+        self.on_camera_1_3_first_detection: Optional[Callable[[int, Detection, Dict, np.ndarray], None]] = None
         self.on_camera_2_trajectory: Optional[Callable[[int, Optional[np.ndarray], List[Detection], List[Dict], str], bool]] = None
     
     def set_vision_active(self, active: bool):
@@ -299,6 +304,9 @@ class TrackingManager:
         """Handle camera 1, 3 specific tracking logic."""
         if detections:
             self.latest_detections[camera_id] = detections[0]
+        # Store latest tracking result for response
+        if tracking_results:
+            self.latest_tracking_results[camera_id] = tracking_results[0]
         
         speed_near_zero_thresh = self.tracking_config.speed_near_zero_threshold
         speed_zero_frames_thresh = self.tracking_config.speed_zero_frames_threshold
@@ -333,20 +341,40 @@ class TrackingManager:
         if abs(speed_pix_per_frame) <= speed_near_zero_thresh:
             cam_state.speed_near_zero_frames += 1
             
+            # Save tracking result at the moment speed first became near zero (frame 1)
+            if cam_state.speed_near_zero_frames == 1:
+                if tracking_results:
+                    self.stopped_tracking_results[camera_id] = tracking_results[0]
+                if detections:
+                    self.stopped_detections[camera_id] = detections[0]
+                self.stopped_frames[camera_id] = frame.copy()
+                logger.info(
+                    f"Camera {camera_id}: Speed near zero detected - "
+                    f"saving stopped position at frame 1"
+                )
+            
             # Send response if speed has been near zero for threshold frames
             if (cam_state.speed_near_zero_frames >= speed_zero_frames_thresh and
                 not cam_state.response_sent and
-                camera_id in self.latest_detections):
+                camera_id in self.stopped_detections):
                 logger.info(
                     f"Camera {camera_id}: Sending first detection response - "
                     f"speed={speed_pix_per_frame:.3f} pix/frame, "
-                    f"count={cam_state.speed_near_zero_frames}"
+                    f"count={cam_state.speed_near_zero_frames} (stopped for {speed_zero_frames_thresh} frames)"
                 )
                 if self.on_camera_1_3_first_detection:
+                    # Use tracking result saved when speed FIRST became near zero
+                    tracking_result = self.stopped_tracking_results.get(camera_id, {})
+                    detection = self.stopped_detections.get(camera_id)
+                    stopped_frame = self.stopped_frames.get(camera_id, frame)
                     self.on_camera_1_3_first_detection(
-                        camera_id, self.latest_detections[camera_id], frame
+                        camera_id, detection, tracking_result, stopped_frame
                     )
                 cam_state.speed_near_zero_frames = 0
+                # Clear saved stopped data after sending
+                self.stopped_tracking_results.pop(camera_id, None)
+                self.stopped_detections.pop(camera_id, None)
+                self.stopped_frames.pop(camera_id, None)
         else:
             if cam_state.speed_near_zero_frames > 0:
                 logger.debug(
@@ -354,6 +382,10 @@ class TrackingManager:
                     f"speed={speed_pix_per_frame:.3f} pix/frame > threshold={speed_near_zero_thresh}, "
                     f"resetting count from {cam_state.speed_near_zero_frames}"
                 )
+                # Clear saved stopped data since speed increased
+                self.stopped_tracking_results.pop(camera_id, None)
+                self.stopped_detections.pop(camera_id, None)
+                self.stopped_frames.pop(camera_id, None)
             cam_state.speed_near_zero_frames = 0
         
         # Check if speed threshold reached (for stopping tracking)

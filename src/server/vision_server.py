@@ -738,14 +738,23 @@ class VisionServer:
             else:
                 self.logger.warning("Camera 3 not initialized, cannot start tracking")
 
-    def _send_first_detection_response(self, camera_id: int, detection: Detection, frame: np.ndarray):
-        """Send first detection response for cameras 1, 3 (use_area_scan=false)."""
+    def _send_first_detection_response(self, camera_id: int, detection: Detection, tracking_result: Dict, frame: np.ndarray):
+        """Send first detection response for cameras 1, 3 (use_area_scan=false).
+        
+        Args:
+            camera_id: Camera ID
+            detection: Detection object
+            tracking_result: Kalman filtered tracking result with position and orientation
+            frame: Frame image
+        """
         cam_state = self.camera_state_manager.get(camera_id)
         if cam_state and cam_state.response_sent:
             return  # Already sent
         
-        # Build response using ResponseBuilder
-        response_data = self.response_builder.build_first_detection_response(camera_id, detection, frame)
+        # Build response using ResponseBuilder with tracking result (Kalman filtered position)
+        response_data = self.response_builder.build_first_detection_response(
+            camera_id, detection, tracking_result, frame
+        )
         
         # Send response
         cmd = Command.START_CAM_1 + camera_id - 1
