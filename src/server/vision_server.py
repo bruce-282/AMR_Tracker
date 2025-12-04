@@ -76,6 +76,10 @@ class VisionServer:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
             self.logger.setLevel(logging.DEBUG)
+        
+        # Log configuration will be set after config is loaded
+        self.log_base_path = None
+        self.log_level = "DEBUG"
         self.host = host
         self.port = port
         self.socket = None
@@ -135,6 +139,22 @@ class VisionServer:
                     else:
                         self.debug_base_path = Path("C:/CMES_AI/Debug")
                         self.debug_base_path.mkdir(parents=True, exist_ok=True)
+                    
+                    # Set log configuration
+                    if "log_base_path" in execution_config:
+                        self.log_base_path = Path(execution_config["log_base_path"])
+                        self.log_base_path.mkdir(parents=True, exist_ok=True)
+                    else:
+                        self.log_base_path = Path("C:/CMES_AI/Log")
+                        self.log_base_path.mkdir(parents=True, exist_ok=True)
+                    
+                    if "log_level" in execution_config:
+                        self.log_level = execution_config["log_level"].upper()
+                    else:
+                        self.log_level = "DEBUG"
+                    
+                    # Setup file logging
+                    self._setup_file_logging()
                 else:
                     # Default paths if execution config not found
                     self.visualize_stream = True  # Default
@@ -144,6 +164,11 @@ class VisionServer:
                     self.summary_base_path.mkdir(parents=True, exist_ok=True)
                     self.debug_base_path = Path("C:/CMES_AI/Debug")
                     self.debug_base_path.mkdir(parents=True, exist_ok=True)
+                    self.log_base_path = Path("C:/CMES_AI/Log")
+                    self.log_base_path.mkdir(parents=True, exist_ok=True)
+                    self.log_level = "DEBUG"
+                    # Setup file logging
+                    self._setup_file_logging()
             else:
                 # Default paths if config file not found
                 self.visualize_stream = True  # Default
@@ -153,8 +178,13 @@ class VisionServer:
                 self.summary_base_path.mkdir(parents=True, exist_ok=True)
                 self.debug_base_path = Path("C:/CMES_AI/Debug")
                 self.debug_base_path.mkdir(parents=True, exist_ok=True)
+                self.log_base_path = Path("C:/CMES_AI/Log")
+                self.log_base_path.mkdir(parents=True, exist_ok=True)
+                self.log_level = "DEBUG"
                 self.tracking_config = DEFAULT_TRACKING_CONFIG
                 self.logger.warning(f"Failed to load config file for model: {selected_model}, using defaults")
+                # Setup file logging
+                self._setup_file_logging()
         else:
             # Default paths if no model selected
             self.visualize_stream = True  # Default
@@ -164,8 +194,13 @@ class VisionServer:
             self.summary_base_path.mkdir(parents=True, exist_ok=True)
             self.debug_base_path = Path("C:/CMES_AI/Debug")
             self.debug_base_path.mkdir(parents=True, exist_ok=True)
+            self.log_base_path = Path("C:/CMES_AI/Log")
+            self.log_base_path.mkdir(parents=True, exist_ok=True)
+            self.log_level = "DEBUG"
             self.tracking_config = DEFAULT_TRACKING_CONFIG
             self.logger.warning("No model selected in model_config.json, using defaults")
+            # Setup file logging
+            self._setup_file_logging()
         
         # System state
         self.vision_active = False
@@ -215,6 +250,42 @@ class VisionServer:
         
         # Protocol handler
         self.protocol = ProtocolHandler()
+    
+    def _setup_file_logging(self):
+        """Setup file logging based on config."""
+        if self.log_base_path is None:
+            return
+        
+        try:
+            from datetime import datetime
+            # Create log filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_file = self.log_base_path / f"vision_server_{timestamp}.log"
+            
+            # Create file handler
+            file_handler = logging.FileHandler(log_file, encoding='utf-8')
+            file_formatter = logging.Formatter(
+                '%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s: %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+            file_handler.setFormatter(file_formatter)
+            
+            # Set log level
+            log_level = getattr(logging, self.log_level, logging.DEBUG)
+            file_handler.setLevel(log_level)
+            
+            # Add file handler to root logger to capture all logs
+            root_logger = logging.getLogger()
+            root_logger.addHandler(file_handler)
+            root_logger.setLevel(log_level)
+            
+            # Also add to this logger
+            self.logger.addHandler(file_handler)
+            self.logger.setLevel(log_level)
+            
+            self.logger.info(f"File logging enabled: {log_file} (level: {self.log_level})")
+        except Exception as e:
+            self.logger.warning(f"Failed to setup file logging: {e}")
         
         # Periodic response threads (for area scan mode)
         self.periodic_response_threads: Dict[int, threading.Thread] = {}

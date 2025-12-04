@@ -183,10 +183,15 @@ class TrackingManager:
                     if not (not self.use_area_scan and camera_id in [1, 3]):
                         self.latest_detections[camera_id] = detections[0]
                     if camera_id in [1, 3] and not self.use_area_scan:
+                        # Mark that first detection has occurred
+                        if not cam_state.has_first_detection:
+                            cam_state.has_first_detection = True
                         cam_state.reset_detection_loss()
                 else:
                     if camera_id in [1, 3] and not self.use_area_scan:
-                        cam_state.increment_detection_loss()
+                        # Only increment if first detection has already occurred
+                        if cam_state.has_first_detection:
+                            cam_state.increment_detection_loss()
                 
                 # Display visualization
                 if self.visualize_stream:
@@ -401,10 +406,16 @@ class TrackingManager:
                 })
         
         # Check if detection lost
-        if not has_detection:
-            cam_state.increment_detection_loss()
-        else:
+        # Only increment detection loss after first detection has occurred
+        if has_detection:
+            # Mark that first detection has occurred
+            if not cam_state.has_first_detection:
+                cam_state.has_first_detection = True
             cam_state.reset_detection_loss()
+        else:
+            # Only increment if first detection has already occurred
+            if cam_state.has_first_detection:
+                cam_state.increment_detection_loss()
         
         logger.info(
             f"Camera 2: Trajectory tracking - "

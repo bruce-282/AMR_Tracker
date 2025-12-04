@@ -9,7 +9,7 @@
 
   "detector": {
     "model_path": "weights/zoom1/best.pt",
-    "confidence_threshold": 0.1,
+    "confidence_threshold": 0.6,
     "imgsz": 1280,
     "target_classes": [0]
   },
@@ -30,6 +30,8 @@
     "result_base_path": "C:/CMES_AI/Result",
     "summary_base_path": "C:/CMES_AI/Summary",
     "debug_base_path": "C:/CMES_AI/Debug",
+    "log_base_path": "C:/CMES_AI/Log",
+    "log_level": "DEBUG",
     "image_undistortion": true,
     "use_preset": "camera_tracking",
     "presets": {

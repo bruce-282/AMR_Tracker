@@ -34,6 +34,7 @@ class CameraState:
 
     # Detection loss tracking
     detection_loss_frames: int = 0
+    has_first_detection: bool = False  # Flag to track if first detection has occurred
 
     # Response tracking
     response_sent: bool = False
@@ -60,6 +61,7 @@ class CameraState:
         self.has_reached_speed_threshold = False
         self.speed_near_zero_frames = 0
         self.detection_loss_frames = 0
+        self.has_first_detection = False
         self.response_sent = False
         self.trajectory.clear()
         self.latest_detections.clear()
