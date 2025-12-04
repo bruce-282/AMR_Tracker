@@ -203,6 +203,7 @@ class CameraManager:
                 logger.warning(f"Camera {camera_id}: Failed to load calibration from camera config: {e}")
         
         # Create loader with config and undistortion parameters
+        # Pass camera_id as camera_index to load separate DLL for each Novitec camera
         loader = create_sequence_loader(
             source, 
             fps=fps, 
@@ -210,7 +211,8 @@ class CameraManager:
             config=camera_config,
             enable_undistortion=enable_undistortion,
             camera_matrix=camera_matrix,
-            dist_coeffs=dist_coeffs
+            dist_coeffs=dist_coeffs,
+            camera_index=camera_id  # Use camera_id as camera_index for DLL isolation
         )
         if loader is None:
             raise RuntimeError(f"Failed to create loader for camera {camera_id} (mode: {loader_mode}, source: {source})")
@@ -281,4 +283,94 @@ class CameraManager:
         """Release all camera resources."""
         for camera_id in list(self.camera_loaders.keys()):
             self.release_camera(camera_id)
+    
+    def stop_camera_stream(self, camera_id: int) -> bool:
+        """
+        Stop stream for a specific camera (Novitec cameras only).
+        
+        Args:
+            camera_id: Camera ID (1, 2, or 3)
+            
+        Returns:
+            True if stream was stopped successfully, False otherwise
+        """
+        if camera_id not in self.camera_loaders:
+            return False
+        
+        loader = self.camera_loaders[camera_id]
+        # Check if it's a NovitecCameraLoader
+        from src.utils.sequence_loader import NovitecCameraLoader
+        if isinstance(loader, NovitecCameraLoader):
+            try:
+                if loader.camera and hasattr(loader.camera, 'stop_stream'):
+                    if loader.camera._is_streaming:
+                        logger.info(f"Camera {camera_id}: Stopping stream...")
+                        if loader.camera.stop_stream():
+                            loader._stream_started = False
+                            loader.camera._is_streaming = False
+                            logger.info(f"Camera {camera_id}: Stream stopped successfully")
+                            return True
+                        else:
+                            logger.warning(f"Camera {camera_id}: stop_stream() returned False")
+                            return False
+                    else:
+                        logger.debug(f"Camera {camera_id}: Stream already stopped")
+                        return True
+            except Exception as e:
+                logger.warning(f"Camera {camera_id}: Failed to stop stream: {e}")
+                return False
+        
+        return False
+    
+    def start_camera_stream(self, camera_id: int) -> bool:
+        """
+        Start stream for a specific camera (Novitec cameras only).
+        
+        Each camera uses a separate DLL instance (cam1, cam2, cam3), so no need to
+        disconnect other cameras. Just start the stream for the requested camera.
+        
+        Args:
+            camera_id: Camera ID (1, 2, or 3)
+            
+        Returns:
+            True if stream was started successfully, False otherwise
+        """
+        if camera_id not in self.camera_loaders:
+            return False
+        
+        loader = self.camera_loaders[camera_id]
+        # Check if it's a NovitecCameraLoader
+        from src.utils.sequence_loader import NovitecCameraLoader
+        if isinstance(loader, NovitecCameraLoader):
+            try:
+                if loader.camera:
+                    # Start stream (each camera has its own DLL, so no conflicts)
+                    if hasattr(loader.camera, 'start_stream'):
+                        if not loader.camera._is_streaming:
+                            logger.info(f"Camera {camera_id}: Starting stream...")
+                            if loader.camera.start_stream():
+                                loader._stream_started = True
+                                loader.camera._is_streaming = True
+                                logger.info(f"Camera {camera_id}: Stream started successfully")
+                                return True
+                            else:
+                                logger.warning(f"Camera {camera_id}: start_stream() returned False")
+                                return False
+                        else:
+                            logger.debug(f"Camera {camera_id}: Stream already started")
+                            return True
+            except Exception as e:
+                logger.warning(f"Camera {camera_id}: Failed to start stream: {e}")
+                import traceback
+                traceback.print_exc()
+                return False
+        
+        return False
+    
+    def stop_all_camera_streams(self):
+        """Stop streams for all Novitec cameras."""
+        from src.utils.sequence_loader import NovitecCameraLoader
+        for camera_id, loader in self.camera_loaders.items():
+            if isinstance(loader, NovitecCameraLoader):
+                self.stop_camera_stream(camera_id)
 

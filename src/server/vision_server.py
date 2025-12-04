@@ -521,7 +521,10 @@ class VisionServer:
         """Start next camera after camera 1 or 3 finishes tracking."""
         if camera_id == 1:
             # Camera 1 -> Start camera 2
-            self.logger.info("Camera 1: Starting camera 2 tracking loop.")
+            self.logger.info("Camera 1: Stopping stream and starting camera 2 tracking loop.")
+            # Stop camera 1 stream via CameraManager
+            self.camera_manager.stop_camera_stream(1)
+            
             if 2 not in self.tracking_threads or not self.tracking_threads[2].is_alive():
                 product_model_name = self.model_config.get_selected_model()
                 if self._ensure_camera_initialized(2, product_model_name):
@@ -529,14 +532,21 @@ class VisionServer:
                     cam2_state = self.camera_state_manager.get_or_create(2)
                     cam2_state.reset_detection_loss()
                     self.camera2_trajectory_sent = False
+                    # Start camera 2 stream before starting tracking via CameraManager
+                    self.camera_manager.start_camera_stream(2)
                     self.tracking_manager.start_tracking(2)
 
         elif camera_id == 3:
             # Camera 3 -> Start camera 1 (cycle)
-            self.logger.info("Camera 3: Starting camera 1 tracking loop again (infinite cycle).")
+            self.logger.info("Camera 3: Stopping stream and starting camera 1 tracking loop again (infinite cycle).")
+            # Stop camera 3 stream via CameraManager
+            self.camera_manager.stop_camera_stream(3)
+            
             self._reset_camera_state(1)
             if 1 not in self.tracking_threads or not self.tracking_threads[1].is_alive():
                 if 1 in self.camera_loaders and 1 in self.trackers:
+                    # Start camera 1 stream before starting tracking via CameraManager
+                    self.camera_manager.start_camera_stream(1)
                     self.tracking_manager.start_tracking(1)
                     self.logger.info("Camera 1 tracking thread started (cycle restarted)")
                 else:
@@ -679,10 +689,15 @@ class VisionServer:
 
     def _start_camera_3_after_2(self):
         """Start camera 3 after camera 2 finishes tracking."""
-        self.logger.info("Camera 2: Starting camera 3 tracking loop.")
+        self.logger.info("Camera 2: Stopping stream and starting camera 3 tracking loop.")
+        # Stop camera 2 stream via CameraManager
+        self.camera_manager.stop_camera_stream(2)
+        
         if 3 not in self.tracking_threads or not self.tracking_threads[3].is_alive():
             self._reset_camera_state(3)
             if 3 in self.camera_loaders and 3 in self.trackers:
+                # Start camera 3 stream before starting tracking via CameraManager
+                self.camera_manager.start_camera_stream(3)
                 self.tracking_manager.start_tracking(3)
             else:
                 self.logger.warning("Camera 3 not initialized, cannot start tracking")
@@ -960,11 +975,11 @@ class VisionServer:
             self.logger.info(f"  Model file: {self.model_path}")
             self.logger.info(f"  Tracking config loaded: {tracking_config}")
             if calibration_data:
-                self.logger.info(f"  Calibration config loaded: {calibration_data.get('calibration_data_path', 'N/A')}")
+                self.logger.info(f"Calibration config loaded: {calibration_data.get('calibration_data_path', 'N/A')}")
                 if calibration_data.get('enable_undistortion', False):
-                    self.logger.info(f"  Image undistortion: ENABLED")
+                    self.logger.info(f"Image undistortion: ENABLED")
                 else:
-                    self.logger.info(f"  Image undistortion: DISABLED")
+                    self.logger.info(f"Image undistortion: DISABLED")
             
             # Pre-load pixel_sizes and distance_map_paths for all cameras from preset (efficient - done once at initialization)
             exec_config = self.config.execution if self.config and hasattr(self.config, 'execution') and self.config.execution else {}
@@ -1043,6 +1058,11 @@ class VisionServer:
             elapsed_time = time.time() - start_time
             self.logger.info(f"All cameras initialized. Total time: {elapsed_time:.3f}s")
             
+            # Stop all camera streams to ensure clean state (Novitec cameras only)
+            # This prevents the last initialized camera from having an active stream
+            self.camera_manager.stop_all_camera_streams()
+            self.logger.info("All camera streams stopped (clean state)")
+            
             # If use_area_scan is false, automatically start camera 1 tracking
             if not self.use_area_scan:
                 self.logger.info("use_area_scan=false: Automatically starting camera 1 tracking")
@@ -1050,6 +1070,9 @@ class VisionServer:
                 # Start camera 1 tracking thread
                 if 1 in self.trackers and 1 in self.camera_loaders:
                     if 1 not in self.tracking_threads or not self.tracking_threads[1].is_alive():
+                        # Explicitly start camera 1 stream before starting tracking
+                        # This ensures camera 1 stream is active and other streams are stopped
+                        self.camera_manager.start_camera_stream(1)
                         self.tracking_manager.start_tracking(1)
                         time.sleep(0.1)
             

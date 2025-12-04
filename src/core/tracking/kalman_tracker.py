@@ -220,6 +220,7 @@ class KalmanTracker:
         theta: Optional[float] = None,
         frame_number: int = 0,
         timestamp: Optional[float] = None,
+        image_size: Optional[Tuple[int, int]] = None,
     ):
         """
         Update tracker with new detection
@@ -230,6 +231,7 @@ class KalmanTracker:
             theta: Orientation angle in degrees (from detection mask, optional)
             frame_number: Current frame number
             timestamp: Timestamp
+            image_size: Image size (width, height) for boundary checking
 
         Returns:
             dict: Tracking results
@@ -242,6 +244,42 @@ class KalmanTracker:
         self.kf.predict()
 
         state_pre = self.kf.statePre.flatten()
+        
+        # Check if pixel position is outside 70% of image size (reset if too far)
+        if image_size is not None:
+            img_width, img_height = image_size
+            pred_cx = state_pre[0]
+            pred_cy = state_pre[1]
+            
+            # Calculate thresholds (70% of image size)
+            x_threshold_min = img_width * 0.3  # 30% from left edge
+            x_threshold_max = img_width * 0.7   # 70% from left edge (30% from right)
+            y_threshold_min = img_height * 0.3  # 30% from top edge
+            y_threshold_max = img_height * 0.7  # 70% from top edge (30% from bottom)
+            
+            # Check if position is outside the valid region
+            if (pred_cx < x_threshold_min or pred_cx > x_threshold_max or
+                pred_cy < y_threshold_min or pred_cy > y_threshold_max):
+                logger.warning(
+                    f"Track {self.track_id}: Position ({pred_cx:.1f}, {pred_cy:.1f}) "
+                    f"is outside 70% of image size ({img_width}x{img_height}), resetting tracker"
+                )
+                self.reset()
+                # Return special flag to indicate reset - will need to reinitialize with first detection
+                return {
+                    "position": {"x": 0, "y": 0, "x_mm": 0, "y_mm": 0},
+                    "orientation": {"theta_deg": 0, "theta_rad": 0, "theta_normalized_deg": 0},
+                    "velocity": {
+                        "linear_speed_pix_per_sec": 0,
+                        "linear_speed_mm_per_sec": 0,
+                        "angular_speed_rad_per_sec": 0,
+                        "angular_speed_deg_per_sec": 0,
+                    },
+                    "bbox": None,
+                    "trajectory": [],
+                    "track_id": self.track_id,
+                    "reset_required": True,  # Flag to indicate reset
+                }
 
         if bbox is not None:
             # Update detection tracking
@@ -429,6 +467,38 @@ class KalmanTracker:
             # Update trajectory with predicted position even when no detection
             pred_cx = state_post[0]
             pred_cy = state_post[1]
+            
+            # Check if predicted position is outside 70% of image size (reset if too far)
+            if image_size is not None:
+                img_width, img_height = image_size
+                x_threshold_min = img_width * 0.3
+                x_threshold_max = img_width * 0.7
+                y_threshold_min = img_height * 0.3
+                y_threshold_max = img_height * 0.7
+                
+                if (pred_cx < x_threshold_min or pred_cx > x_threshold_max or
+                    pred_cy < y_threshold_min or pred_cy > y_threshold_max):
+                    logger.warning(
+                        f"Track {self.track_id}: Predicted position ({pred_cx:.1f}, {pred_cy:.1f}) "
+                        f"is outside 70% of image size ({img_width}x{img_height}), resetting tracker"
+                    )
+                    self.reset()
+                    # Return special flag to indicate reset
+                    return {
+                        "position": {"x": 0, "y": 0, "x_mm": 0, "y_mm": 0},
+                        "orientation": {"theta_deg": 0, "theta_rad": 0, "theta_normalized_deg": 0},
+                        "velocity": {
+                            "linear_speed_pix_per_sec": 0,
+                            "linear_speed_mm_per_sec": 0,
+                            "angular_speed_rad_per_sec": 0,
+                            "angular_speed_deg_per_sec": 0,
+                        },
+                        "bbox": None,
+                        "trajectory": [],
+                        "track_id": self.track_id,
+                        "reset_required": True,
+                    }
+            
             self.trajectory.append((pred_cx, pred_cy))
             
             logger.debug(

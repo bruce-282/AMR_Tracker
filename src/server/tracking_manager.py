@@ -225,6 +225,12 @@ class TrackingManager:
         
         logger.info(f"Camera {camera_id} tracking stopped")
         
+        # Reset camera state before cleanup
+        cam_state = self.camera_state_manager.get(camera_id)
+        if cam_state:
+            cam_state.has_first_detection = False
+            logger.debug(f"Camera {camera_id}: has_first_detection reset to False")
+        
         # Reset loader to beginning if it's a video/sequence loader
         if loader and hasattr(loader, 'reset'):
             try:

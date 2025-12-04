@@ -272,11 +272,14 @@ class EnhancedAMRTracker:
                     self.next_track_id += 1
 
                     # Update with first detection
+                    # Get image size for boundary checking
+                    img_height, img_width = frame.shape[:2]
                     tracking_result = self.tracker.update(
                         bbox=best_detection.bbox,
                         center=best_detection.oriented_box_info["center"],
                         frame_number=frame_number,
                         theta=best_detection.oriented_box_info["angle"],
+                        image_size=(img_width, img_height),
                     )
                     tracking_result["detection_type"] = getattr(
                         best_detection, "class_name", "unknown"
@@ -301,12 +304,26 @@ class EnhancedAMRTracker:
                         self.track_id = None
                         return results
 
+                    # Get image size for boundary checking
+                    img_height, img_width = frame.shape[:2]
+                    # Get image size for boundary checking
+                    img_height, img_width = frame.shape[:2]
                     tracking_result = self.tracker.update(
                         bbox=best_detection.bbox,
                         center=best_detection.oriented_box_info["center"],
                         theta=best_detection.oriented_box_info["angle"],
                         frame_number=frame_number,
+                        image_size=(img_width, img_height),
                     )
+                    
+                    # Check if reset was required (position outside 70% of image)
+                    if tracking_result.get("reset_required", False):
+                        logger.info(f"Tracker reset due to position outside bounds, reinitializing with next detection")
+                        self.tracker.reset()
+                        self.track_id = None
+                        # Don't add this result, wait for next detection to reinitialize
+                        return results
+                    
                     tracking_result["detection_type"] = "predicted"
                     tracking_result["track_id"] = self.track_id
                     tracking_result["color"] = self.tracker.color
@@ -325,12 +342,24 @@ class EnhancedAMRTracker:
                 # No detections: predict with primary tracker
                 if self.track_id is not None:
                     if self.tracker is not None:
+                        # Get image size for boundary checking
+                        img_height, img_width = frame.shape[:2]
                         tracking_result = self.tracker.update(
                             bbox=None,
                             center=None,
                             theta=None,
                             frame_number=frame_number,
+                            image_size=(img_width, img_height),
                         )
+                        
+                        # Check if reset was required (position outside 70% of image)
+                        if tracking_result.get("reset_required", False):
+                            logger.info(f"Tracker reset due to position outside bounds, reinitializing with next detection")
+                            self.tracker.reset()
+                            self.track_id = None
+                            # Don't add this result, wait for next detection to reinitialize
+                            return results
+                        
                         tracking_result["detection_type"] = "predicted"
                         tracking_result["track_id"] = self.track_id
                         tracking_result["color"] = self.tracker.color

@@ -220,7 +220,7 @@ class YOLODetector:
             return detections
 
         except Exception as e:
-            print(f"⚠ YOLO detection failed: {e}")
+            #print(f"⚠ YOLO detection failed: {e}")
             return []
 
     def _get_class_name(self, class_id: int) -> str:

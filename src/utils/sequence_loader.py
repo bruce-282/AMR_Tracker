@@ -263,25 +263,15 @@ class NovitecCameraLoader(BaseLoader):
     
     @classmethod
     def _stop_all_other_streams(cls, current_device_id: str):
-        """현재 카메라를 제외한 다른 모든 카메라의 스트림 중지 및 disconnect"""
-        for device_id, loader in cls._all_instances.items():
-            if device_id != current_device_id and getattr(loader, '_stream_started', False):
-                try:
-                    if loader.camera:
-                        print(f"[INFO] Stopping and disconnecting {device_id} (switching to {current_device_id})")
-                        # 스트림 중지
-                        if hasattr(loader.camera, 'stop_stream'):
-                            loader.camera.stop_stream()
-                        # 완전히 disconnect
-                        if hasattr(loader.camera, 'disconnect'):
-                            loader.camera.disconnect()
-                        loader._stream_started = False
-                        loader.camera._is_streaming = False
-                        loader._connected = False
-                except Exception as e:
-                    print(f"[WARN] Failed to stop/disconnect {device_id}: {e}")
+        """
+        [DEPRECATED] No longer needed since each camera uses a separate DLL.
+        Kept for backward compatibility but does nothing.
+        """
+        # Each camera now uses a separate DLL (cam1, cam2, cam3), so no need to
+        # stop other streams. All cameras can stream independently.
+        pass
 
-    def __init__(self, device_id: str, config: Optional[dict] = None, enable_undistortion: bool = False, camera_matrix: Optional[np.ndarray] = None, dist_coeffs: Optional[np.ndarray] = None):
+    def __init__(self, device_id: str, config: Optional[dict] = None, enable_undistortion: bool = False, camera_matrix: Optional[np.ndarray] = None, dist_coeffs: Optional[np.ndarray] = None, camera_index: Optional[int] = None):
         """
         Initialize Novitec camera loader.
 
@@ -291,6 +281,8 @@ class NovitecCameraLoader(BaseLoader):
             enable_undistortion: Whether to enable undistortion
             camera_matrix: Camera intrinsic matrix for undistortion
             dist_coeffs: Distortion coefficients for undistortion
+            camera_index: Camera index (1, 2, or 3) to use separate DLL instances.
+                         Each camera_index loads a separate DLL to avoid global state conflicts.
         """
         super().__init__(enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
 
@@ -301,6 +293,7 @@ class NovitecCameraLoader(BaseLoader):
 
         self.device_id = device_id
         self.config = config or {}
+        self.camera_index = camera_index  # Store camera_index for DLL isolation
         self.camera: Optional[NovitecCamera] = None
         self.initialized = False
 
@@ -312,13 +305,14 @@ class NovitecCameraLoader(BaseLoader):
     def _initialize(self):
         """Initialize Novitec camera"""
         
-        print(f"[INFO] NovitecCameraLoader._initialize() - device_id={self.device_id}, id(self)={id(self)}")
+        print(f"[INFO] NovitecCameraLoader._initialize() - device_id={self.device_id}, camera_index={self.camera_index}, id(self)={id(self)}")
 
-        # Create NovitecCamera instance
+        # Create NovitecCamera instance with camera_index for DLL isolation
         self.camera = NovitecCamera(
             device_id=self.device_id,
             device_ip=None,  # Not used by Novitec
             config=self.config,
+            camera_index=self.camera_index,  # Pass camera_index for separate DLL
         )
         if not self.camera:
             raise RuntimeError(f"Failed to create Novitec camera: {self.device_id}")
@@ -356,17 +350,10 @@ class NovitecCameraLoader(BaseLoader):
 
         try:
             # 스트림이 시작되지 않았으면 시작
+            # NOTE: Each camera uses a separate DLL (cam1, cam2, cam3), so no need for
+            # complex switching logic. Just start stream if not already started.
             if not getattr(self, '_stream_started', False):
-                print(f"[INFO] Starting stream for {self.device_id}...")
-                
-                # disconnect 상태면 다시 connect
-                if not getattr(self, '_connected', True) or not self.camera.is_connected:
-                    print(f"[INFO] Re-connecting camera {self.device_id}...")
-                    if not self.camera.connect():
-                        print(f"[ERROR] Failed to re-connect camera {self.device_id}")
-                        return False, None
-                    self._connected = True
-                    print(f"[INFO] Camera {self.device_id} re-connected successfully")
+                print(f"[INFO] Starting stream for {self.device_id} (camera_index={self.camera_index})...")
                 
                 stream_result = self.camera.start_stream()
                 if stream_result:
@@ -379,28 +366,6 @@ class NovitecCameraLoader(BaseLoader):
                     self.camera._is_streaming = True
                     print(f"[WARN] start_stream returned False for {self.device_id}, but continuing...")
             
-            # 매번 capture() 전에 해당 디바이스로 확실히 전환 (Novitec SDK가 전역 상태 사용 가능)
-            # 다른 카메라가 활성화되어 있으면 disconnect 후 reconnect
-            if not getattr(self, '_last_active_device', None) == self.device_id:
-                print(f"[INFO] Switching to device {self.device_id} (was {getattr(self, '_last_active_device', 'None')})")
-                # 다른 카메라들 중지
-                NovitecCameraLoader._stop_all_other_streams(self.device_id)
-                # 현재 카메라 reconnect (SDK 내부 상태 리셋)
-                if self.camera.is_connected:
-                    self.camera.disconnect()
-                if not self.camera.connect():
-                    print(f"[ERROR] Failed to connect to {self.device_id}")
-                    return False, None
-                # 스트림 재시작
-                if not self.camera.start_stream():
-                    print(f"[WARN] start_stream failed for {self.device_id}, but continuing...")
-                self._stream_started = True
-                self.camera._is_streaming = True
-                self._last_active_device = self.device_id
-                # 스트림이 안정화될 때까지 대기 (첫 프레임 준비 시간)
-                time.sleep(0.1)
-                print(f"[INFO] Switched to device {self.device_id}")
-            
             # 첫 프레임에서만 로그 출력
             if self.frame_number == 0:
                 device_obj_id = id(self.camera._device) if hasattr(self.camera, '_device') and self.camera._device else 'N/A'
@@ -411,18 +376,38 @@ class NovitecCameraLoader(BaseLoader):
                 device_obj_id = id(self.camera._device) if hasattr(self.camera, '_device') and self.camera._device else 'N/A'
                 print(f"[DEBUG] capture() called on device_id={self.device_id}, id(_device)={device_obj_id}")
             
-            # capture() 실패 시 재시도 (최대 3회)
-            max_retries = 3
+            # capture() 실패 시 재시도 (최대 10회, 점진적 대기 시간 증가)
+            max_retries = 10
             data = None
+            consecutive_failures = getattr(self, '_consecutive_failures', 0)
+            
             for retry in range(max_retries):
-                data = self.camera.capture(output_formats=["image"])
-                if data and "image" in data:
-                    break
+                try:
+                    data = self.camera.capture(output_formats=["image"])
+                    if data and "image" in data:
+                        # 성공 시 실패 카운터 리셋
+                        self._consecutive_failures = 0
+                        break
+                except Exception as e:
+                    print(f"[WARN] capture() exception for {self.device_id}: {e}")
+                
                 if retry < max_retries - 1:
-                    print(f"[WARN] capture() failed for {self.device_id}, retrying ({retry+1}/{max_retries})...")
-                    time.sleep(0.05)  # 짧은 대기 후 재시도
+                    
+                    wait_time = min(0.1 * (retry + 1), 1.0)
+                    print(f"[WARN] capture() failed for {self.device_id}, retrying ({retry+1}/{max_retries}) after {wait_time:.1f}s...")
+                    time.sleep(wait_time)
 
             if not data or "image" not in data:
+                consecutive_failures += 1
+                self._consecutive_failures = consecutive_failures
+                
+                # 연속 실패가 너무 많으면 (10회 이상) 더 긴 대기
+                if consecutive_failures >= 10:
+                    print(f"[WARN] Too many consecutive failures ({consecutive_failures}) for {self.device_id}, waiting 0.5s...")
+                    time.sleep(0.5)
+                    self._consecutive_failures = 0  # 리셋
+                
+                # 프레임 건너뛰기 (False 반환하여 다음 프레임으로 진행)
                 return False, None
 
             frame = data["image"]
@@ -481,7 +466,8 @@ def create_sequence_loader(
     config: Optional[dict] = None,
     enable_undistortion: bool = False,
     camera_matrix: Optional[np.ndarray] = None,
-    dist_coeffs: Optional[np.ndarray] = None
+    dist_coeffs: Optional[np.ndarray] = None,
+    camera_index: Optional[int] = None
 ) -> Optional[BaseLoader]:
     """
     Create appropriate sequence loader based on source and mode
@@ -494,13 +480,14 @@ def create_sequence_loader(
         enable_undistortion: Whether to enable undistortion
         camera_matrix: Camera intrinsic matrix for undistortion
         dist_coeffs: Distortion coefficients for undistortion
+        camera_index: Camera index (1, 2, or 3) for Novitec DLL isolation
 
     Returns:
         Appropriate loader instance or None if failed
     """
     try:
         if loader_mode == "camera":
-            return create_camera_device_loader(source=source, config=config, enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
+            return create_camera_device_loader(source=source, config=config, enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, camera_index=camera_index)
         elif loader_mode == "video":
             return create_video_file_loader(source=source, enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
         elif loader_mode == "sequence":
@@ -515,13 +502,13 @@ def create_sequence_loader(
 
 
 def create_camera_device_loader(
-    source: str, config: Optional[dict] = None, enable_undistortion: bool = False, camera_matrix: Optional[np.ndarray] = None, dist_coeffs: Optional[np.ndarray] = None
+    source: str, config: Optional[dict] = None, enable_undistortion: bool = False, camera_matrix: Optional[np.ndarray] = None, dist_coeffs: Optional[np.ndarray] = None, camera_index: Optional[int] = None
 ) -> Optional[BaseLoader]:
     """Create camera device loader with Novitec fallback"""
 
     try:
-        loader = NovitecCameraLoader(device_id=source, config=config, enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
-        print("[OK] Novitec camera loader created")
+        loader = NovitecCameraLoader(device_id=source, config=config, enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, camera_index=camera_index)
+        print(f"[OK] Novitec camera loader created (camera_index={camera_index})")
         return loader
     except Exception as e:
         print(f"Novitec camera loader failed: {e}")

@@ -9,7 +9,7 @@
 
   "detector": {
     "model_path": "weights/zoom1/best.pt",
-    "confidence_threshold": 0.6,
+    "confidence_threshold": 0.5,
     "imgsz": 1280,
     "target_classes": [0]
   },
