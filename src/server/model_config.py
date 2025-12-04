@@ -102,7 +102,7 @@ class ModelConfig:
                 "camera_2": 1,
                 "camera_3": 2,
                 "detector": {
-                    "model_path": str(self.weights_dir / self.DEFAULT_MODEL_FILE),
+                    "model_path": str(self.weights_path / self.DEFAULT_MODEL_FILE),
                     "confidence_threshold": 0.2,
                     "imgsz": 640,
                     "target_classes": [0]
@@ -122,7 +122,7 @@ class ModelConfig:
                     if not detector_config:
                         # Backward compatibility: if detector not nested, use flat structure
                         detector_config = {
-                            "model_path": config.get("model_path", str(self.weights_dir / product_model_name / self.DEFAULT_MODEL_FILE)),
+                            "model_path": config.get("model_path", str(self.weights_path / product_model_name / self.DEFAULT_MODEL_FILE)),
                             "confidence_threshold": config.get("confidence_threshold", 0.2),
                             "imgsz": config.get("imgsz", 640),
                             "target_classes": config.get("target_classes", [0])
@@ -138,7 +138,7 @@ class ModelConfig:
                 print(f"[WARN] Failed to load product config from {config_path}: {e}")
         
         # Fallback to default path structure
-        model_path = self.weights_dir / product_model_name / self.DEFAULT_MODEL_FILE
+        model_path = self.weights_path / product_model_name / self.DEFAULT_MODEL_FILE
         return {
             "camera_1": 0,
             "camera_2": 1,
@@ -179,7 +179,7 @@ class ModelConfig:
         """
         config = self.get_product_config(product_model_name)
         detector_config = config.get("detector", {})
-        model_path_str = detector_config.get("model_path", str(self.weights_dir / self.DEFAULT_MODEL_FILE))
+        model_path_str = detector_config.get("model_path", str(self.weights_path / self.DEFAULT_MODEL_FILE))
         return Path(model_path_str)
     
     def get_detector_config(self, product_model_name: Optional[str] = None) -> Dict[str, Any]:

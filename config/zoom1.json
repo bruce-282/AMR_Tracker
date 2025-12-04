@@ -45,23 +45,41 @@
           "id": "I3ZEB19C",
           "config": "config/camera1_config.json",
           "measurement": {
-              "fps": 30,
-              "pixel_size": 1.0
+            "PixelSize": {
+              "x": 0.9408439030002378,
+              "y": 0.8028472000110769
+            },
+              "Homography": [
+                [
+                  1.1574828500833325,
+                  0.04875337263048552,
+                  -123.63269971267775
+                ],
+                [
+                  -0.010642610373121912,
+                  1.028874175297412,
+                  11.376509822862205
+                ],
+                [
+                  4.1410938317329046e-05,
+                  -2.188210059557453e-06,
+                  1.0
+                ]
+              ]
             }
         },
         "camera_2": {
           "id": "I3ZEB1AD",
           "config": "config/camera2_config.json",
           "measurement": {
-              "fps": 30,
               "pixel_size": 1.0
+              
             }
         },
         "camera_3": {
           "id": "I3ZEB19D",
           "config": "config/camera3_config.json",
           "measurement": {
-              "fps": 30,
               "pixel_size": 1.0
             }
         }
@@ -70,26 +88,67 @@
         "loader_mode": "video",
         "camera_1": {
           "id": "data/251204_HD_AGV_Video/CAM1_day4_15PM_1.mp4",
-          "config": "config/video_config.json",
+          "config": "config/camera1_config.json",
           "measurement": {
-              "fps": 30,
-              "pixel_size": 0.5
+            "PixelSize": {
+              "x": 0.9408439030002378,
+              "y": 0.8028472000110769,
+              "average": 0.8718455515056573,
+              "unit": "mm/pixel"
+            },
+              "Homography": [
+                [
+                  1.1574828500833325,
+                  0.04875337263048552,
+                  -123.63269971267775
+                ],
+                [
+                  -0.010642610373121912,
+                  1.028874175297412,
+                  11.376509822862205
+                ],
+                [
+                  4.1410938317329046e-05,
+                  -2.188210059557453e-06,
+                  1.0
+                ]
+              ]
             }
         },
         "camera_2": {
           "id": "data/251204_HD_AGV_Video/CAM2_day4_15PM_1.mp4",
-          "config": "config/video_config.json",
+          "config": "config/camera2_config.json",
           "measurement": {
-              "fps": 30,
               "pixel_size": 0.5
             }
         },
         "camera_3": {
           "id": "data/251204_HD_AGV_Video/CAM3_day4_15PM_1.mp4",
-          "config": "config/video_config.json",
+          "config": "config/camera3_config.json",
           "measurement": {
-              "fps": 30,
-              "pixel_size": 0.5
+              "PixelSize": {
+                "x": 0.9322110434375932,
+                "y": 0.7903112264110468,
+                "average": 0.86126113492432,
+                "unit": "mm/pixel"
+              },
+              "Homography": [
+                [
+                  1.1220597850510698,
+                  -0.020519104632945144,
+                  -65.6089107273149
+                ],
+                [
+                  0.049671833942140295,
+                  1.019302047563938,
+                  -35.619604133508915
+                ],
+                [
+                  3.361729861153648e-05,
+                  -3.0673746250026625e-06,
+                  1.0
+                ]
+              ]
             }
         }
       },

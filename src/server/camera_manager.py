@@ -6,7 +6,7 @@ from typing import Dict, Optional, Tuple, Any
 import cv2
 
 from src.utils.sequence_loader import create_sequence_loader, BaseLoader
-from src.utils.config_loader import get_camera_config, get_camera_pixel_sizes, get_camera_distance_map_paths
+from src.utils.config_loader import get_camera_config, get_camera_pixel_sizes, get_camera_distance_map_paths, get_camera_homographies
 from src.core.amr_tracker import EnhancedAMRTracker
 from .model_config import ModelConfig
 from config import SystemConfig
@@ -40,6 +40,7 @@ class CameraManager:
         self.amr_trackers: Dict[int, EnhancedAMRTracker] = {}
         self.camera_pixel_sizes: Dict[int, float] = {}
         self.camera_distance_map_paths: Dict[int, Optional[str]] = {}
+        self.camera_homographies: Dict[int, Optional[Any]] = {}  # 호모그래피 행렬
         self.frame_numbers: Dict[int, int] = {}
         self.camera_status: Dict[int, bool] = {1: False, 2: False, 3: False}
         
@@ -115,12 +116,94 @@ class CameraManager:
             return self.camera_distance_map_paths[camera_id]
         return None
     
+    def load_camera_homographies(self, preset_name: Optional[str] = None, product_model_name: Optional[str] = None):
+        """Load homography matrices from preset config (zoom1.json) or camera config files."""
+        import json
+        import numpy as np
+        
+        # 1. 먼저 zoom1.json의 measurement에서 Homography 로드 시도
+        if not product_model_name:
+            product_model_name = self.model_config.get_selected_model()
+        
+        homographies_from_preset = get_camera_homographies(
+            product_model_name,
+            None,  # main_config_execution (not used)
+            preset_name or self.preset_name
+        )
+        
+        for camera_id in [1, 2, 3]:
+            homography_list = homographies_from_preset.get(camera_id)
+            
+            if homography_list:
+                # Preset에서 Homography를 찾음
+                self.camera_homographies[camera_id] = np.array(homography_list, dtype=np.float64)
+                logger.info(f"Camera {camera_id}: Homography loaded from preset config")
+                continue
+            
+            # 2. Preset에 없으면 camera_config.json의 calibration에서 로드 시도 (fallback)
+            _, _, _, config_path = self.get_camera_config(camera_id, product_model_name)
+            
+            if config_path and Path(config_path).exists():
+                try:
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        camera_config = json.load(f)
+                    
+                    calibration = camera_config.get("calibration", {})
+                    homography_list = calibration.get("Homography")
+                    
+                    if homography_list:
+                        self.camera_homographies[camera_id] = np.array(homography_list, dtype=np.float64)
+                        logger.info(f"Camera {camera_id}: Homography loaded from {config_path}")
+                    else:
+                        self.camera_homographies[camera_id] = None
+                        logger.debug(f"Camera {camera_id}: No Homography configured")
+                except Exception as e:
+                    self.camera_homographies[camera_id] = None
+                    logger.warning(f"Camera {camera_id}: Failed to load Homography: {e}")
+            else:
+                self.camera_homographies[camera_id] = None
+    
+    def get_homography(self, camera_id: int) -> Optional[Any]:
+        """Get homography matrix for a camera."""
+        return self.camera_homographies.get(camera_id)
+    
+    def warp_frame(self, camera_id: int, frame) -> Any:
+        """Apply homography transformation to frame if available."""
+        homography = self.get_homography(camera_id)
+        if homography is not None:
+            h, w = frame.shape[:2]
+            warped = cv2.warpPerspective(frame, homography, (w, h), 
+                                        flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+            return warped
+        # 호모그래피가 없으면 원본 프레임 반환 (경고 로그 없음)
+        return frame
+    
     def get_pixel_size(self, camera_id: Optional[int] = None) -> float:
-        """Get pixel size for a camera."""
+        """Get average pixel size for a camera (for backward compatibility)."""
         if camera_id and camera_id in self.camera_pixel_sizes:
-            return self.camera_pixel_sizes[camera_id]
+            pixel_size_data = self.camera_pixel_sizes[camera_id]
+            if isinstance(pixel_size_data, dict):
+                return pixel_size_data.get('average', 1.0)
+            return pixel_size_data
         
         return self.config.measurement.pixel_size if self.config and hasattr(self.config, 'measurement') else 1.0
+    
+    def get_pixel_size_dict(self, camera_id: Optional[int] = None) -> Dict[str, float]:
+        """Get pixel size dict for a camera (x, y, average)."""
+        default_dict = {'x': 1.0, 'y': 1.0, 'average': 1.0}
+        
+        if camera_id and camera_id in self.camera_pixel_sizes:
+            pixel_size_data = self.camera_pixel_sizes[camera_id]
+            if isinstance(pixel_size_data, dict):
+                return pixel_size_data
+            # 단일 값이면 dict로 변환
+            return {'x': pixel_size_data, 'y': pixel_size_data, 'average': pixel_size_data}
+        
+        if self.config and hasattr(self.config, 'measurement'):
+            ps = self.config.measurement.pixel_size
+            return {'x': ps, 'y': ps, 'average': ps}
+        
+        return default_dict
     
     def get_fps_from_loader(self, loader: BaseLoader) -> float:
         """Get FPS from loader or config."""
@@ -232,7 +315,7 @@ class CameraManager:
         self.camera_status[camera_id] = True
         
         # Initialize EnhancedAMRTracker
-        pixel_size = self.get_pixel_size(camera_id)
+        pixel_size = self.get_pixel_size_dict(camera_id)
         fps = self.get_fps_from_loader(loader)
         
         model_path_str = str(model_path) if model_path else None

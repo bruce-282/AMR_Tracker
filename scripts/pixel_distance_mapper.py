@@ -524,6 +524,18 @@ if __name__ == "__main__":
         default="data/homography.npz",
         help="호모그래피 및 distance map 저장 경로"
     )
+    parser.add_argument(
+        "--real-dist-x",
+        type=float,
+        default=2000,
+        help="점1-점2 간의 실제 물리적 거리 (mm)"
+    )
+    parser.add_argument(
+        "--real-dist-y",
+        type=float,
+        default=1000,
+        help="점1-점3 간의 실제 물리적 거리 (mm)"
+    )
     args = parser.parse_args()
     
     # ===== 설정 =====
@@ -592,10 +604,33 @@ if __name__ == "__main__":
     ])
     
     print(f"\n=== World 좌표 (자동 계산) ===")
-    print(f"  점1-점2 거리: {dist_x:.1f}px")
-    print(f"  점1-점3 거리: {dist_y:.1f}px")
+    print(f"  점1-점2 픽셀 거리: {dist_x:.1f}px")
+    print(f"  점1-점3 픽셀 거리: {dist_y:.1f}px")
     for i, (img_pt, world_pt) in enumerate(zip(image_points, world_points)):
         print(f"  점 {i+1}: 이미지({img_pt[0]:.1f}, {img_pt[1]:.1f}) -> World({world_pt[0]:.1f}, {world_pt[1]:.1f})")
+    
+    # ===== Pixel Size 계산 =====
+    pixel_size_x = None
+    pixel_size_y = None
+    pixel_size_avg = None
+    
+    if args.real_dist_x is not None and args.real_dist_y is not None:
+        pixel_size_x = args.real_dist_x / dist_x  # mm/pixel
+        pixel_size_y = args.real_dist_y / dist_y  # mm/pixel
+        pixel_size_avg = (pixel_size_x + pixel_size_y) / 2
+        
+        print(f"\n=== Pixel Size 계산 ===")
+        print(f"  점1-점2 실제 거리: {args.real_dist_x:.1f}mm")
+        print(f"  점1-점3 실제 거리: {args.real_dist_y:.1f}mm")
+        print(f"  Pixel Size (X축): {pixel_size_x:.6f} mm/pixel")
+        print(f"  Pixel Size (Y축): {pixel_size_y:.6f} mm/pixel")
+        print(f"  Pixel Size (평균): {pixel_size_avg:.6f} mm/pixel")
+        
+        if abs(pixel_size_x - pixel_size_y) / pixel_size_avg > 0.1:
+            print(f"  ⚠ 경고: X/Y pixel size 차이가 10% 이상입니다. 호모그래피 적용 후에는 균일해집니다.")
+    elif args.real_dist_x is not None or args.real_dist_y is not None:
+        print(f"\n=== Pixel Size 계산 ===")
+        print(f"  ⚠ --real-dist-x와 --real-dist-y를 모두 입력해야 pixel size를 계산할 수 있습니다.")
     
     # ===== 캘리브레이션 =====
     mapper = PixelDistanceMapper(camera_matrix, dist_coeffs)
@@ -604,21 +639,21 @@ if __name__ == "__main__":
     if not success:
         exit(1)
     
-    # ===== Distance Map 저장 (선택적) =====
-    # 저장할 경로 설정 (None이면 저장 안 함)
-    DISTANCE_MAP_PATH = "data/distance_map.npz"
+    # # ===== Distance Map 저장 (선택적) =====
+    # # 저장할 경로 설정 (None이면 저장 안 함)
+    # DISTANCE_MAP_PATH = "data/distance_map.npz"
     
-    if DISTANCE_MAP_PATH:
-        print(f"\n=== Distance Map 저장 ===")
-        success = mapper.save_distance_map(DISTANCE_MAP_PATH)
-        if success:
-            print(f"✓ 저장 완료: {DISTANCE_MAP_PATH}")
-        else:
-            print(f"✗ 저장 실패: {DISTANCE_MAP_PATH}")
-    else:
-        print(f"\n=== Distance Map 저장 건너뜀 ===")
-        print(f"  저장하려면 DISTANCE_MAP_PATH를 설정하세요.")
-        print(f"  예: DISTANCE_MAP_PATH = 'config/distance_map_camera1.npz'")
+    # if DISTANCE_MAP_PATH:
+    #     print(f"\n=== Distance Map 저장 ===")
+    #     success = mapper.save_distance_map(DISTANCE_MAP_PATH)
+    #     if success:
+    #         print(f"✓ 저장 완료: {DISTANCE_MAP_PATH}")
+    #     else:
+    #         print(f"✗ 저장 실패: {DISTANCE_MAP_PATH}")
+    # else:
+    #     print(f"\n=== Distance Map 저장 건너뜀 ===")
+    #     print(f"  저장하려면 DISTANCE_MAP_PATH를 설정하세요.")
+    #     print(f"  예: DISTANCE_MAP_PATH = 'config/distance_map_camera1.npz'")
     
     # ===== 호모그래피 Warp 이미지 저장 =====
     print(f"\n=== 호모그래피 Warp 이미지 생성 ===")
@@ -641,40 +676,72 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
     
-    # ===== 호모그래피를 camera_config.json에 저장 =====
-    print(f"\n=== 호모그래피를 카메라 설정 파일에 저장 ===")
+    # ===== 호모그래피와 Pixel Size를 별도 JSON 파일에 저장 =====
+    # 출력 파일명: camera1_config.json -> camera1_homography.json
+    homography_output_path = Path(CAMERA_CONFIG_PATH).parent / f"{Path(CAMERA_CONFIG_PATH).stem}_homography.json"
+    
+    print(f"\n=== 호모그래피 캘리브레이션 데이터 저장 ===")
     try:
         # 호모그래피 행렬을 리스트로 변환
         homography_list = mapper.H.tolist()
         
-        # 기존 설정 파일에 호모그래피 추가
-        camera_config["calibration"]["Homography"] = homography_list
+        # 별도 파일에 저장할 데이터
+        homography_data = {
+            "Homography": homography_list,
+            "image_path": str(IMAGE_PATH),
+            "camera_config_path": str(CAMERA_CONFIG_PATH)
+        }
+        
+        # Pixel Size가 계산되었으면 같이 저장
+        if pixel_size_avg is not None:
+            homography_data["PixelSize"] = {
+                "x": pixel_size_x,
+                "y": pixel_size_y,
+                "average": pixel_size_avg,
+                "unit": "mm/pixel"
+            }
+            homography_data["RealDistance"] = {
+                "x": args.real_dist_x,
+                "y": args.real_dist_y,
+                "unit": "mm"
+            }
+            homography_data["PixelDistance"] = {
+                "x": dist_x,
+                "y": dist_y,
+                "unit": "pixel"
+            }
         
         # 저장
-        with open(CAMERA_CONFIG_PATH, 'w', encoding='utf-8') as f:
-            json.dump(camera_config, f, indent=2, ensure_ascii=False)
+        with open(homography_output_path, 'w', encoding='utf-8') as f:
+            json.dump(homography_data, f, indent=2, ensure_ascii=False)
         
-        print(f"✓ 호모그래피 저장 완료: {CAMERA_CONFIG_PATH}")
+        print(f"✓ 저장 완료: {homography_output_path}")
         print(f"  Homography (3x3):")
         for row in homography_list:
             print(f"    [{row[0]:.6f}, {row[1]:.6f}, {row[2]:.6f}]")
+        
+        if pixel_size_avg is not None:
+            print(f"  PixelSize:")
+            print(f"    X: {pixel_size_x:.6f} mm/pixel")
+            print(f"    Y: {pixel_size_y:.6f} mm/pixel")
+            print(f"    Average: {pixel_size_avg:.6f} mm/pixel")
     except Exception as e:
-        print(f"✗ 호모그래피 저장 실패: {e}")
+        print(f"✗ 저장 실패: {e}")
     
     # ===== 테스트 모드 =====
-    print("\n=== 테스트: 클릭하면 거리 표시 (ESC 종료) ===")
+    #print("\n=== 테스트: 클릭하면 거리 표시 (ESC 종료) ===")
     
-    def test_callback(event, x, y, flags, param):
-        if event == cv2.EVENT_LBUTTONDOWN:
-            dist = mapper.get_distance(x, y)
-            dx, dy = mapper.get_xy_distance(x, y)
-            print(f"  ({x}, {y}) -> 거리: {dist:.1f}mm (X: {dx:.1f}, Y: {dy:.1f})")
+    # def test_callback(event, x, y, flags, param):
+    #     if event == cv2.EVENT_LBUTTONDOWN:
+    #         dist = mapper.get_distance(x, y)
+    #         dx, dy = mapper.get_xy_distance(x, y)
+    #         print(f"  ({x}, {y}) -> 거리: {dist:.1f}mm (X: {dx:.1f}, Y: {dy:.1f})")
     
-    cv2.namedWindow("Test")
-    cv2.setMouseCallback("Test", test_callback)
-    cv2.imshow("Test", image)
+    #cv2.namedWindow("Test")
+    #cv2.setMouseCallback("Test", test_callback)
+    #cv2.imshow("Test", image)
     
-    while cv2.waitKey(1) & 0xFF != 27:
-        pass
+    # while cv2.waitKey(1) & 0xFF != 27:
+    #     pass
     
-    cv2.destroyAllWindows()
+    # cv2.destroyAllWindows()

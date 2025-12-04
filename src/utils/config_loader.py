@@ -3,7 +3,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any
 
 from config import TrackingConfig, CalibrationConfig
 
@@ -182,7 +182,7 @@ def get_camera_pixel_sizes(
     main_config_execution: Optional[Dict[str, Any]],
     main_config_measurement: Optional[Any],
     preset_name: Optional[str] = None
-) -> Dict[int, float]:
+) -> Dict[int, Dict[str, float]]:
     """
     Get pixel sizes for all cameras from preset configuration.
     
@@ -197,19 +197,21 @@ def get_camera_pixel_sizes(
         preset_name: Preset name to use
     
     Returns:
-        Dictionary mapping camera_id -> pixel_size
+        Dictionary mapping camera_id -> {'x': float, 'y': float, 'average': float}
     """
     result = {}
     default_pixel_size = 1.0
     if main_config_measurement and hasattr(main_config_measurement, 'pixel_size'):
         default_pixel_size = main_config_measurement.pixel_size
     
+    default_pixel_size_dict = {'x': default_pixel_size, 'y': default_pixel_size, 'average': default_pixel_size}
+    
     exec_config = get_execution_config(product_model_name, main_config_execution)
     
     if not exec_config:
         # No config available, use default
         for camera_id in [1, 2, 3]:
-            result[camera_id] = default_pixel_size
+            result[camera_id] = default_pixel_size_dict.copy()
         return result
     
     # Get preset name
@@ -219,7 +221,7 @@ def get_camera_pixel_sizes(
     if not preset_name:
         # No preset, use default
         for camera_id in [1, 2, 3]:
-            result[camera_id] = default_pixel_size
+            result[camera_id] = default_pixel_size_dict.copy()
         return result
     
     presets = exec_config.get("presets", {})
@@ -227,7 +229,7 @@ def get_camera_pixel_sizes(
     if not preset:
         # Preset not found, use default
         for camera_id in [1, 2, 3]:
-            result[camera_id] = default_pixel_size
+            result[camera_id] = default_pixel_size_dict.copy()
         return result
     
     # Load pixel_size for each camera from preset
@@ -237,14 +239,29 @@ def get_camera_pixel_sizes(
         
         if isinstance(camera_config, dict):
             measurement = camera_config.get("measurement", {})
-            if isinstance(measurement, dict) and "pixel_size" in measurement:
-                pixel_size = measurement.get("pixel_size", default_pixel_size)
-                result[camera_id] = pixel_size
-                logger.debug(f"Camera {camera_id}: pixel_size={pixel_size} from preset '{preset_name}'")
+            if isinstance(measurement, dict):
+                # 새 형식: PixelSize.x, PixelSize.y
+                if "PixelSize" in measurement:
+                    pixel_size_data = measurement.get("PixelSize", {})
+                    if isinstance(pixel_size_data, dict):
+                        px = pixel_size_data.get("x", default_pixel_size)
+                        py = pixel_size_data.get("y", default_pixel_size)
+                        avg = pixel_size_data.get("average", (px + py) / 2)
+                        result[camera_id] = {'x': px, 'y': py, 'average': avg}
+                        logger.debug(f"Camera {camera_id}: pixel_size x={px:.6f}, y={py:.6f}, avg={avg:.6f} from preset '{preset_name}'")
+                    else:
+                        result[camera_id] = default_pixel_size_dict.copy()
+                # 기존 형식: pixel_size (단일 값)
+                elif "pixel_size" in measurement:
+                    pixel_size = measurement.get("pixel_size", default_pixel_size)
+                    result[camera_id] = {'x': pixel_size, 'y': pixel_size, 'average': pixel_size}
+                    logger.debug(f"Camera {camera_id}: pixel_size={pixel_size} from preset '{preset_name}'")
+                else:
+                    result[camera_id] = default_pixel_size_dict.copy()
             else:
-                result[camera_id] = default_pixel_size
+                result[camera_id] = default_pixel_size_dict.copy()
         else:
-            result[camera_id] = default_pixel_size
+            result[camera_id] = default_pixel_size_dict.copy()
     
     return result
 
@@ -308,6 +325,65 @@ def get_camera_distance_map_paths(
                 distance_map_path = measurement.get("distance_map_path")
                 result[camera_id] = distance_map_path
                 logger.debug(f"Camera {camera_id}: distance_map_path={distance_map_path} from preset '{preset_name}'")
+            else:
+                result[camera_id] = None
+        else:
+            result[camera_id] = None
+    
+    return result
+
+
+def get_camera_homographies(
+    product_model_name: Optional[str],
+    main_config_execution: Optional[Dict[str, Any]],
+    preset_name: Optional[str] = None
+) -> Dict[int, Optional[List]]:
+    """
+    Get Homography matrices for all cameras from preset configuration.
+    
+    Args:
+        product_model_name: Product model name (e.g., "zoom1")
+        main_config_execution: Execution config from main config file
+        preset_name: Preset name to use
+    
+    Returns:
+        Dictionary mapping camera_id -> Homography matrix (as list) or None
+    """
+    result = {}
+    
+    exec_config = get_execution_config(product_model_name, main_config_execution)
+    
+    if not exec_config:
+        for camera_id in [1, 2, 3]:
+            result[camera_id] = None
+        return result
+    
+    if not preset_name:
+        preset_name = exec_config.get("use_preset")
+    
+    if not preset_name:
+        for camera_id in [1, 2, 3]:
+            result[camera_id] = None
+        return result
+    
+    presets = exec_config.get("presets", {})
+    preset = presets.get(preset_name, {})
+    if not preset:
+        for camera_id in [1, 2, 3]:
+            result[camera_id] = None
+        return result
+    
+    # Load Homography for each camera from preset
+    for camera_id in [1, 2, 3]:
+        camera_key = f"camera_{camera_id}"
+        camera_config = preset.get(camera_key, {})
+        
+        if isinstance(camera_config, dict):
+            measurement = camera_config.get("measurement", {})
+            if isinstance(measurement, dict) and "Homography" in measurement:
+                homography = measurement.get("Homography")
+                result[camera_id] = homography
+                logger.debug(f"Camera {camera_id}: Homography loaded from preset '{preset_name}'")
             else:
                 result[camera_id] = None
         else:

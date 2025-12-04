@@ -4,7 +4,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Union
 
 import cv2
 import numpy as np
@@ -34,12 +34,13 @@ class EnhancedAMRTracker:
         config: Optional[SystemConfig] = None,
         detector_type: str = "yolo",
         tracker_type: str = "kalman",
-        pixel_size: float = 1.0,
+        pixel_size: Union[float, Dict[str, float]] = 1.0,
         distance_map_path: Optional[str] = None,
         model_path: Optional[str] = None,
         detector_config: Optional[Dict[str, Any]] = None,
         calibration_config: Optional[Dict[str, Any]] = None,
         fps: Optional[float] = None,
+        max_frames_lost: Optional[int] = None,
     ):
         """
         Initialize enhanced AMR system
@@ -48,12 +49,13 @@ class EnhancedAMRTracker:
             config: System configuration
             detector_type: Type of detector ("yolo")
             tracker_type: Type of tracker ("kalman", "speed")
-            pixel_size: Pixel size in mm (used if distance_map_path is None)
+            pixel_size: Pixel size in mm - float or dict {'x': float, 'y': float, 'average': float}
             distance_map_path: Path to distance map .npz file (optional, overrides pixel_size)
             model_path: Path to YOLO model file (default: "weights/zoom1/best.pt")
             detector_config: Detector configuration dictionary (optional)
             calibration_config: Calibration configuration dictionary (optional)
             fps: Frame rate (optional, defaults to config.measurement.fps or 30)
+            max_frames_lost: Maximum frames without detection before track is lost
         """
         self.config = config if config else SystemConfig()
         self.detector_type = detector_type
@@ -82,6 +84,14 @@ class EnhancedAMRTracker:
             self.fps = self.config.measurement.fps
         else:
             self.fps = 30
+        
+        # Get max_frames_lost from parameter or config
+        if max_frames_lost is not None:
+            self.max_frames_lost = max_frames_lost
+        elif self.config and hasattr(self.config, "tracking") and hasattr(self.config.tracking, "max_frames_lost"):
+            self.max_frames_lost = self.config.tracking.max_frames_lost
+        else:
+            self.max_frames_lost = 500  # Default
 
         # Load distance map if path is provided
         if self.distance_map_path:
@@ -169,7 +179,11 @@ class EnhancedAMRTracker:
             if self.distance_map_data:
                 logger.info(f"Kalman filter tracker initialized (fps={self.fps}, using distance map)")
             else:
-                logger.info(f"Kalman filter tracker initialized (fps={self.fps}, pixel_size={self.pixel_size})")
+                if isinstance(self.pixel_size, dict):
+                    ps_str = f"x={self.pixel_size.get('x', 1.0):.4f}, y={self.pixel_size.get('y', 1.0):.4f}"
+                else:
+                    ps_str = f"{self.pixel_size}"
+                logger.info(f"Kalman filter tracker initialized (fps={self.fps}, pixel_size={ps_str})")
         else:
             raise ValueError(
                 f"Unsupported tracker type: {self.tracker_type}. Only 'kalman' is supported."

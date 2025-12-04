@@ -358,13 +358,17 @@ class VisionServer:
             loader = self.camera_loaders.get(camera_id)
             fps = self.camera_manager.get_fps_from_loader(loader)
         
-        # Get pixel_size for this specific camera
-        pixel_size = self.camera_manager.get_pixel_size(camera_id)
+        # Get pixel_size for this specific camera (dict with x, y, average)
+        pixel_size = self.camera_manager.get_pixel_size_dict(camera_id)
+        
+        # Get max_frames_lost from tracking_config
+        max_frames_lost = self.tracking_config.max_frames_lost if hasattr(self.tracking_config, 'max_frames_lost') else 500
         
         return KalmanTracker(
             fps=fps,
             pixel_size=pixel_size,
             track_id=track_id,
+            max_frames_lost=max_frames_lost,
         )
     
     def _reset_camera_state(self, camera_id: int):
@@ -413,9 +417,11 @@ class VisionServer:
         state.next_track_id = track_id + 1
         state.reset()  # Clear any previous state
 
+        ps_dict = self.camera_manager.get_pixel_size_dict(camera_id)
+        ps_str = f"x={ps_dict['x']:.4f}, y={ps_dict['y']:.4f}"
         self.logger.info(
             f"Camera {camera_id}: Tracker created (track_id={track_id}, "
-            f"fps={fps:.2f}, pixel_size={self.camera_manager.get_pixel_size(camera_id)})"
+            f"fps={fps:.2f}, pixel_size={ps_str})"
         )
     
     def _ensure_camera_initialized(self, camera_id: int, product_model_name: Optional[str] = None) -> bool:
@@ -1001,6 +1007,13 @@ class VisionServer:
             preset_name = self.preset_name or exec_config.get("use_preset")
             self.camera_manager.load_camera_pixel_sizes(preset_name, product_model_name)
             self.camera_manager.load_camera_distance_map_paths(preset_name, product_model_name)
+            self.camera_manager.load_camera_homographies(preset_name, product_model_name)
+            
+            # Log loaded homographies
+            for camera_id in [1, 2, 3]:
+                homography = self.camera_manager.get_homography(camera_id)
+                if homography is not None:
+                    self.logger.info(f"Camera {camera_id}: Homography loaded (will warp frames)")
             
             # Log loaded distance map paths
             for camera_id in [1, 2, 3]:

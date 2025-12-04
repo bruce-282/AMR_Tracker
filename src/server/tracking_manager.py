@@ -113,6 +113,8 @@ class TrackingManager:
                     self._handle_no_frames(camera_id)
                     break
 
+                # 호모그래피 변환 적용 (설정된 경우)
+                frame = self.camera_manager.warp_frame(camera_id, frame)
                 
 
                 # 모든 카메라에서 프레임얻어 와보기. 아래 예시시

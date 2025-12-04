@@ -12,7 +12,7 @@ from typing import List, Optional, Dict, Tuple
 import cv2
 import numpy as np
 
-MAX_FRAMES_LOST = 10
+MAX_FRAMES_LOST = 500  # Default value, can be overridden via config
 
 logger = logging.getLogger(__name__)
 
@@ -81,20 +81,33 @@ class KalmanTracker:
     Tracks position, velocity, and orientation using a Kalman filter.
     """
 
-    def __init__(self, fps=30, pixel_size=1.0, distance_map_data=None, track_id=0):
+    def __init__(self, fps=30, pixel_size=1.0, distance_map_data=None, track_id=0, max_frames_lost=None):
         """
         Initialize Kalman tracker
 
         Args:
             fps: Camera frame rate (initial value, can be updated from timestamps)
-            pixel_size: Pixel size in mm (1 pixel = ? mm) - used if distance_map_data is None
+            pixel_size: Pixel size in mm - float or dict with 'x', 'y' keys
+                       - float: 단일 값 (기존 형식)
+                       - dict: {'x': float, 'y': float} 또는 {'x': float, 'y': float, 'average': float}
             distance_map_data: Distance map data dict from PixelDistanceMapper.load_distance_map() (optional)
             track_id: Unique ID for this tracker
+            max_frames_lost: Maximum frames without detection before track is lost (from config)
         """
         self.fps = fps
-        self.pixel_size = pixel_size
         self.distance_map_data = distance_map_data
         self.track_id = track_id
+        self.max_frames_lost = max_frames_lost if max_frames_lost is not None else MAX_FRAMES_LOST
+        
+        # pixel_size 처리: dict 형태면 x, y 분리, 아니면 단일 값 사용
+        if isinstance(pixel_size, dict):
+            self.pixel_size_x = pixel_size.get('x', 1.0)
+            self.pixel_size_y = pixel_size.get('y', 1.0)
+            self.pixel_size = pixel_size.get('average', (self.pixel_size_x + self.pixel_size_y) / 2)
+        else:
+            self.pixel_size = pixel_size
+            self.pixel_size_x = pixel_size
+            self.pixel_size_y = pixel_size
         self.kf = self.init_kalman()
 
         # For angle continuity (handle angle wrap-around)
@@ -295,8 +308,8 @@ class KalmanTracker:
             predicted_cx = state_pre[0]
             predicted_cy = state_pre[1]
             predicted_theta = state_pre[2]
-            predicted_vx = state_pre[3]
-            predicted_vy = state_pre[4]
+            # predicted_vx = state_pre[3]
+            # predicted_vy = state_pre[4]
             
             # Default measurement values (will be adjusted based on validation)
             cx = measured_cx
@@ -347,8 +360,8 @@ class KalmanTracker:
                     theta_value = predicted_theta
                     self.use_prediction_only = True
                     self.frames_since_detection += 1
-                    if self.is_lost(max_frames_lost=MAX_FRAMES_LOST):
-                        logger.info(f"Track {self.track_id} is lost, resetting")
+                    if self.is_lost(max_frames_lost=self.max_frames_lost):
+                        logger.info(f"Track {self.track_id} is lost (frames={self.frames_since_detection} >= {self.max_frames_lost}), resetting")
                         self.reset()
                 else:
                     # Normal detection - measurement is valid, return to normal mode
@@ -555,12 +568,13 @@ class KalmanTracker:
                 x_mm = float(dx_map[y_pix, x_pix])
                 y_mm = float(dy_map[y_pix, x_pix])
             else:
-                # Out of bounds, fallback to pixel_size
-                x_mm = state[0] * self.pixel_size
-                y_mm = state[1] * self.pixel_size
+                # Out of bounds, fallback to pixel_size (x, y 별도 적용)
+                x_mm = state[0] * self.pixel_size_x
+                y_mm = state[1] * self.pixel_size_y
         else:
-            x_mm = state[0] * self.pixel_size
-            y_mm = state[1] * self.pixel_size
+            # pixel_size_x, pixel_size_y 별도 적용
+            x_mm = state[0] * self.pixel_size_x
+            y_mm = state[1] * self.pixel_size_y
         
         # Prepare output
         results = {

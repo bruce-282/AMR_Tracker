@@ -191,6 +191,7 @@ class ResponseBuilder:
                 loader = self.camera_manager.camera_loaders.get(camera_id)
                 if loader:
                     ret, frame = loader.read()
+                    frame = self.camera_manager.warp_frame(camera_id, frame)
                     if not ret or frame is None:
                         return
                 else:
