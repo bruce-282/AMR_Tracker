@@ -534,12 +534,19 @@ class VisionServer:
 
     def _start_next_camera_after_1_3(self, camera_id: int):
         """Start next camera after camera 1 or 3 finishes tracking."""
+        # Only auto-start next camera if use_area_scan is false
+        
         if camera_id == 1:
             # Camera 1 -> Start camera 2
-            self.logger.info("Camera 1: Stopping stream and starting camera 2 tracking loop.")
+            self.logger.info("Camera 1: Stopping stream.")
             # Stop camera 1 stream via CameraManager
             self.camera_manager.stop_camera_stream(1)
-            
+
+            if self.use_area_scan:
+                self.logger.info(f"Camera {camera_id}: Tracking finished. Waiting for client request (use_area_scan=true).")
+                return
+
+            self.logger.info("Camera 2: Starting camera 2 stream.")
             if 2 not in self.tracking_threads or not self.tracking_threads[2].is_alive():
                 product_model_name = self.model_config.get_selected_model()
                 if self._ensure_camera_initialized(2, product_model_name):
@@ -553,10 +560,15 @@ class VisionServer:
 
         elif camera_id == 3:
             # Camera 3 -> Start camera 1 (cycle)
-            self.logger.info("Camera 3: Stopping stream and starting camera 1 tracking loop again (infinite cycle).")
+            self.logger.info("Camera 3: Stopping stream.")
             # Stop camera 3 stream via CameraManager
             self.camera_manager.stop_camera_stream(3)
             
+            if self.use_area_scan:
+                self.logger.info(f"Camera {camera_id}: Tracking finished. Waiting for client request (use_area_scan=true).")
+                return
+
+            self.logger.info("Camera 3: Starting camera 1 stream.")
             self._reset_camera_state(1)
             if 1 not in self.tracking_threads or not self.tracking_threads[1].is_alive():
                 if 1 in self.camera_loaders and 1 in self.trackers:
@@ -695,19 +707,22 @@ class VisionServer:
         
         self.camera2_trajectory.clear()
         
-        # Start camera 3 if not use_area_scan
-        if not self.use_area_scan:
-            self.logger.info(f"Camera {camera_id}: AGV가 카메라 상에서 벗어났으므로 다음 카메라의 Tracking Loop를 시작합니다.")
-            self._start_camera_3_after_2()
+        # Start camera 3 (or wait for client request if use_area_scan=true)
+        self._start_camera_3_after_2()
         
         return True
 
     def _start_camera_3_after_2(self):
         """Start camera 3 after camera 2 finishes tracking."""
-        self.logger.info("Camera 2: Stopping stream and starting camera 3 tracking loop.")
+        self.logger.info("Camera 2: Stopping stream.")
         # Stop camera 2 stream via CameraManager
         self.camera_manager.stop_camera_stream(2)
+
+        if self.use_area_scan:
+            self.logger.info(f"Camera 2: Tracking finished. Waiting for client request (use_area_scan=true).")
+            return
         
+        self.logger.info("Camera 3: Starting camera 3 stream.")
         if 3 not in self.tracking_threads or not self.tracking_threads[3].is_alive():
             self._reset_camera_state(3)
             if 3 in self.camera_loaders and 3 in self.trackers:

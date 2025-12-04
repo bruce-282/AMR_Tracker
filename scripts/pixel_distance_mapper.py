@@ -1,5 +1,7 @@
 import numpy as np
 import cv2
+import json
+import argparse
 from typing import Tuple, List, Optional, Dict
 from functools import wraps
 from enum import Enum
@@ -106,6 +108,9 @@ class PointSelector:
         # 십자선
         cv2.line(zoom, (zw//2, 0), (zw//2, zh), (0, 255, 0), 1)
         cv2.line(zoom, (0, zh//2), (zw, zh//2), (0, 255, 0), 1)
+
+        radius_scaled = int(self.search_radius * self.zoom_level)
+        cv2.circle(zoom, (zw//2, zh//2), radius_scaled, (255, 255, 0), 2)
         
         # 정보 표시
         type_str = "CORNER" if self.point_type == PointType.CORNER else "HOLE"
@@ -243,14 +248,20 @@ class PixelDistanceMapper:
         world_points: np.ndarray,
         image_shape: Optional[Tuple[int, int]] = None
     ) -> bool:
+        """
+        캘리브레이션 수행 (undistortion된 이미지의 포인트 사용)
+        
+        Args:
+            image_points: 이미지 포인트 (undistortion된 이미지의 좌표)
+            world_points: 실제 world 좌표 (mm)
+            image_shape: 이미지 크기 (h, w)
+        """
         if len(image_points) < 4:
             print("최소 4개 점 필요!")
             return False
         
-        imgp = cv2.undistortPoints(
-            image_points.reshape(-1, 1, 2).astype(np.float32),
-            self.K, self.dist, P=self.K
-        ).reshape(-1, 2)
+        # 이미지 포인트는 이미 undistortion된 이미지의 좌표이므로 그대로 사용
+        imgp = image_points.astype(np.float32)
         
         self.H, mask = cv2.findHomography(imgp, world_points.astype(np.float32))
         self.H_inv = np.linalg.inv(self.H)
@@ -273,16 +284,19 @@ class PixelDistanceMapper:
     
     @requires_calibration
     def initialize_distance_map(self, image_shape: Tuple[int, int]):
-        """Distance map을 미리 계산하여 저장"""
+        """Distance map을 미리 계산하여 저장 (undistortion된 이미지의 픽셀 좌표를 직접 변환)"""
         h, w = image_shape
         self.image_shape = image_shape
         
         print(f"Distance map 계산 중... ({w}x{h})")
         u_coords, v_coords = np.meshgrid(np.arange(w), np.arange(h))
-        world_x, world_y = self.pixel_to_world(
-            u_coords.flatten().astype(np.float32),
-            v_coords.flatten().astype(np.float32)
-        )
+        
+        # Undistortion된 이미지의 모든 픽셀 좌표를 직접 world 좌표로 변환
+        pixel_coords_u = u_coords.flatten().astype(np.float32)
+        pixel_coords_v = v_coords.flatten().astype(np.float32)
+        
+        # Undistortion된 좌표를 world 좌표로 변환
+        world_x, world_y = self.pixel_to_world(pixel_coords_u, pixel_coords_v)
         
         # X, Y 거리 맵
         self.dx_map = (world_x - self.reference_world[0]).reshape(h, w)
@@ -307,7 +321,7 @@ class PixelDistanceMapper:
     
     @requires_calibration
     def get_distance(self, u: int, v: int) -> float:
-        """픽셀 좌표에서 기준점까지의 거리 (mm)"""
+        """픽셀 좌표에서 기준점까지의 거리 (mm) - undistortion된 이미지의 좌표 사용"""
         if self.distance_map is not None:
             # 미리 계산된 맵 사용
             if 0 <= v < self.distance_map.shape[0] and 0 <= u < self.distance_map.shape[1]:
@@ -323,7 +337,7 @@ class PixelDistanceMapper:
     
     @requires_calibration
     def get_xy_distance(self, u: int, v: int) -> Tuple[float, float]:
-        """픽셀 좌표에서 기준점까지의 X, Y 거리 (mm)"""
+        """픽셀 좌표에서 기준점까지의 X, Y 거리 (mm) - undistortion된 이미지의 좌표 사용"""
         if self.dx_map is not None and self.dy_map is not None:
             # 미리 계산된 맵 사용
             if 0 <= v < self.dx_map.shape[0] and 0 <= u < self.dx_map.shape[1]:
@@ -490,39 +504,71 @@ def input_world_coordinates(n_points: int) -> np.ndarray:
 
 
 if __name__ == "__main__":
+    # ===== Argument Parser =====
+    parser = argparse.ArgumentParser(description="Pixel Distance Mapper - 이미지 픽셀과 실제 거리 매핑")
+    parser.add_argument(
+        "--image",
+        type=str,
+        default="data/cam1_undistorted.jpg",
+        help="입력 이미지 경로"
+    )
+    parser.add_argument(
+        "--camera-config",
+        type=str,
+        default="config/camera1_config.json",
+        help="카메라 설정 파일 경로"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="data/homography.npz",
+        help="호모그래피 및 distance map 저장 경로"
+    )
+    args = parser.parse_args()
+    
     # ===== 설정 =====
-    IMAGE_PATH = "data/250926_HN_AGV_Calib/7.jpg"
-    camera_matrix = np.array([
-        [23706.897, 0, 2144.215],
-        [0, 23707.981, 1114.160],
-        [0, 0, 1.0]
-    ])
-    dist_coeffs = np.array([ -3.969228,  285.347899,  -0.041028,  -0.010927, 0.000000 ]) 
+    IMAGE_PATH = args.image
+    CAMERA_CONFIG_PATH = args.camera_config
+    
+    # ===== 카메라 캘리브레이션 데이터 로드 =====
+    try:
+        with open(CAMERA_CONFIG_PATH, 'r', encoding='utf-8') as f:
+            camera_config = json.load(f)
+        
+        calibration = camera_config.get("calibration", {})
+        camera_matrix = np.array(calibration.get("CameraMatrix", []), dtype=np.float64)
+        dist_coeffs_list = calibration.get("DistortionCoefficients", [])
+        
+        # DistortionCoefficients는 중첩 리스트일 수 있으므로 평탄화
+        if dist_coeffs_list and isinstance(dist_coeffs_list[0], list):
+            dist_coeffs = np.array(dist_coeffs_list[0], dtype=np.float64)
+        else:
+            dist_coeffs = np.array(dist_coeffs_list, dtype=np.float64)
+        
+        print(f"카메라 설정 로드: {CAMERA_CONFIG_PATH}")
+        print(f"  Camera Matrix shape: {camera_matrix.shape}")
+        print(f"  Distortion Coefficients shape: {dist_coeffs.shape}")
+        
+        if camera_matrix.size == 0 or dist_coeffs.size == 0:
+            raise ValueError("카메라 매트릭스 또는 왜곡 계수가 비어있습니다.")
+            
+    except FileNotFoundError:
+        raise FileNotFoundError(f"카메라 설정 파일을 찾을 수 없습니다: {CAMERA_CONFIG_PATH}")
+
+    except Exception as e:
+        raise Exception(f"카메라 설정 파일 로드 실패: {e}")
 
     search_radius = 29
     
-    # ===== World 좌표 설정 (mm) =====
-    # 이미지에서 선택한 점 순서대로 실제 좌표를 입력하세요
-    # 예시:
-    # WORLD_COORDINATES = np.array([
-    #     [0, 0],      # 점 1: 기준점
-    #     [300, 0],    # 점 2: 점1에서 오른쪽으로 300mm
-    #     [0, 200],    # 점 3: 점1에서 아래로 200mm
-    #     [300, 200]   # 점 4: 대각선
-    # ])
-    WORLD_COORDINATES = np.array([
-        [0, 0],
-        [300, 0],
-        [0, 200],
-        [300, 200]
-    ])
     # ===== 이미지 로드 =====
+    # 주의: 입력 이미지는 반드시 undistortion된 이미지여야 합니다!
     image = cv2.imread(IMAGE_PATH)
     if image is None:
         raise FileNotFoundError(f"이미지 없음: {IMAGE_PATH}")
     
     h, w = image.shape[:2]
     print(f"이미지: {IMAGE_PATH} ({w}x{h})")
+    print("⚠ 주의: 입력 이미지는 undistortion된 이미지여야 합니다!")
     
     # ===== 특징점 선택 =====
     selector = PointSelector(image, search_radius=search_radius)
@@ -532,15 +578,22 @@ if __name__ == "__main__":
         print("취소됨")
         exit(1)
     
-    # ===== World 좌표 확인 =====
-    n_points = len(image_points)
-    if len(WORLD_COORDINATES) != n_points:
-        print(f"오류: WORLD_COORDINATES의 점 개수({len(WORLD_COORDINATES)})가 선택한 점 개수({n_points})와 일치하지 않습니다!")
-        print("코드에서 WORLD_COORDINATES를 수정하세요.")
-        exit(1)
+    # ===== World 좌표 자동 계산 =====
+    # 점 1을 기준으로, 점 2, 3, 4가 직사각형이 되도록 world 좌표 생성
+    p1 = image_points[0]  # 점 1 (기준점)
+    dist_x = np.linalg.norm(image_points[1] - image_points[0])  # 점1-점2 거리
+    dist_y = np.linalg.norm(image_points[2] - image_points[0])  # 점1-점3 거리
     
-    world_points = WORLD_COORDINATES[:n_points]
-    print(f"\n=== World 좌표 (mm) ===")
+    world_points = np.array([
+        [p1[0], p1[1]],                    # 점 1: 내가 찍은 위치 그대로
+        [p1[0] + dist_x, p1[1]],           # 점 2: 오른쪽
+        [p1[0], p1[1] + dist_y],           # 점 3: 아래
+        [p1[0] + dist_x, p1[1] + dist_y]   # 점 4: 대각선
+    ])
+    
+    print(f"\n=== World 좌표 (자동 계산) ===")
+    print(f"  점1-점2 거리: {dist_x:.1f}px")
+    print(f"  점1-점3 거리: {dist_y:.1f}px")
     for i, (img_pt, world_pt) in enumerate(zip(image_points, world_points)):
         print(f"  점 {i+1}: 이미지({img_pt[0]:.1f}, {img_pt[1]:.1f}) -> World({world_pt[0]:.1f}, {world_pt[1]:.1f})")
     
@@ -566,6 +619,47 @@ if __name__ == "__main__":
         print(f"\n=== Distance Map 저장 건너뜀 ===")
         print(f"  저장하려면 DISTANCE_MAP_PATH를 설정하세요.")
         print(f"  예: DISTANCE_MAP_PATH = 'config/distance_map_camera1.npz'")
+    
+    # ===== 호모그래피 Warp 이미지 저장 =====
+    print(f"\n=== 호모그래피 Warp 이미지 생성 ===")
+    try:
+        # 호모그래피로 원본 이미지를 world 좌표계로 변환 (원본 크기 유지)
+        warped_image = cv2.warpPerspective(image, mapper.H, (w, h), 
+                                          flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+        
+        # 결과 이미지 저장 경로
+        output_image_path = Path(IMAGE_PATH).parent / f"{Path(IMAGE_PATH).stem}_warped.jpg"
+        success = cv2.imwrite(str(output_image_path), warped_image)
+        
+        if success:
+            print(f"✓ 호모그래피 Warp 이미지 저장 완료: {output_image_path}")
+            print(f"  출력 이미지 크기: {warped_image.shape[1]}x{warped_image.shape[0]} 픽셀")
+        else:
+            print(f"✗ 호모그래피 Warp 이미지 저장 실패: {output_image_path}")
+    except Exception as e:
+        print(f"✗ 호모그래피 Warp 이미지 생성 실패: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # ===== 호모그래피를 camera_config.json에 저장 =====
+    print(f"\n=== 호모그래피를 카메라 설정 파일에 저장 ===")
+    try:
+        # 호모그래피 행렬을 리스트로 변환
+        homography_list = mapper.H.tolist()
+        
+        # 기존 설정 파일에 호모그래피 추가
+        camera_config["calibration"]["Homography"] = homography_list
+        
+        # 저장
+        with open(CAMERA_CONFIG_PATH, 'w', encoding='utf-8') as f:
+            json.dump(camera_config, f, indent=2, ensure_ascii=False)
+        
+        print(f"✓ 호모그래피 저장 완료: {CAMERA_CONFIG_PATH}")
+        print(f"  Homography (3x3):")
+        for row in homography_list:
+            print(f"    [{row[0]:.6f}, {row[1]:.6f}, {row[2]:.6f}]")
+    except Exception as e:
+        print(f"✗ 호모그래피 저장 실패: {e}")
     
     # ===== 테스트 모드 =====
     print("\n=== 테스트: 클릭하면 거리 표시 (ESC 종료) ===")

@@ -414,14 +414,6 @@ class NovitecCameraLoader(BaseLoader):
 
             # Ensure frame is in correct format (BGR for OpenCV)
             if frame is not None and len(frame.shape) == 3:
-                # 첫 프레임을 파일로 저장 (디버그용)
-                if self.frame_number == 0:
-                    debug_path = f"output/Debug/first_frame_{self.device_id}.png"
-                    try:
-                        cv2.imwrite(debug_path, frame)
-                        print(f"[DEBUG] First frame saved: {debug_path} (device_id={self.device_id})")
-                    except Exception as e:
-                        print(f"[WARN] Failed to save debug frame: {e}")
                 
                 # Apply undistortion if enabled
                 frame = self._undistort_frame(frame)

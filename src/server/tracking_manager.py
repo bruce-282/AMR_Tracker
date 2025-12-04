@@ -113,6 +113,8 @@ class TrackingManager:
                     self._handle_no_frames(camera_id)
                     break
 
+                
+
                 # 모든 카메라에서 프레임얻어 와보기. 아래 예시시
                 # for cam_id, cam_loader in self.camera_manager.camera_loaders.items():
                 #     if cam_id != camera_id:
