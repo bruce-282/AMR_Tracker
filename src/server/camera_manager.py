@@ -289,8 +289,15 @@ class CameraManager:
         # Pass camera_id as camera_index to load separate DLL for each Novitec camera
         # Enable buffering for camera mode (real-time streams) to prevent frame drops
         enable_buffering = (loader_mode == "camera")
-        buffer_size = 30  # ~1 second at 30fps
-        buffer_drop_policy = "oldest"  # Drop oldest frames when buffer is full (maintains real-time)
+        
+        # Read buffer settings from config (zoom1.json -> buffer section)
+        buffer_config = getattr(self.config, 'buffer', None) if self.config else None
+        if buffer_config:
+            buffer_size = getattr(buffer_config, 'size', 15)
+            buffer_drop_policy = getattr(buffer_config, 'drop_policy', 'oldest')
+        else:
+            buffer_size = 15  # Default: ~0.5 second at 30fps (low latency)
+            buffer_drop_policy = "oldest"  # Drop oldest frames when buffer is full (maintains real-time)
         
         loader = create_sequence_loader(
             source, 
@@ -374,6 +381,7 @@ class CameraManager:
     def stop_camera_stream(self, camera_id: int) -> bool:
         """
         Stop stream for a specific camera (Novitec cameras only).
+        Also stops the frame buffer to prevent auto-restart of stream.
         
         Args:
             camera_id: Camera ID (1, 2, or 3)
@@ -389,6 +397,11 @@ class CameraManager:
         from src.utils.sequence_loader import NovitecCameraLoader
         if isinstance(loader, NovitecCameraLoader):
             try:
+                # IMPORTANT: Stop frame buffer FIRST to prevent it from restarting the stream
+                if hasattr(loader, 'stop_buffering'):
+                    loader.stop_buffering()
+                    logger.info(f"Camera {camera_id}: Frame buffer stopped")
+                
                 if loader.camera and hasattr(loader.camera, 'stop_stream'):
                     if loader.camera._is_streaming:
                         logger.info(f"Camera {camera_id}: Stopping stream...")
@@ -412,6 +425,7 @@ class CameraManager:
     def start_camera_stream(self, camera_id: int) -> bool:
         """
         Start stream for a specific camera (Novitec cameras only).
+        Also starts the frame buffer for buffered capture.
         
         Each camera uses a separate DLL instance (cam1, cam2, cam3), so no need to
         disconnect other cameras. Just start the stream for the requested camera.
@@ -439,12 +453,23 @@ class CameraManager:
                                 loader._stream_started = True
                                 loader.camera._is_streaming = True
                                 logger.info(f"Camera {camera_id}: Stream started successfully")
+                                
+                                # Start frame buffer after stream is active
+                                if hasattr(loader, 'start_buffering') and loader.enable_buffering:
+                                    loader.start_buffering()
+                                    logger.info(f"Camera {camera_id}: Frame buffer started")
+                                
                                 return True
                             else:
                                 logger.warning(f"Camera {camera_id}: start_stream() returned False")
                                 return False
                         else:
                             logger.debug(f"Camera {camera_id}: Stream already started")
+                            # Make sure buffer is running if stream is already active
+                            if hasattr(loader, 'start_buffering') and loader.enable_buffering:
+                                if loader._frame_buffer is None or not loader._frame_buffer.is_running:
+                                    loader.start_buffering()
+                                    logger.info(f"Camera {camera_id}: Frame buffer started (stream was already active)")
                             return True
             except Exception as e:
                 logger.warning(f"Camera {camera_id}: Failed to start stream: {e}")

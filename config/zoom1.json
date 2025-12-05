@@ -31,7 +31,7 @@
     "_desc_speed_thresh": "Speed threshold (pix/frame) - next camera starts when speed exceeds this after response sent",
     "speed_near_zero_threshold": 3.0,
     "_desc_near_zero": "Speed (pix/frame) below this is considered 'stopped'",
-    "speed_zero_frames_threshold": 20,
+    "speed_zero_frames_threshold": 12,
     "_desc_zero_frames": "Consecutive frames speed must be near zero before sending stop response (정지 판정 프레임 수)",
     "detection_loss_threshold_frames": 30,
     "_desc_detection_loss": "Frames without detection before considering object lost",
@@ -40,8 +40,14 @@
     "camera2_trajectory_max_frames": 500,
     "_desc_cam2_traj": "Maximum trajectory points to collect for Camera 2"
   },
+  "buffer": {
+    "size": 40,
+    "_desc_size": "버퍼 크기 (프레임 수). 30fps 기준: 15=0.5초, 30=1초. 낮을수록 레이턴시 감소",
+    "drop_policy": "oldest",
+    "_desc_policy": "버퍼 가득 시 정책: 'oldest'=오래된 프레임 버림 (실시간 추천), 'newest'=새 프레임 버림"
+  },
   "execution": {
-    "visualize_stream": true,
+    "visualize_stream": false,
     "result_base_path": "C:/CMES_AI/Result",
     "summary_base_path": "C:/CMES_AI/Summary",
     "debug_base_path": "C:/CMES_AI/Debug",

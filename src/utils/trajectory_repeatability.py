@@ -417,8 +417,26 @@ class TrajectoryRepeatability:
         
         # Cam1 & Cam3 error histogram
         ax3 = plt.subplot(2, 3, 3)
-        ax3.hist(cam1_data['position_errors'], bins=20, alpha=0.5, label='Cam1', edgecolor='black')
-        ax3.hist(cam3_data['position_errors'], bins=20, alpha=0.5, label='Cam3', edgecolor='black')
+        # Use 'auto' bins to handle cases with limited data range
+        cam1_errors = cam1_data['position_errors']
+        cam3_errors = cam3_data['position_errors']
+        
+        # Calculate appropriate bin count based on data
+        def get_bins(data, max_bins=20):
+            if len(data) < 2:
+                return 1
+            data_range = np.ptp(data)  # peak-to-peak (max - min)
+            if data_range == 0:
+                return 1
+            return min(max_bins, max(1, len(data) // 5))
+        
+        cam1_bins = get_bins(cam1_errors)
+        cam3_bins = get_bins(cam3_errors)
+        
+        if len(cam1_errors) > 0:
+            ax3.hist(cam1_errors, bins=cam1_bins, alpha=0.5, label='Cam1', edgecolor='black')
+        if len(cam3_errors) > 0:
+            ax3.hist(cam3_errors, bins=cam3_bins, alpha=0.5, label='Cam3', edgecolor='black')
         ax3.set_xlabel('2D Position Error (mm)')
         ax3.set_ylabel('Frequency')
         ax3.set_title('Position Error Distribution')

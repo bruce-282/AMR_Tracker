@@ -583,6 +583,7 @@ class NovitecCameraLoader(BaseLoader):
         self.buffer_drop_policy = buffer_drop_policy
         self._frame_buffer: Optional[ThreadedFrameBuffer] = None
         self._last_frame_data: Optional[FrameData] = None  # For timestamp access
+        self._buffer_manually_stopped = False  # Flag to prevent auto-restart after explicit stop
 
         self._initialize()
         
@@ -697,6 +698,8 @@ class NovitecCameraLoader(BaseLoader):
 
     def start_buffering(self):
         """Start the frame buffer capture thread."""
+        self._buffer_manually_stopped = False  # Allow auto-restart again
+        
         if not self.enable_buffering:
             print(f"[INFO] Buffering is disabled for {self.device_id}")
             return
@@ -721,6 +724,7 @@ class NovitecCameraLoader(BaseLoader):
     
     def stop_buffering(self):
         """Stop the frame buffer capture thread."""
+        self._buffer_manually_stopped = True  # Prevent auto-restart in read()
         if self._frame_buffer is not None:
             self._frame_buffer.stop()
             self._frame_buffer = None
@@ -765,8 +769,8 @@ class NovitecCameraLoader(BaseLoader):
                 return False, None
         
         # === Direct capture mode (buffering disabled or buffer not started) ===
-        # Auto-start buffering on first read if enabled
-        if self.enable_buffering and self._frame_buffer is None:
+        # Auto-start buffering on first read if enabled (but NOT if manually stopped)
+        if self.enable_buffering and self._frame_buffer is None and not self._buffer_manually_stopped:
             self.start_buffering()
             # Give buffer time to capture first frame
             time.sleep(0.1)
