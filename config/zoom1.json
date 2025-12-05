@@ -84,8 +84,29 @@
           "id": "I3ZEB1AD",
           "config": "config/camera2_config.json",
           "measurement": {
-              "pixel_size": 1.0
-              
+              "Homography": [
+                [
+                  1.2232582268555356,
+                  0.7179567764747394,
+                  -497.97960296798794
+                ],
+                [
+                  -0.02506717473658809,
+                  1.7888922665827909,
+                  -364.85865918942574
+                ],
+                [
+                  -3.804159276581631e-06,
+                  0.0003331965252799857,
+                  1.0
+                ]
+              ],
+              "PixelSize": {
+                "x": 0.5541190370573802,
+                "y": 0.528068743339891,
+                "average": 0.5410938901986355,
+                "unit": "mm/pixel"
+              } 
             }
         },
         "camera_3": {
@@ -99,7 +120,7 @@
       "video_tracking": {
         "loader_mode": "video",
         "camera_1": {
-          "id": "data/251204_HD_AGV_Video/CAM1_day4_15PM_1.mp4",
+          "id": "data/Test_videos_11AM/CAM1_day5_11AM.mp4",
           "config": "config/camera1_config.json",
           "measurement": {
             "PixelSize": {
@@ -128,14 +149,36 @@
             }
         },
         "camera_2": {
-          "id": "data/251204_HD_AGV_Video/CAM2_day4_15PM_1.mp4",
+          "id": "data/Test_videos_11AM/CAM2_day5_11AM.mp4",
           "config": "config/camera2_config.json",
           "measurement": {
-              "pixel_size": 0.5
+                "Homography": [
+                  [
+                    1.2232582268555356,
+                    0.7179567764747394,
+                    -497.97960296798794
+                  ],
+                  [
+                    -0.02506717473658809,
+                    1.7888922665827909,
+                    -364.85865918942574
+                  ],
+                  [
+                    -3.804159276581631e-06,
+                    0.0003331965252799857,
+                    1.0
+                  ]
+                ],
+                "PixelSize": {
+                  "x": 0.5541190370573802,
+                  "y": 0.528068743339891,
+                  "average": 0.5410938901986355,
+                  "unit": "mm/pixel"
+                }
             }
         },
         "camera_3": {
-          "id": "data/251204_HD_AGV_Video/CAM3_day4_15PM_1.mp4",
+          "id": "data/Test_videos_11AM/CAM3_day5_11AM.mp4",
           "config": "config/camera3_config.json",
           "measurement": {
               "PixelSize": {

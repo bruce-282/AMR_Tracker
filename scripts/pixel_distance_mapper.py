@@ -509,13 +509,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--image",
         type=str,
-        default="data/cam1_undistorted.jpg",
+        default="data/cam2_homography_undistorted.jpg",
         help="입력 이미지 경로"
     )
     parser.add_argument(
         "--camera-config",
         type=str,
-        default="config/camera1_config.json",
+        default="config/camera2_config.json",
         help="카메라 설정 파일 경로"
     )
     parser.add_argument(
@@ -527,13 +527,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--real-dist-x",
         type=float,
-        default=2000,
+        default=900,
         help="점1-점2 간의 실제 물리적 거리 (mm)"
     )
     parser.add_argument(
         "--real-dist-y",
         type=float,
-        default=1000,
+        default=450,
         help="점1-점3 간의 실제 물리적 거리 (mm)"
     )
     args = parser.parse_args()
@@ -570,7 +570,7 @@ if __name__ == "__main__":
     except Exception as e:
         raise Exception(f"카메라 설정 파일 로드 실패: {e}")
 
-    search_radius = 29
+    search_radius = 8
     
     # ===== 이미지 로드 =====
     # 주의: 입력 이미지는 반드시 undistortion된 이미지여야 합니다!

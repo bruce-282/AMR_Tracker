@@ -11,13 +11,13 @@ from pathlib import Path
 
 
 # 기본 카메라 파라미터 (cam1)
+
 DEFAULT_INTRINSIC = np.array([
-    [3505.72, 0, 2140.16],
-    [0, 3496.98, 1058.46],
+    [3629.20, 0, 2069.28],
+    [0, 3622.66, 996.82],
     [0, 0, 1]
 ], dtype=np.float64)
-
-DEFAULT_DISTORTION = np.array([-0.090755, 0.185086, 0.001742, 0.002785], dtype=np.float64)
+DEFAULT_DISTORTION = np.array([-0.090631, 0.079203, 0.001397, 0.001820], dtype=np.float64)
 
 
 def load_intrinsic(filepath: str) -> np.ndarray:
@@ -181,10 +181,10 @@ def main():
     parser.add_argument("--input_folder", help="입력 이미지 폴더 경로")
     parser.add_argument("-o", "--output", help="출력 폴더 경로 (기본: input_folder/undistorted)")
     parser.add_argument("-i", "--intrinsic", 
-                        default=r"C:\Users\user\Documents\cal_1202\cam1\cam1Intrinsic.txt",
+                        default=r"C:\Users\user\Documents\cmes_repo\AMR_Tracker\data\251205_cam2_calib\cam2Intrinsic.txt",
                         help="Intrinsic 파라미터 파일 경로")
     parser.add_argument("-d", "--distortion",
-                        default=r"C:\Users\user\Documents\cal_1202\cam1\cam1Distortion.txt", 
+                        default=r"C:\Users\user\Documents\cmes_repo\AMR_Tracker\data\251205_cam2_calib\cam2Distortion.txt", 
                         help="Distortion 파라미터 파일 경로")
     parser.add_argument("--no-optimal", action="store_true",
                         help="최적 카메라 행렬 사용 안함 (이미지 크롭될 수 있음)")

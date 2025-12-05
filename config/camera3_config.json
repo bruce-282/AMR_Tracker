@@ -2,7 +2,7 @@
   "StreamAResolution": "4096x2160",
   "StreamAEncodeMode": "MJPEG",
   "Focus": "2m",
-  "FocusOffset": 35,
+  "FocusOffset": 32,
   "Iris": 25,
   "Zoom": 0,
   "ExposureTime": 20000,
