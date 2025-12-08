@@ -486,6 +486,91 @@ class PixelDistanceMapper:
         return True
 
 
+def detect_aruco_board_center(image: np.ndarray, camera_matrix: np.ndarray, dist_coeffs: np.ndarray) -> Optional[Tuple[float, float]]:
+    """
+    ArUco 보드의 중심을 찾습니다.
+    
+    Args:
+        image: 입력 이미지 (undistortion된 이미지 권장)
+        camera_matrix: 카메라 내부 파라미터
+        dist_coeffs: 왜곡 계수
+    
+    Returns:
+        (center_x, center_y) 또는 None (검출 실패 시)
+    """
+    # 이미지 undistortion
+    undistorted = cv2.undistort(image, camera_matrix, dist_coeffs)
+    gray = cv2.cvtColor(undistorted, cv2.COLOR_BGR2GRAY)
+    
+    # ArUco 딕셔너리 생성 (기본 DICT_4X4_50 사용, 필요시 변경 가능)
+    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+    aruco_params = cv2.aruco.DetectorParameters()
+    
+    # 마커 검출
+    corners, ids, rejected = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=aruco_params)
+    
+    if ids is None or len(ids) == 0:
+        print("  ArUco 마커를 찾을 수 없습니다.")
+        return None
+    
+    # 모든 마커의 중심점 계산
+    centers = []
+    for i, corner in enumerate(corners):
+        # corner는 (1, 4, 2) 형태의 배열
+        corner_pts = corner[0]  # (4, 2) 형태
+        center = np.mean(corner_pts, axis=0)  # 4개 코너의 평균
+        centers.append(center)
+        marker_id = ids[i][0]
+        print(f"  마커 ID {marker_id} 중심: ({center[0]:.1f}, {center[1]:.1f})")
+    
+    # 모든 마커 중심의 평균을 보드 중심으로 사용
+    board_center = np.mean(centers, axis=0)
+    print(f"  보드 중심: ({board_center[0]:.1f}, {board_center[1]:.1f})")
+    
+    return float(board_center[0]), float(board_center[1])
+
+
+def detect_aruco_from_images(image_paths: List[str], camera_matrix: np.ndarray, dist_coeffs: np.ndarray) -> Optional[np.ndarray]:
+    """
+    4개 이미지에서 각각 ArUco 보드 중심을 찾습니다.
+    
+    Args:
+        image_paths: 이미지 파일 경로 리스트 (4개)
+        camera_matrix: 카메라 내부 파라미터
+        dist_coeffs: 왜곡 계수
+    
+    Returns:
+        image_points (4x2 numpy array) 또는 None (실패 시)
+    """
+    if len(image_paths) != 4:
+        raise ValueError(f"정확히 4개의 이미지가 필요합니다. 현재 {len(image_paths)}개")
+    
+    image_points = []
+    
+    print(f"\n=== ArUco 보드 중심 검출 모드 ===")
+    print(f"4개 이미지에서 각각 ArUco 보드 중심을 찾습니다...")
+    
+    for i, img_path in enumerate(image_paths):
+        print(f"\n이미지 {i+1}/4: {img_path}")
+        image = cv2.imread(img_path)
+        if image is None:
+            print(f"  오류: 이미지를 읽을 수 없습니다: {img_path}")
+            return None
+        
+        center = detect_aruco_board_center(image, camera_matrix, dist_coeffs)
+        if center is None:
+            print(f"  오류: 이미지 {i+1}에서 ArUco 보드를 찾을 수 없습니다.")
+            return None
+        
+        image_points.append(center)
+    
+    print(f"\n=== 검출 완료 ===")
+    for i, pt in enumerate(image_points):
+        print(f"  점 {i+1}: ({pt[0]:.1f}, {pt[1]:.1f})")
+    
+    return np.array(image_points)
+
+
 def input_world_coordinates(n_points: int) -> np.ndarray:
     print(f"\n=== 각 점의 실제 좌표 입력 (mm) ===")
     world_points = []
@@ -536,6 +621,19 @@ if __name__ == "__main__":
         default=450,
         help="점1-점3 간의 실제 물리적 거리 (mm)"
     )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["manual", "aruco"],
+        default="manual",
+        help="포인트 선택 모드: 'manual' (수동 선택) 또는 'aruco' (ArUco 자동 검출)"
+    )
+    parser.add_argument(
+        "--images",
+        type=str,
+        nargs="+",
+        help="ArUco 모드일 때 사용할 이미지 경로들 (4개 필요, 공백으로 구분)"
+    )
     args = parser.parse_args()
     
     # ===== 설정 =====
@@ -572,23 +670,41 @@ if __name__ == "__main__":
 
     search_radius = 8
     
-    # ===== 이미지 로드 =====
-    # 주의: 입력 이미지는 반드시 undistortion된 이미지여야 합니다!
-    image = cv2.imread(IMAGE_PATH)
-    if image is None:
-        raise FileNotFoundError(f"이미지 없음: {IMAGE_PATH}")
-    
-    h, w = image.shape[:2]
-    print(f"이미지: {IMAGE_PATH} ({w}x{h})")
-    print("⚠ 주의: 입력 이미지는 undistortion된 이미지여야 합니다!")
-    
     # ===== 특징점 선택 =====
-    selector = PointSelector(image, search_radius=search_radius)
-    image_points, point_types = selector.select(n_points=4)
-    
-    if len(image_points) == 0:
-        print("취소됨")
-        exit(1)
+    if args.mode == "aruco":
+        # ArUco 자동 검출 모드
+        if args.images is None or len(args.images) != 4:
+            raise ValueError("ArUco 모드에서는 --images 인자로 정확히 4개의 이미지 경로를 제공해야 합니다.")
+        
+        image_points = detect_aruco_from_images(args.images, camera_matrix, dist_coeffs)
+        if image_points is None:
+            print("ArUco 보드 검출 실패")
+            exit(1)
+        
+        # 첫 번째 이미지의 크기 사용
+        first_image = cv2.imread(args.images[0])
+        if first_image is None:
+            raise FileNotFoundError(f"이미지 없음: {args.images[0]}")
+        h, w = first_image.shape[:2]
+        point_types = [PointType.CORNER] * 4  # ArUco 모드는 모두 CORNER로 처리
+        
+    else:
+        # 수동 선택 모드
+        # 주의: 입력 이미지는 반드시 undistortion된 이미지여야 합니다!
+        image = cv2.imread(IMAGE_PATH)
+        if image is None:
+            raise FileNotFoundError(f"이미지 없음: {IMAGE_PATH}")
+        
+        h, w = image.shape[:2]
+        print(f"이미지: {IMAGE_PATH} ({w}x{h})")
+        print("⚠ 주의: 입력 이미지는 undistortion된 이미지여야 합니다!")
+        
+        selector = PointSelector(image, search_radius=search_radius)
+        image_points, point_types = selector.select(n_points=4)
+        
+        if len(image_points) == 0:
+            print("취소됨")
+            exit(1)
     
     # ===== World 좌표 자동 계산 =====
     # 점 1을 기준으로, 점 2, 3, 4가 직사각형이 되도록 world 좌표 생성
@@ -745,3 +861,12 @@ if __name__ == "__main__":
     #     pass
     
     # cv2.destroyAllWindows()
+
+
+# ArUco 모드로 실행
+# python scripts/pixel_distance_mapper.py \
+#     --mode aruco \
+#     --images img1.jpg img2.jpg img3.jpg img4.jpg \
+#     --camera-config config/camera1_config.json \
+#     --real-dist-x 900 \
+#     --real-dist-y 450

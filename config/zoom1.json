@@ -6,40 +6,6 @@
     "camera_height": 0.0,
     "calibration_data_path": "calibration_data.json"
   },
-  "detector": {
-    "_comment": "YOLO detector parameters",
-    "model_path": "weights/zoom1/best.pt",
-    "_desc_model_path": "Path to YOLO model weights file",
-    "confidence_threshold": 0.4,
-    "_desc_confidence": "Minimum confidence score (0-1) for detection",
-    "imgsz": 1280,
-    "_desc_imgsz": "Input image size for YOLO inference",
-    "target_classes": [0],
-    "_desc_target_classes": "Class IDs to detect (0=AGV)",
-    "min_area": 600,
-    "_desc_min_area": "Minimum detection area in pixels (filters small noise)",
-    "max_area": null,
-    "_desc_max_area": "Maximum detection area in pixels (null=no limit)",
-    "width_height_ratio_tolerance": 0.7,
-    "_desc_wh_ratio": "Width/height ratio tolerance. Ratio must be within 1.0 ± this value",
-    "mask_area_ratio": 0.5,
-    "_desc_mask_area": "Minimum ratio of mask area to bbox area (filters poorly segmented objects)"
-  },
-  "tracker": {
-    "_comment": "Kalman tracker parameters for AMR tracking",
-    "speed_threshold_pix_per_frame": 5.0,
-    "_desc_speed_thresh": "Speed threshold (pix/frame) - next camera starts when speed exceeds this after response sent",
-    "speed_near_zero_threshold": 3.0,
-    "_desc_near_zero": "Speed (pix/frame) below this is considered 'stopped'",
-    "speed_zero_frames_threshold": 12,
-    "_desc_zero_frames": "Consecutive frames speed must be near zero before sending stop response (정지 판정 프레임 수)",
-    "detection_loss_threshold_frames": 30,
-    "_desc_detection_loss": "Frames without detection before considering object lost",
-    "max_frames_lost": 500,
-    "_desc_max_lost": "Maximum frames to keep tracking without detection before removing tracker",
-    "camera2_trajectory_max_frames": 500,
-    "_desc_cam2_traj": "Maximum trajectory points to collect for Camera 2"
-  },
   "buffer": {
     "size": 40,
     "_desc_size": "버퍼 크기 (프레임 수). 30fps 기준: 15=0.5초, 30=1초. 낮을수록 레이턴시 감소",
@@ -47,7 +13,7 @@
     "_desc_policy": "버퍼 가득 시 정책: 'oldest'=오래된 프레임 버림 (실시간 추천), 'newest'=새 프레임 버림"
   },
   "execution": {
-    "visualize_stream": false,
+    "visualize_stream": true,
     "result_base_path": "C:/CMES_AI/Result",
     "summary_base_path": "C:/CMES_AI/Summary",
     "debug_base_path": "C:/CMES_AI/Debug",
@@ -62,65 +28,17 @@
         "camera_1": {
           "id": "I3ZEB19C",
           "config": "config/camera1_config.json",
-          "measurement": {
-            "PixelSize": {
-              "x": 0.9408439030002378,
-              "y": 0.8028472000110769
-            },
-              "Homography": [
-                [
-                  1.1574828500833325,
-                  0.04875337263048552,
-                  -123.63269971267775
-                ],
-                [
-                  -0.010642610373121912,
-                  1.028874175297412,
-                  11.376509822862205
-                ],
-                [
-                  4.1410938317329046e-05,
-                  -2.188210059557453e-06,
-                  1.0
-                ]
-              ]
-            }
+          "tracker_config": "config/cam1_tracker_config.json"
         },
         "camera_2": {
           "id": "I3ZEB1AD",
           "config": "config/camera2_config.json",
-          "measurement": {
-              "Homography": [
-                [
-                  1.2232582268555356,
-                  0.7179567764747394,
-                  -497.97960296798794
-                ],
-                [
-                  -0.02506717473658809,
-                  1.7888922665827909,
-                  -364.85865918942574
-                ],
-                [
-                  -3.804159276581631e-06,
-                  0.0003331965252799857,
-                  1.0
-                ]
-              ],
-              "PixelSize": {
-                "x": 0.5541190370573802,
-                "y": 0.528068743339891,
-                "average": 0.5410938901986355,
-                "unit": "mm/pixel"
-              } 
-            }
+          "tracker_config": "config/cam2_tracker_config.json"
         },
         "camera_3": {
           "id": "I3ZEB19D",
           "config": "config/camera3_config.json",
-          "measurement": {
-              "pixel_size": 1.0
-            }
+          "tracker_config": "config/cam3_tracker_config.json"
         }
       },
       "video_tracking": {
@@ -128,89 +46,17 @@
         "camera_1": {
           "id": "data/Test_videos_11AM/CAM1_day5_11AM.mp4",
           "config": "config/camera1_config.json",
-          "measurement": {
-            "PixelSize": {
-              "x": 0.9408439030002378,
-              "y": 0.8028472000110769,
-              "average": 0.8718455515056573,
-              "unit": "mm/pixel"
-            },
-              "Homography": [
-                [
-                  1.1574828500833325,
-                  0.04875337263048552,
-                  -123.63269971267775
-                ],
-                [
-                  -0.010642610373121912,
-                  1.028874175297412,
-                  11.376509822862205
-                ],
-                [
-                  4.1410938317329046e-05,
-                  -2.188210059557453e-06,
-                  1.0
-                ]
-              ]
-            }
+          "tracker_config": "config/cam1_tracker_config.json"
         },
         "camera_2": {
           "id": "data/Test_videos_11AM/CAM2_day5_11AM.mp4",
           "config": "config/camera2_config.json",
-          "measurement": {
-                "Homography": [
-                  [
-                    1.2232582268555356,
-                    0.7179567764747394,
-                    -497.97960296798794
-                  ],
-                  [
-                    -0.02506717473658809,
-                    1.7888922665827909,
-                    -364.85865918942574
-                  ],
-                  [
-                    -3.804159276581631e-06,
-                    0.0003331965252799857,
-                    1.0
-                  ]
-                ],
-                "PixelSize": {
-                  "x": 0.5541190370573802,
-                  "y": 0.528068743339891,
-                  "average": 0.5410938901986355,
-                  "unit": "mm/pixel"
-                }
-            }
+          "tracker_config": "config/cam2_tracker_config.json"
         },
         "camera_3": {
           "id": "data/Test_videos_11AM/CAM3_day5_11AM.mp4",
           "config": "config/camera3_config.json",
-          "measurement": {
-              "PixelSize": {
-                "x": 0.9322110434375932,
-                "y": 0.7903112264110468,
-                "average": 0.86126113492432,
-                "unit": "mm/pixel"
-              },
-              "Homography": [
-                [
-                  1.1220597850510698,
-                  -0.020519104632945144,
-                  -65.6089107273149
-                ],
-                [
-                  0.049671833942140295,
-                  1.019302047563938,
-                  -35.619604133508915
-                ],
-                [
-                  3.361729861153648e-05,
-                  -3.0673746250026625e-06,
-                  1.0
-                ]
-              ]
-            }
+          "tracker_config": "config/cam3_tracker_config.json"
         }
       },
       "sequence_tracking": {
@@ -218,10 +64,7 @@
         "camera_1": {
           "id": "data/0001_fixed",
           "config": "config/sequence_config.json",
-          "measurement": {
-              "fps": 30,
-              "pixel_size": 0.4455786347389221
-            }
+          "tracker_config": "config/cam1_tracker_config.json"
         }
       }
   

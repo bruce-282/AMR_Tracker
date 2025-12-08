@@ -31,7 +31,11 @@ from src.utils.config_loader import (
     load_product_model_config,
     get_camera_config,
     get_camera_pixel_sizes,
+    get_camera_homographies,
+    get_camera_tracker_config,
     load_tracking_config,
+    load_camera_tracking_config,
+    load_camera_detector_config,
     load_calibration_config,
     get_execution_config,
 )
@@ -544,7 +548,7 @@ class VisionServer:
         
         if camera_id == 1:
             # Camera 1 -> Start camera 2
-            self.logger.info("Camera 1: Stopping stream.")
+            #self.logger.info("Camera 1: Stopping stream.")
             # Stop camera 1 stream via CameraManager
             self.camera_manager.stop_camera_stream(1)
 
@@ -552,7 +556,7 @@ class VisionServer:
                 self.logger.info(f"Camera {camera_id}: Tracking finished. Waiting for client request (use_area_scan=true).")
                 return
 
-            self.logger.info("Camera 2: Starting camera 2 stream.")
+            #self.logger.info("Camera 2: Starting camera 2 stream.")
             if 2 not in self.tracking_threads or not self.tracking_threads[2].is_alive():
                 product_model_name = self.model_config.get_selected_model()
                 if self._ensure_camera_initialized(2, product_model_name):
@@ -566,7 +570,7 @@ class VisionServer:
 
         elif camera_id == 3:
             # Camera 3 -> Start camera 1 (cycle)
-            self.logger.info("Camera 3: Stopping stream.")
+            #self.logger.info("Camera 3: Stopping stream.")
             # Stop camera 3 stream via CameraManager
             self.camera_manager.stop_camera_stream(3)
             

@@ -1,0 +1,52 @@
+{
+  "_comment": "Camera 2 specific detector, tracker, and measurement configuration",
+  "detector": {
+    "_comment": "YOLO detector parameters for Camera 2",
+    "model_path": "weights/zoom1/best.pt",
+    "_desc_model_path": "YOLO 모델 가중치 파일 경로",
+    "confidence_threshold": 0.4,
+    "_desc_confidence": "최소 신뢰도 점수 (0-1). 이 값 이상만 검출로 인정",
+    "imgsz": 1280,
+    "_desc_imgsz": "YOLO 입력 이미지 크기. 클수록 정확하지만 느림",
+    "target_classes": [0],
+    "_desc_target_classes": "검출할 클래스 ID 목록 (0=AGV)",
+    "min_area": 600,
+    "_desc_min_area": "최소 검출 영역 (픽셀). 이 값보다 작은 검출은 노이즈로 필터링",
+    "max_area": null,
+    "_desc_max_area": "최대 검출 영역 (픽셀). null이면 제한 없음",
+    "width_height_ratio_tolerance": 0.7,
+    "_desc_wh_ratio": "너비/높이 비율 허용 범위. 비율이 1.0 ± 이 값을 벗어나면 필터링",
+    "mask_area_ratio": 0.5,
+    "_desc_mask_ratio": "마스크 영역 대 bbox 영역 비율. 이 비율 미만이면 세그멘테이션 불량으로 필터링"
+  },
+  "tracker": {
+    "_comment": "Kalman tracker parameters for Camera 2 (trajectory 추적용)",
+    "speed_threshold_pix_per_frame": 5.0,
+    "_desc_speed_threshold": "AGV가 다시 움직이기 시작했다고 판단하는 속도 (pix/frame)",
+    "speed_near_zero_threshold": 3.0,
+    "_desc_speed_near_zero": "AGV가 '정지'했다고 판단하는 속도 임계값 (pix/frame)",
+    "speed_zero_frames_threshold": 12,
+    "_desc_speed_zero_frames": "정지 판정에 필요한 연속 프레임 수",
+    "detection_loss_threshold_frames": 30,
+    "_desc_detection_loss": "객체 검출 실패 허용 프레임 수. 이 프레임 이상 검출 실패 시 trajectory 전송 후 종료",
+    "max_frames_lost": 500,
+    "_desc_max_frames_lost": "트래커 유지 최대 프레임 수",
+    "camera2_trajectory_max_frames": 500,
+    "_desc_trajectory_max": "수집할 최대 trajectory 포인트 수. 이 개수 도달 시 trajectory 전송 후 종료"
+  },
+  "measurement": {
+    "_comment": "Camera 2 measurement parameters (pixel to mm conversion)",
+    "PixelSize": {
+      "x": 0.5541190370573802,
+      "y": 0.528068743339891,
+      "average": 0.5410938901986355,
+      "unit": "mm/pixel"
+    },
+    "_Homography": [
+      [1.2232582268555356, 0.7179567764747394, -497.97960296798794],
+      [-0.02506717473658809, 1.7888922665827909, -364.85865918942574],
+      [-3.804159276581631e-06, 0.0003331965252799857, 1.0]
+    ]
+  }
+}
+
