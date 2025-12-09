@@ -54,6 +54,9 @@ class TrackingConfig:
     velocity_damping_factor: float = 0.9  # damping factor when stationary
     velocity_damping_max: float = 5.0  # only damp velocities below this
 
+    # Boundary settings
+    boundary_margin_ratio: float = 0.1  # image boundary margin ratio (0.1 = 10%)
+
     # Visualization
     arrow_length: int = 50  # pixels for orientation arrow
 

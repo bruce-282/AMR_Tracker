@@ -38,6 +38,7 @@ class EnhancedAMRTracker:
         distance_map_path: Optional[str] = None,
         model_path: Optional[str] = None,
         detector_config: Optional[Dict[str, Any]] = None,
+        tracker_config: Optional[Dict[str, Any]] = None,
         calibration_config: Optional[Dict[str, Any]] = None,
         fps: Optional[float] = None,
         max_frames_lost: Optional[int] = None,
@@ -53,6 +54,7 @@ class EnhancedAMRTracker:
             distance_map_path: Path to distance map .npz file (optional, overrides pixel_size)
             model_path: Path to YOLO model file (default: "weights/zoom1/best.pt")
             detector_config: Detector configuration dictionary (optional)
+            tracker_config: Tracker configuration dictionary (optional) - boundary_margin_ratio, etc.
             calibration_config: Calibration configuration dictionary (optional)
             fps: Frame rate (optional, defaults to config.measurement.fps or 30)
             max_frames_lost: Maximum frames without detection before track is lost
@@ -75,6 +77,7 @@ class EnhancedAMRTracker:
         # Store configs for initialization
         self.model_path = model_path or "weights/zoom1/best.pt"
         self.detector_config = detector_config or {}
+        self.tracker_config = tracker_config or {}
         self.calibration_config = calibration_config
         
         # Get fps from parameter, config, or default
@@ -141,8 +144,9 @@ class EnhancedAMRTracker:
                     max_area=self.detector_config.get("max_area"),
                     width_height_ratio_tolerance=self.detector_config.get("width_height_ratio_tolerance"),
                     mask_area_ratio=self.detector_config.get("mask_area_ratio"),
+                    boundary_margin_ratio=self.detector_config.get("boundary_margin_ratio"),
                 )
-                logger.info("YOLO detector initialized")
+                logger.info(f"YOLO detector initialized (boundary_margin={self.detector_config.get('boundary_margin_ratio')})")
             except ImportError:
                 raise ImportError("ultralytics module is not installed.")
             except FileNotFoundError:
@@ -170,20 +174,25 @@ class EnhancedAMRTracker:
 
         # Initialize tracker
         if self.tracker_type == "kalman":
+            # Get boundary_margin_ratio from tracker_config
+            boundary_margin_ratio = self.tracker_config.get("boundary_margin_ratio", 0.1)
+            
             self.tracker = KalmanTracker(
                 fps=self.fps,
                 pixel_size=self.pixel_size,
                 distance_map_data=self.distance_map_data,
                 track_id=0,
+                max_frames_lost=self.max_frames_lost,
+                boundary_margin_ratio=boundary_margin_ratio,
             )
             if self.distance_map_data:
-                logger.info(f"Kalman filter tracker initialized (fps={self.fps}, using distance map)")
+                logger.info(f"Kalman filter tracker initialized (fps={self.fps}, using distance map, boundary_margin={boundary_margin_ratio})")
             else:
                 if isinstance(self.pixel_size, dict):
                     ps_str = f"x={self.pixel_size.get('x', 1.0):.4f}, y={self.pixel_size.get('y', 1.0):.4f}"
                 else:
                     ps_str = f"{self.pixel_size}"
-                logger.info(f"Kalman filter tracker initialized (fps={self.fps}, pixel_size={ps_str})")
+                logger.info(f"Kalman filter tracker initialized (fps={self.fps}, pixel_size={ps_str}, boundary_margin={boundary_margin_ratio})")
         else:
             raise ValueError(
                 f"Unsupported tracker type: {self.tracker_type}. Only 'kalman' is supported."

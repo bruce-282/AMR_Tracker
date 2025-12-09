@@ -4,7 +4,7 @@
     "_comment": "YOLO detector parameters for Camera 2",
     "model_path": "weights/zoom1/best.pt",
     "_desc_model_path": "YOLO 모델 가중치 파일 경로",
-    "confidence_threshold": 0.4,
+    "confidence_threshold": 0.7,
     "_desc_confidence": "최소 신뢰도 점수 (0-1). 이 값 이상만 검출로 인정",
     "imgsz": 1280,
     "_desc_imgsz": "YOLO 입력 이미지 크기. 클수록 정확하지만 느림",
@@ -17,7 +17,9 @@
     "width_height_ratio_tolerance": 0.7,
     "_desc_wh_ratio": "너비/높이 비율 허용 범위. 비율이 1.0 ± 이 값을 벗어나면 필터링",
     "mask_area_ratio": 0.5,
-    "_desc_mask_ratio": "마스크 영역 대 bbox 영역 비율. 이 비율 미만이면 세그멘테이션 불량으로 필터링"
+    "_desc_mask_ratio": "마스크 영역 대 bbox 영역 비율. 이 비율 미만이면 세그멘테이션 불량으로 필터링",
+     "boundary_margin_ratio": 0.22,
+    "_desc_boundary_margin": "이미지 경계 마진 비율 (0.1 = 10%). 예측 위치가 이 마진 밖으로 나가면 트래커 리셋"
   },
   "tracker": {
     "_comment": "Kalman tracker parameters for Camera 2 (trajectory 추적용)",
@@ -32,7 +34,9 @@
     "max_frames_lost": 500,
     "_desc_max_frames_lost": "트래커 유지 최대 프레임 수",
     "camera2_trajectory_max_frames": 500,
-    "_desc_trajectory_max": "수집할 최대 trajectory 포인트 수. 이 개수 도달 시 trajectory 전송 후 종료"
+    "_desc_trajectory_max": "수집할 최대 trajectory 포인트 수. 이 개수 도달 시 trajectory 전송 후 종료",
+    "boundary_margin_ratio": 0.22,
+    "_desc_boundary_margin": "이미지 경계 마진 비율 (0.1 = 10%). 예측 위치가 이 마진 밖으로 나가면 트래커 리셋"
   },
   "measurement": {
     "_comment": "Camera 2 measurement parameters (pixel to mm conversion)",
@@ -42,7 +46,7 @@
       "average": 0.5410938901986355,
       "unit": "mm/pixel"
     },
-    "_Homography": [
+    "Homography": [
       [1.2232582268555356, 0.7179567764747394, -497.97960296798794],
       [-0.02506717473658809, 1.7888922665827909, -364.85865918942574],
       [-3.804159276581631e-06, 0.0003331965252799857, 1.0]

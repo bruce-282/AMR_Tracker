@@ -81,7 +81,7 @@ class KalmanTracker:
     Tracks position, velocity, and orientation using a Kalman filter.
     """
 
-    def __init__(self, fps=30, pixel_size=1.0, distance_map_data=None, track_id=0, max_frames_lost=None):
+    def __init__(self, fps=30, pixel_size=1.0, distance_map_data=None, track_id=0, max_frames_lost=None, boundary_margin_ratio=None):
         """
         Initialize Kalman tracker
 
@@ -93,11 +93,13 @@ class KalmanTracker:
             distance_map_data: Distance map data dict from PixelDistanceMapper.load_distance_map() (optional)
             track_id: Unique ID for this tracker
             max_frames_lost: Maximum frames without detection before track is lost (from config)
+            boundary_margin_ratio: Image boundary margin ratio (0.1 = 10%). Reset tracker if prediction is outside (1-margin) area
         """
         self.fps = fps
         self.distance_map_data = distance_map_data
         self.track_id = track_id
         self.max_frames_lost = max_frames_lost if max_frames_lost is not None else MAX_FRAMES_LOST
+        self.boundary_margin_ratio = boundary_margin_ratio if boundary_margin_ratio is not None else 0.1
         
         # pixel_size 처리: dict 형태면 x, y 분리, 아니면 단일 값 사용
         if isinstance(pixel_size, dict):
@@ -264,18 +266,21 @@ class KalmanTracker:
             pred_cx = state_pre[0]
             pred_cy = state_pre[1]
             
-            # Calculate thresholds (70% of image size)
-            x_threshold_min = img_width * 0.1   # 30% from left edge
-            x_threshold_max = img_width * 0.9   # 70% from left edge (30% from right)
-            y_threshold_min = img_height * 0.1  # 30% from top edge
-            y_threshold_max = img_height * 0.9  # 70% from top edge (30% from bottom)
+            # Calculate thresholds using boundary_margin_ratio from config
+            margin = self.boundary_margin_ratio
+            x_threshold_min = img_width * margin
+            x_threshold_max = img_width * (1.0 - margin)
+            y_threshold_min = img_height * margin
+            y_threshold_max = img_height * (1.0 - margin)
             
             # Check if position is outside the valid region
             if (pred_cx < x_threshold_min or pred_cx > x_threshold_max or
                 pred_cy < y_threshold_min or pred_cy > y_threshold_max):
+                valid_pct = int((1.0 - 2 * margin) * 100)
                 logger.warning(
                     f"Track {self.track_id}: Position ({pred_cx:.1f}, {pred_cy:.1f}) "
-                    f"is outside 70% of image size ({img_width}x{img_height}), resetting tracker"
+                    f"is outside {valid_pct}% valid region of image ({img_width}x{img_height}), "
+                    f"boundary_margin_ratio={margin}, resetting tracker"
                 )
                 self.reset()
                 # Return special flag to indicate reset - will need to reinitialize with first detection

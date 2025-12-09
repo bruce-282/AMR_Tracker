@@ -221,6 +221,7 @@ class CameraManager:
         fps: float = 30.0,
         model_path: Optional[Path] = None,
         detector_config: Optional[Dict] = None,
+        tracker_config: Optional[Dict] = None,
         enable_undistortion: bool = False,
         camera_config_path: Optional[str] = None
     ):
@@ -234,6 +235,7 @@ class CameraManager:
             fps: Frame rate
             model_path: Path to model file
             detector_config: Detector configuration
+            tracker_config: Tracker configuration (boundary_margin_ratio, etc.)
             enable_undistortion: Whether to enable image undistortion
             camera_config_path: Path to camera config file (e.g., camera1_config.json)
         """
@@ -345,6 +347,7 @@ class CameraManager:
             pixel_size=pixel_size,
             model_path=model_path_str,
             detector_config=detector_config or {},
+            tracker_config=tracker_config or {},
             fps=fps,
         )
         

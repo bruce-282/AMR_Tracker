@@ -33,6 +33,7 @@ class YOLODetector:
         max_area: Optional[int] = None,
         width_height_ratio_tolerance: Optional[float] = None,
         mask_area_ratio: Optional[float] = None,
+        boundary_margin_ratio: Optional[float] = None,
     ):
         """
         Initialize YOLO detector.
@@ -47,6 +48,7 @@ class YOLODetector:
             max_area: Maximum detection area (pixels)
             width_height_ratio_tolerance: Tolerance for width/height ratio (e.g., 0.2 means 1.0 ± 0.2)
             mask_area_ratio: Minimum mask area ratio (mask_area / detection_area)
+            boundary_margin_ratio: Image boundary margin ratio (0.1 = 10%). Filter detections near edges.
         """
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
@@ -57,6 +59,7 @@ class YOLODetector:
         self.max_area = max_area
         self.width_height_ratio_tolerance = width_height_ratio_tolerance
         self.mask_area_ratio = mask_area_ratio
+        self.boundary_margin_ratio = boundary_margin_ratio
         self.model = None
         self._load_model()
 
@@ -241,15 +244,18 @@ class YOLODetector:
                             )
                             continue
                         
-                        # Filter by width/height ratio (1.0 ± tolerance)
+                        # Filter by aspect ratio (short_side / long_side, always 0~1)
                         if self.width_height_ratio_tolerance is not None:
-                            width_height_ratio = detection.get_width() / detection.get_height()
-                            ratio_min = 1.0 - self.width_height_ratio_tolerance
-                            ratio_max = 1.0 + self.width_height_ratio_tolerance
-                            if width_height_ratio < ratio_min or width_height_ratio > ratio_max:
+                            det_width = detection.get_width()
+                            det_height = detection.get_height()
+                            short_side = min(det_width, det_height)
+                            long_side = max(det_width, det_height)
+                            aspect_ratio = short_side / long_side if long_side > 0 else 1.0
+                            min_ratio = 1.0 - self.width_height_ratio_tolerance
+                            if aspect_ratio < min_ratio:
                                 logger.debug(
-                                    f"Detection filtered by width_height_ratio: ratio={width_height_ratio:.3f} "
-                                    f"not in [{ratio_min:.3f}, {ratio_max:.3f}] "
+                                    f"Detection filtered by aspect_ratio: ratio={aspect_ratio:.3f} "
+                                    f"< min_ratio={min_ratio:.3f} (tolerance={self.width_height_ratio_tolerance}) "
                                     f"(bbox=[{x:.1f}, {y:.1f}, {w:.1f}, {h:.1f}], conf={conf:.3f})"
                                 )
                                 continue
@@ -263,6 +269,25 @@ class YOLODetector:
                                     f"< required={self.mask_area_ratio} "
                                     f"(mask_area={mask_area:.0f}, detection_area={detection_area:.0f}, "
                                     f"bbox=[{x:.1f}, {y:.1f}, {w:.1f}, {h:.1f}], conf={conf:.3f})"
+                                )
+                                continue
+                        
+                        # Filter by boundary margin (detection center near image edges)
+                        if self.boundary_margin_ratio is not None:
+                            img_height, img_width = image.shape[:2]
+                            center_x = detection.get_center()[0]
+                            center_y = detection.get_center()[1]
+                            margin = self.boundary_margin_ratio
+                            x_min = img_width * margin
+                            x_max = img_width * (1.0 - margin)
+                            y_min = img_height * margin
+                            y_max = img_height * (1.0 - margin)
+                            if center_x < x_min or center_x > x_max or center_y < y_min or center_y > y_max:
+                                valid_pct = int((1.0 - 2 * margin) * 100)
+                                logger.debug(
+                                    f"Detection filtered by boundary_margin: center=({center_x:.1f}, {center_y:.1f}) "
+                                    f"outside {valid_pct}% valid region (margin={margin}) "
+                                    f"(bbox=[{x:.1f}, {y:.1f}, {w:.1f}, {h:.1f}], conf={conf:.3f})"
                                 )
                                 continue
                         

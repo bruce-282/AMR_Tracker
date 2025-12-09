@@ -216,7 +216,8 @@ class ResponseBuilder:
                 loader = self.camera_manager.camera_loaders.get(camera_id)
                 if loader:
                     ret, frame = loader.read()
-                    frame = self.camera_manager.warp_frame(camera_id, frame)
+                    # 호모그래피 변환은 저장 시점에만 적용 (여기서는 제거)
+                    # frame = self.camera_manager.warp_frame(camera_id, frame)
                     if not ret or frame is None:
                         return
                 else:

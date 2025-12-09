@@ -4,7 +4,7 @@
     "_comment": "YOLO detector parameters for Camera 3",
     "model_path": "weights/zoom1/best.pt",
     "_desc_model_path": "YOLO 모델 가중치 파일 경로",
-    "confidence_threshold": 0.4,
+    "confidence_threshold": 0.7,
     "_desc_confidence": "최소 신뢰도 점수 (0-1). 이 값 이상만 검출로 인정",
     "imgsz": 1280,
     "_desc_imgsz": "YOLO 입력 이미지 크기. 클수록 정확하지만 느림",
@@ -17,7 +17,9 @@
     "width_height_ratio_tolerance": 0.7,
     "_desc_wh_ratio": "너비/높이 비율 허용 범위. 비율이 1.0 ± 이 값을 벗어나면 필터링",
     "mask_area_ratio": 0.5,
-    "_desc_mask_ratio": "마스크 영역 대 bbox 영역 비율. 이 비율 미만이면 세그멘테이션 불량으로 필터링"
+    "_desc_mask_ratio": "마스크 영역 대 bbox 영역 비율. 이 비율 미만이면 세그멘테이션 불량으로 필터링",
+    "boundary_margin_ratio": 0.25,
+    "_desc_boundary_margin": "이미지 경계 마진 비율 (0.1 = 10%). 예측 위치가 이 마진 밖으로 나가면 트래커 리셋"
   },
   "tracker": {
     "_comment": "Kalman tracker parameters for Camera 3 (정지 감지용)",
@@ -30,7 +32,9 @@
     "detection_loss_threshold_frames": 30,
     "_desc_detection_loss": "객체 검출 실패 허용 프레임 수. 이 프레임 이상 검출 실패 시 객체 lost 처리",
     "max_frames_lost": 500,
-    "_desc_max_frames_lost": "트래커 유지 최대 프레임 수. 검출 없이 이 프레임 이상 경과 시 트래커 삭제"
+    "_desc_max_frames_lost": "트래커 유지 최대 프레임 수. 검출 없이 이 프레임 이상 경과 시 트래커 삭제",
+    "boundary_margin_ratio": 0.25,
+    "_desc_boundary_margin": "이미지 경계 마진 비율 (0.1 = 10%). 예측 위치가 이 마진 밖으로 나가면 트래커 리셋"
   },
   "measurement": {
     "_comment": "Camera 3 measurement parameters (pixel to mm conversion)",
@@ -40,7 +44,7 @@
       "average": 0.86126113492432,
       "unit": "mm/pixel"
     },
-    "_Homography": [
+    "Homography": [
       [1.1220597850510698, -0.020519104632945144, -65.6089107273149],
       [0.049671833942140295, 1.019302047563938, -35.619604133508915],
       [3.361729861153648e-05, -3.0673746250026625e-06, 1.0]

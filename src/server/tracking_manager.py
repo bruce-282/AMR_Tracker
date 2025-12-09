@@ -3,7 +3,7 @@
 import logging
 import time
 import threading
-from typing import Dict, Optional, List, Callable
+from typing import Dict, Optional, List, Callable, Any
 import cv2
 import numpy as np
 
@@ -41,7 +41,8 @@ class TrackingManager:
         """
         self.camera_manager = camera_manager
         self.camera_state_manager = camera_state_manager
-        self.tracking_config = tracking_config
+        self.tracking_config = tracking_config  # Default/global tracking config
+        self.camera_tracking_configs: Dict[int, TrackingConfig] = {}  # Camera-specific tracking configs
         self.use_area_scan = use_area_scan
         self.visualize_stream = visualize_stream
         
@@ -68,6 +69,29 @@ class TrackingManager:
     def set_vision_active(self, active: bool):
         """Set vision active state."""
         self.vision_active = active
+    
+    def set_camera_tracking_config(self, camera_id: int, tracking_config: TrackingConfig):
+        """Set camera-specific tracking config.
+        
+        Args:
+            camera_id: Camera ID (1, 2, or 3)
+            tracking_config: Camera-specific TrackingConfig
+        """
+        self.camera_tracking_configs[camera_id] = tracking_config
+        logger.info(f"Camera {camera_id}: Set camera-specific tracking config")
+    
+    def get_camera_tracking_config(self, camera_id: int) -> TrackingConfig:
+        """Get tracking config for a specific camera.
+        
+        Falls back to global tracking_config if no camera-specific config is set.
+        
+        Args:
+            camera_id: Camera ID (1, 2, or 3)
+        
+        Returns:
+            TrackingConfig for the camera
+        """
+        return self.camera_tracking_configs.get(camera_id, self.tracking_config)
     
     def start_tracking(self, camera_id: int):
         """Start tracking thread for a camera."""
@@ -119,8 +143,8 @@ class TrackingManager:
                     self._handle_no_frames(camera_id)
                     break
 
-                # 호모그래피 변환 적용 (설정된 경우)
-                frame = self.camera_manager.warp_frame(camera_id, frame)
+                # 호모그래피 변환은 저장 시점에만 적용 (매 프레임 적용 제거)
+                # frame = self.camera_manager.warp_frame(camera_id, frame)
                 
 
                 # 모든 카메라에서 프레임얻어 와보기. 아래 예시시
@@ -166,18 +190,30 @@ class TrackingManager:
                 else:
                     trackers.clear()
                 
-                # Visualize results
-                vis_frame = amr_tracker.visualize_results(
-                    frame=frame,
-                    detections=detections,
-                    tracking_results=tracking_results
-                )
+                has_detection = len(detections) > 0
+                cam_state = self.camera_state_manager.get_or_create(camera_id)
+                
+                # Visualize results (skip visualization after response sent)
+                # Camera 1, 3: check response_sent
+                # Camera 2: check camera2_trajectory_sent
+                skip_visualization = False
+                if camera_id in [1, 3] and cam_state.response_sent:
+                    skip_visualization = True
+                elif camera_id == 2 and self.camera2_trajectory_sent:
+                    skip_visualization = True
+                
+                if skip_visualization:
+                    # After response sent, show original frame without visualization
+                    vis_frame = frame.copy()
+                else:
+                    vis_frame = amr_tracker.visualize_results(
+                        frame=frame,
+                        detections=detections,
+                        tracking_results=tracking_results
+                    )
                 
                 # Store last frame for result image saving (especially for camera 2)
                 self.last_frames[camera_id] = frame.copy()
-                
-                has_detection = len(detections) > 0
-                cam_state = self.camera_state_manager.get_or_create(camera_id)
                 
                 # Update detection state
                 if has_detection:
@@ -308,9 +344,11 @@ class TrackingManager:
         if tracking_results:
             self.latest_tracking_results[camera_id] = tracking_results[0]
         
-        speed_near_zero_thresh = self.tracking_config.speed_near_zero_threshold
-        speed_zero_frames_thresh = self.tracking_config.speed_zero_frames_threshold
-        speed_thresh = self.tracking_config.speed_threshold_pix_per_frame
+        # Get camera-specific tracking config
+        cam_tracking_config = self.get_camera_tracking_config(camera_id)
+        speed_near_zero_thresh = cam_tracking_config.speed_near_zero_threshold
+        speed_zero_frames_thresh = cam_tracking_config.speed_zero_frames_threshold
+        speed_thresh = cam_tracking_config.speed_threshold_pix_per_frame
         
         if not tracking_results:
             return True
@@ -413,8 +451,10 @@ class TrackingManager:
         frame: Optional[np.ndarray] = None
     ) -> bool:
         """Handle camera 2 specific tracking logic."""
-        detection_loss_thresh = self.tracking_config.detection_loss_threshold_frames
-        camera2_trajectory_max_frames = self.tracking_config.camera2_trajectory_max_frames
+        # Get camera-specific tracking config
+        cam_tracking_config = self.get_camera_tracking_config(camera_id)
+        detection_loss_thresh = cam_tracking_config.detection_loss_threshold_frames
+        camera2_trajectory_max_frames = cam_tracking_config.camera2_trajectory_max_frames
         
         if tracking_results:
             amr_tracker = self.camera_manager.amr_trackers.get(camera_id)
@@ -426,8 +466,10 @@ class TrackingManager:
             if tracker:
                 kf_state = tracker.kf.statePost.flatten()
                 pixel_size = self.camera_manager.get_pixel_size(camera_id)
-                x_mm = kf_state[0] * pixel_size
-                y_mm = kf_state[1] * pixel_size
+                x_pix = kf_state[0]
+                y_pix = kf_state[1]
+                x_mm = x_pix * pixel_size
+                y_mm = y_pix * pixel_size
                 rz_deg = kf_state[2]
                 
                 trajectory_index = len(self.camera2_trajectory)
@@ -435,7 +477,9 @@ class TrackingManager:
                     "track_idx": trajectory_index,
                     "x": round(float(x_mm), 3),
                     "y": round(float(y_mm), 3),
-                    "rz": round(float(rz_deg), 3)
+                    "rz": round(float(rz_deg), 3),
+                    "x_pix": round(float(x_pix), 1),
+                    "y_pix": round(float(y_pix), 1)
                 })
         
         # Check if detection lost

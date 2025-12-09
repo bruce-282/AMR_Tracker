@@ -698,19 +698,65 @@ class VisionServer:
         self.camera2_trajectory_sent = True
         self.logger.info(f"Camera 2: {reason}. Sending trajectory data to client ({len(self.camera2_trajectory)} frames).")
         
-        # Save result image (frame can be None, save_result_image will try to read from loader)
-        result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
-        self.logger.info(f"Camera {camera_id}: Saving result image to {result_image_path} (frame is {'not None' if frame is not None else 'None'})")
-        self.response_builder.save_result_image(
-            camera_id, 
-            result_image_path, 
-            frame=frame, 
-            detections=detections or [], 
-            tracking_results=tracking_results or []
-        )
-        
-        # Send trajectory data
+        # Apply homography transformation at save time only
+        homography = self.camera_manager.get_homography(camera_id)
         trajectory_data = list(self.camera2_trajectory)
+        
+        # Transform trajectory points if homography is available
+        if homography is not None and len(trajectory_data) > 0:
+            transformed_trajectory = []
+            for point in trajectory_data:
+                x_pix = point.get("x_pix", 0)
+                y_pix = point.get("y_pix", 0)
+                
+                # Apply homography to point
+                pt = np.array([[[x_pix, y_pix]]], dtype=np.float32)
+                transformed_pt = cv2.perspectiveTransform(pt, homography)
+                new_x_pix = float(transformed_pt[0, 0, 0])
+                new_y_pix = float(transformed_pt[0, 0, 1])
+                
+                # Recalculate mm values with transformed pixel coordinates
+                pixel_size = self.camera_manager.get_pixel_size(camera_id)
+                
+                transformed_point = point.copy()
+                transformed_point["x_pix"] = round(new_x_pix, 1)
+                transformed_point["y_pix"] = round(new_y_pix, 1)
+                transformed_point["x"] = round(new_x_pix * pixel_size, 3)
+                transformed_point["y"] = round(new_y_pix * pixel_size, 3)
+                transformed_trajectory.append(transformed_point)
+            
+            trajectory_data = transformed_trajectory
+            self.logger.debug(f"Camera {camera_id}: Applied homography transformation to {len(trajectory_data)} trajectory points")
+        
+        # Save result image with trajectory drawn from transformed trajectory data
+        result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
+        try:
+            # Get frame to draw on
+            if frame is None:
+                loader = self.camera_manager.camera_loaders.get(camera_id)
+                if loader:
+                    ret, frame = loader.read()
+            
+            if frame is not None:
+                # Apply homography to frame
+                if homography is not None:
+                    h, w = frame.shape[:2]
+                    frame = cv2.warpPerspective(frame, homography, (w, h), 
+                                                flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+                
+                # Draw trajectory from transformed trajectory data
+                vis_frame = self._draw_trajectory_on_frame(frame, trajectory_data)
+                
+                result_image_path.parent.mkdir(parents=True, exist_ok=True)
+                success = cv2.imwrite(str(result_image_path), vis_frame)
+                if success:
+                    self.logger.info(f"Camera {camera_id}: Saved result image with trajectory ({len(trajectory_data)} points) to {result_image_path}")
+                else:
+                    self.logger.error(f"Camera {camera_id}: Failed to save result image")
+            else:
+                self.logger.warning(f"Camera {camera_id}: No frame available for result image")
+        except Exception as e:
+            self.logger.error(f"Camera {camera_id}: Failed to save result image: {e}")
         cmd = Command.START_CAM_2
         if self._send_response_to_client(cmd, success=True, data=trajectory_data):
             self.logger.info(f"Camera 2 trajectory data sent ({len(trajectory_data)} frames)")
@@ -721,6 +767,60 @@ class VisionServer:
         self._start_camera_3_after_2()
         
         return True
+
+    def _draw_trajectory_on_frame(self, frame: np.ndarray, trajectory_data: List[Dict]) -> np.ndarray:
+        """
+        Draw trajectory on frame using trajectory data.
+        
+        Args:
+            frame: Input frame
+            trajectory_data: List of trajectory points with x_pix, y_pix
+        
+        Returns:
+            Frame with trajectory drawn
+        """
+        vis_frame = frame.copy()
+        
+        if len(trajectory_data) < 2:
+            return vis_frame
+        
+        # Extract pixel coordinates
+        points = []
+        for point in trajectory_data:
+            x_pix = point.get("x_pix")
+            y_pix = point.get("y_pix")
+            if x_pix is not None and y_pix is not None:
+                points.append((int(x_pix), int(y_pix)))
+        
+        if len(points) < 2:
+            return vis_frame
+        
+        # Draw trajectory line
+        for i in range(1, len(points)):
+            # Color gradient from blue (old) to red (new)
+            ratio = i / len(points)
+            color = (
+                int(255 * (1 - ratio)),  # B: blue at start
+                0,  # G
+                int(255 * ratio)  # R: red at end
+            )
+            cv2.line(vis_frame, points[i-1], points[i], color, 2)
+        
+        # Draw start point (green)
+        cv2.circle(vis_frame, points[0], 8, (0, 255, 0), -1)
+        cv2.putText(vis_frame, "Start", (points[0][0] + 10, points[0][1] - 10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        
+        # Draw end point (red)
+        cv2.circle(vis_frame, points[-1], 8, (0, 0, 255), -1)
+        cv2.putText(vis_frame, "End", (points[-1][0] + 10, points[-1][1] - 10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        
+        # Draw trajectory info
+        cv2.putText(vis_frame, f"Trajectory: {len(points)} points", (20, 40), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        
+        return vis_frame
 
     def _start_camera_3_after_2(self):
         """Start camera 3 after camera 2 finishes tracking."""
@@ -754,6 +854,28 @@ class VisionServer:
         cam_state = self.camera_state_manager.get(camera_id)
         if cam_state and cam_state.response_sent:
             return  # Already sent
+        
+        # Apply homography transformation at save time only
+        homography = self.camera_manager.get_homography(camera_id)
+        if homography is not None:
+            # Transform frame
+            h, w = frame.shape[:2]
+            frame = cv2.warpPerspective(frame, homography, (w, h), 
+                                        flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+            
+            # Transform center point from tracking_result
+            if tracking_result and "position" in tracking_result:
+                pos = tracking_result["position"]
+                x_pix, y_pix = pos.get("x", 0), pos.get("y", 0)
+                # Apply homography to point
+                pt = np.array([[[x_pix, y_pix]]], dtype=np.float32)
+                transformed_pt = cv2.perspectiveTransform(pt, homography)
+                tracking_result = tracking_result.copy()
+                tracking_result["position"] = tracking_result["position"].copy()
+                tracking_result["position"]["x"] = float(transformed_pt[0, 0, 0])
+                tracking_result["position"]["y"] = float(transformed_pt[0, 0, 1])
+            
+            self.logger.debug(f"Camera {camera_id}: Applied homography transformation for response")
         
         # Build response using ResponseBuilder with tracking result (Kalman filtered position)
         response_data = self.response_builder.build_first_detection_response(
@@ -1004,6 +1126,9 @@ class VisionServer:
             self.vision_active = True
             # Update TrackingManager
             self.tracking_manager.set_vision_active(True)
+            
+            # Store product_model_name for camera-specific config loading
+            self.product_model_name = product_model_name
             
             self.logger.info(f"Vision started with product model: {product_model_name}")
             self.logger.info(f"  Model file: {self.model_path}")
@@ -1276,13 +1401,45 @@ class VisionServer:
     
     def _initialize_camera(self, camera_id: int, loader_mode: str = "camera", source = None, fps: float = 30.0, camera_config_path: Optional[str] = None):
         """Initialize camera and tracker."""
-        # Get detector and calibration configs (stored during START_VISION)
-        detector_config = getattr(self, 'detector_config', {})
+        # Get calibration config (stored during START_VISION)
         calibration_config = getattr(self, 'calibration_config', None)
-        model_path = getattr(self, 'model_path', None)
+        
+        # Get camera-specific detector config from tracker_config file
+        product_model_name = getattr(self, 'product_model_name', None)
+        exec_config = self.config.execution if self.config and hasattr(self.config, 'execution') and self.config.execution else {}
+        main_config_execution = exec_config if isinstance(exec_config, dict) else (exec_config.__dict__ if hasattr(exec_config, '__dict__') else {})
+        preset_name = self.preset_name or main_config_execution.get("use_preset")
+        
+        # Try to load camera-specific detector config
+        camera_detector_config = load_camera_detector_config(
+            camera_id=camera_id,
+            product_model_name=product_model_name,
+            main_config_execution=main_config_execution,
+            preset_name=preset_name
+        )
+        
+        if camera_detector_config:
+            self.logger.info(f"Camera {camera_id}: Using camera-specific detector config from tracker_config file")
+            detector_config = camera_detector_config
+        else:
+            # Fallback to global detector config (stored during START_VISION)
+            detector_config = getattr(self, 'detector_config', {})
+            self.logger.debug(f"Camera {camera_id}: Using global detector config (no camera-specific config found)")
+        
+        # Get model_path from camera-specific or global config
+        model_path = None
+        detector_type = detector_config.get("detector_type", "yolo")
+        if detector_type == "yolo":
+            model_path_str = detector_config.get("model_path")
+            if model_path_str:
+                model_path = Path(model_path_str)
+                if not model_path.exists():
+                    # Fallback to global model_path
+                    model_path = getattr(self, 'model_path', None)
+            else:
+                model_path = getattr(self, 'model_path', None)
         
         # For binary detector, model_path can be None
-        detector_type = detector_config.get("detector_type", "yolo")
         if detector_type == "binary" and model_path is None:
             # Binary detector doesn't need model_path, this is OK
             pass
@@ -1294,6 +1451,29 @@ class VisionServer:
         if self.config and hasattr(self.config, 'execution') and self.config.execution:
             enable_undistortion = getattr(self.config.execution, 'image_undistortion', False)
         
+        # Load camera-specific tracking config and set to TrackingManager
+        camera_tracking_config = load_camera_tracking_config(
+            camera_id=camera_id,
+            product_model_name=product_model_name,
+            main_config_execution=main_config_execution,
+            main_config_tracking=self.config.tracking if self.config and self.config.tracking else None,
+            preset_name=preset_name
+        )
+        self.tracking_manager.set_camera_tracking_config(camera_id, camera_tracking_config)
+        self.logger.info(f"Camera {camera_id}: Loaded tracking config - "
+                         f"speed_near_zero={camera_tracking_config.speed_near_zero_threshold}, "
+                         f"speed_zero_frames={camera_tracking_config.speed_zero_frames_threshold}, "
+                         f"speed_threshold={camera_tracking_config.speed_threshold_pix_per_frame}")
+        
+        # Get raw tracker config dict for KalmanTracker (boundary_margin_ratio, etc.)
+        raw_tracker_config = get_camera_tracker_config(
+            camera_id=camera_id,
+            product_model_name=product_model_name,
+            main_config_execution=main_config_execution,
+            preset_name=preset_name
+        )
+        tracker_config_dict = raw_tracker_config.get("tracker", {}) if raw_tracker_config else {}
+        
         # Delegate to CameraManager
         self.camera_manager.initialize_camera(
             camera_id=camera_id,
@@ -1302,6 +1482,7 @@ class VisionServer:
             fps=fps,
             model_path=model_path,
             detector_config=detector_config,
+            tracker_config=tracker_config_dict,
             enable_undistortion=enable_undistortion,
             camera_config_path=camera_config_path
         )
