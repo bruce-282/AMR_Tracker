@@ -211,13 +211,12 @@ class Visualizer:
                             cv2.polylines(vis_frame, [pts], True, detection_color, 2)
                     
                     # Draw oriented bounding box from extracted info
-                    box_info = detection.oriented_box_info
                     #box_points = box_info["box_points"]
                     #box_i32 = box_points.reshape((-1, 1, 2)).astype(np.int32)
                     #cv2.polylines(vis_frame, [box_i32], True, box_color, 2)
                     
                     # Save angle from oriented box (degrees)
-                    self.latest_rect_angles[track_id] = float(box_info["angle"])
+                    self.latest_rect_angles[track_id] = float(detection.oriented_box_info["angle"])
                 except Exception as e:
                     print(f"⚠ Failed to draw oriented box: {e}")
             elif getattr(detection, "masks", None) is not None:

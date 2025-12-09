@@ -39,6 +39,14 @@ from src.utils.config_loader import (
     load_calibration_config,
     get_execution_config,
 )
+from src.utils.image_utils import (
+    draw_trajectory_on_frame,
+    transform_detection_with_homography,
+    transform_tracking_result_with_homography,
+    transform_trajectory_data_with_homography,
+    warp_frame_with_homography,
+    save_image,
+)
 from config import SystemConfig, TrackingConfig
 
 
@@ -704,28 +712,10 @@ class VisionServer:
         
         # Transform trajectory points if homography is available
         if homography is not None and len(trajectory_data) > 0:
-            transformed_trajectory = []
-            for point in trajectory_data:
-                x_pix = point.get("x_pix", 0)
-                y_pix = point.get("y_pix", 0)
-                
-                # Apply homography to point
-                pt = np.array([[[x_pix, y_pix]]], dtype=np.float32)
-                transformed_pt = cv2.perspectiveTransform(pt, homography)
-                new_x_pix = float(transformed_pt[0, 0, 0])
-                new_y_pix = float(transformed_pt[0, 0, 1])
-                
-                # Recalculate mm values with transformed pixel coordinates
-                pixel_size = self.camera_manager.get_pixel_size(camera_id)
-                
-                transformed_point = point.copy()
-                transformed_point["x_pix"] = round(new_x_pix, 1)
-                transformed_point["y_pix"] = round(new_y_pix, 1)
-                transformed_point["x"] = round(new_x_pix * pixel_size, 3)
-                transformed_point["y"] = round(new_y_pix * pixel_size, 3)
-                transformed_trajectory.append(transformed_point)
-            
-            trajectory_data = transformed_trajectory
+            pixel_size = self.camera_manager.get_pixel_size(camera_id)
+            trajectory_data = transform_trajectory_data_with_homography(
+                trajectory_data, homography, pixel_size
+            )
             self.logger.debug(f"Camera {camera_id}: Applied homography transformation to {len(trajectory_data)} trajectory points")
         
         # Save result image with trajectory drawn from transformed trajectory data
@@ -740,12 +730,10 @@ class VisionServer:
             if frame is not None:
                 # Apply homography to frame
                 if homography is not None:
-                    h, w = frame.shape[:2]
-                    frame = cv2.warpPerspective(frame, homography, (w, h), 
-                                                flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+                    frame = warp_frame_with_homography(frame, homography)
                 
                 # Draw trajectory from transformed trajectory data
-                vis_frame = self._draw_trajectory_on_frame(frame, trajectory_data)
+                vis_frame = draw_trajectory_on_frame(frame, trajectory_data)
                 
                 result_image_path.parent.mkdir(parents=True, exist_ok=True)
                 success = cv2.imwrite(str(result_image_path), vis_frame)
@@ -767,60 +755,6 @@ class VisionServer:
         self._start_camera_3_after_2()
         
         return True
-
-    def _draw_trajectory_on_frame(self, frame: np.ndarray, trajectory_data: List[Dict]) -> np.ndarray:
-        """
-        Draw trajectory on frame using trajectory data.
-        
-        Args:
-            frame: Input frame
-            trajectory_data: List of trajectory points with x_pix, y_pix
-        
-        Returns:
-            Frame with trajectory drawn
-        """
-        vis_frame = frame.copy()
-        
-        if len(trajectory_data) < 2:
-            return vis_frame
-        
-        # Extract pixel coordinates
-        points = []
-        for point in trajectory_data:
-            x_pix = point.get("x_pix")
-            y_pix = point.get("y_pix")
-            if x_pix is not None and y_pix is not None:
-                points.append((int(x_pix), int(y_pix)))
-        
-        if len(points) < 2:
-            return vis_frame
-        
-        # Draw trajectory line
-        for i in range(1, len(points)):
-            # Color gradient from blue (old) to red (new)
-            ratio = i / len(points)
-            color = (
-                int(255 * (1 - ratio)),  # B: blue at start
-                0,  # G
-                int(255 * ratio)  # R: red at end
-            )
-            cv2.line(vis_frame, points[i-1], points[i], color, 2)
-        
-        # Draw start point (green)
-        cv2.circle(vis_frame, points[0], 8, (0, 255, 0), -1)
-        cv2.putText(vis_frame, "Start", (points[0][0] + 10, points[0][1] - 10), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        
-        # Draw end point (red)
-        cv2.circle(vis_frame, points[-1], 8, (0, 0, 255), -1)
-        cv2.putText(vis_frame, "End", (points[-1][0] + 10, points[-1][1] - 10), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-        
-        # Draw trajectory info
-        cv2.putText(vis_frame, f"Trajectory: {len(points)} points", (20, 40), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-        
-        return vis_frame
 
     def _start_camera_3_after_2(self):
         """Start camera 3 after camera 2 finishes tracking."""
@@ -859,21 +793,14 @@ class VisionServer:
         homography = self.camera_manager.get_homography(camera_id)
         if homography is not None:
             # Transform frame
-            h, w = frame.shape[:2]
-            frame = cv2.warpPerspective(frame, homography, (w, h), 
-                                        flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+            frame = warp_frame_with_homography(frame, homography)
             
-            # Transform center point from tracking_result
-            if tracking_result and "position" in tracking_result:
-                pos = tracking_result["position"]
-                x_pix, y_pix = pos.get("x", 0), pos.get("y", 0)
-                # Apply homography to point
-                pt = np.array([[[x_pix, y_pix]]], dtype=np.float32)
-                transformed_pt = cv2.perspectiveTransform(pt, homography)
-                tracking_result = tracking_result.copy()
-                tracking_result["position"] = tracking_result["position"].copy()
-                tracking_result["position"]["x"] = float(transformed_pt[0, 0, 0])
-                tracking_result["position"]["y"] = float(transformed_pt[0, 0, 1])
+            # Transform detection (bbox, masks, oriented_box_info)
+            detection = transform_detection_with_homography(detection, homography)
+            
+            # Transform tracking result (position, trajectory, bbox)
+            if tracking_result:
+                tracking_result = transform_tracking_result_with_homography(tracking_result, homography)
             
             self.logger.debug(f"Camera {camera_id}: Applied homography transformation for response")
         
