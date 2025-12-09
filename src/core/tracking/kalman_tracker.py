@@ -265,10 +265,10 @@ class KalmanTracker:
             pred_cy = state_pre[1]
             
             # Calculate thresholds (70% of image size)
-            x_threshold_min = img_width * 0.3  # 30% from left edge
-            x_threshold_max = img_width * 0.7   # 70% from left edge (30% from right)
-            y_threshold_min = img_height * 0.3  # 30% from top edge
-            y_threshold_max = img_height * 0.7  # 70% from top edge (30% from bottom)
+            x_threshold_min = img_width * 0.1   # 30% from left edge
+            x_threshold_max = img_width * 0.9   # 70% from left edge (30% from right)
+            y_threshold_min = img_height * 0.1  # 30% from top edge
+            y_threshold_max = img_height * 0.9  # 70% from top edge (30% from bottom)
             
             # Check if position is outside the valid region
             if (pred_cx < x_threshold_min or pred_cx > x_threshold_max or
@@ -899,6 +899,7 @@ class KalmanTracker:
         self.last_detection_frame = 0
         self.last_timestamp = None
         self.timestamp_history.clear()
+        self.speed_near_zero_frames = 0
         
         # self.fps = 30
         # self.pixel_size = 1.0
