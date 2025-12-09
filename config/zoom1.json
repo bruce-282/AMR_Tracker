@@ -27,17 +27,17 @@
         "loader_mode": "camera",
         "camera_1": {
           "id": "I3ZEB19C",
-          "config": "config/camera1_config.json",
+          "config": "config/cam1_config.json",
           "tracker_config": "config/cam1_tracker_config.json"
         },
         "camera_2": {
           "id": "I3ZEB1AD",
-          "config": "config/camera2_config.json",
+          "config": "config/cam2_config.json",
           "tracker_config": "config/cam2_tracker_config.json"
         },
         "camera_3": {
           "id": "I3ZEB19D",
-          "config": "config/camera3_config.json",
+          "config": "config/cam3_config.json",
           "tracker_config": "config/cam3_tracker_config.json"
         }
       },
@@ -45,17 +45,17 @@
         "loader_mode": "video",
         "camera_1": {
           "id": "data/Test_videos_11AM/CAM1_day5_11AM.mp4",
-          "config": "config/camera1_config.json",
+          "config": "config/cam1_config.json",
           "tracker_config": "config/cam1_tracker_config.json"
         },
         "camera_2": {
           "id": "data/Test_videos_11AM/CAM2_day5_11AM.mp4",
-          "config": "config/camera2_config.json",
+          "config": "config/cam2_config.json",
           "tracker_config": "config/cam2_tracker_config.json"
         },
         "camera_3": {
           "id": "data/Test_videos_11AM/CAM3_day5_11AM.mp4",
-          "config": "config/camera3_config.json",
+          "config": "config/cam3_config.json",
           "tracker_config": "config/cam3_tracker_config.json"
         }
       },
