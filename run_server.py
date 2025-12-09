@@ -31,7 +31,7 @@ def main():
     # )
     parser.add_argument(
         "--preset",
-        default="video_tracking",
+        default="camera_tracking",
         help="Preset name to use (e.g., 'camera_tracking', 'video_tracking', 'sequence_tracking'). If not specified, uses default_loader_mode from config."
     )
     

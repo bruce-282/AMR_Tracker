@@ -6,9 +6,9 @@
   "Iris": 25,
   "Zoom": 0,
   "ExposureTime": 32000,
-  "Gain": 1.0,
+  "Gain": 3.6,
   "ExposureAuto": "Off",
-  "GainAuto": "Continuous",
+  "GainAuto": "Off",
   "WhiteBalanceAuto": "Off",
   "calibration": {
     "CameraMatrix": [
