@@ -51,7 +51,7 @@ class Detection:
             self.oriented_box_info = self._extract_box_from_xywhr(xywhr)
         
         if self.oriented_box_info is None and masks is not None and image_size is not None:
-            self.oriented_box_info = self._extract_box_from_mask(image_size)
+            self.oriented_box_info = Detection.extract_box_from_mask(masks, image_size)
             #self.logger.info(f"Extracted oriented box from mask: {self.oriented_box_info}")
         
         # Use oriented box if available, otherwise use original bbox
@@ -126,7 +126,8 @@ class Detection:
             print(f"[WARN] Failed to extract box from xywhr: {e}")
             return None
     
-    def _clean_mask(self, mask: np.ndarray, min_area: int = 200) -> np.ndarray:
+    @staticmethod
+    def clean_mask(mask: np.ndarray, min_area: int = 200) -> np.ndarray:
         """
         Clean mask by removing small components.
         
@@ -144,24 +145,28 @@ class Detection:
                 cv2.fillPoly(out, [cnt], 255)
         return out
 
-    def _extract_box_from_mask(
-        self, image_size: Tuple[int, int], min_area: int = 200
+    @staticmethod
+    def extract_box_from_mask(
+        masks: List[List[float]], 
+        image_size: Tuple[int, int], 
+        min_area: int = 200
     ) -> Optional[Dict]:
         """
         Extract oriented bounding box from mask using minAreaRect.
         
         Args:
+            masks: Mask polygon points
             image_size: Image size (width, height)
             min_area: Minimum area threshold for mask cleaning
-            
+        
         Returns:
             Dictionary with center, width, height, angle, and box_points, or None if failed
         """
-        if self.masks is None:
+        if masks is None:
             return None
         
         try:
-            poly = np.asarray(self.masks, dtype=np.float32)
+            poly = np.asarray(masks, dtype=np.float32)
             if poly.ndim != 2 or poly.shape[1] != 2 or poly.shape[0] < 3:
                 return None
             
@@ -173,7 +178,7 @@ class Detection:
             cv2.fillPoly(bin_mask, [pts], 255)
             
             # Clean mask
-            m = self._clean_mask(bin_mask, min_area=min_area)
+            m = Detection.clean_mask(bin_mask, min_area=min_area)
             if m.max() == 0:
                 return None
             

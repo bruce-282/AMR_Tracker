@@ -127,33 +127,31 @@ class ResponseBuilder:
         Build first detection response for cameras 1, 3.
         
         Uses Kalman filtered position from tracking_result instead of raw detection position.
+        Note: tracking_result, detection, and frame are expected to be already transformed by homography
+        in _send_first_detection_response.
         
         Args:
             camera_id: Camera ID
-            detection: Detection object
-            tracking_result: Kalman filtered tracking result with position and orientation
-            frame: Frame image
+            detection: Detection object (already transformed by homography)
+            tracking_result: Kalman filtered tracking result with position and orientation (already transformed by homography)
+            frame: Frame image (already transformed by homography)
         
         Returns:
             Response data dictionary
         """
         # Use Kalman filtered position from tracking result (more accurate than raw detection)
-        position = tracking_result.get("position", {})
-        orientation = tracking_result.get("orientation", {})
+        # Note: tracking_result is already transformed by homography in _send_first_detection_response
+        position = tracking_result.get("position", {}) if tracking_result else {}
+        orientation = tracking_result.get("orientation", {}) if tracking_result else {}
         
-        # Get mm coordinates directly from tracking result (already converted by Kalman tracker)
-        x_mm = position.get("x_mm", 0.0)
-        y_mm = position.get("y_mm", 0.0)
+        # Get mm coordinates from transformed pixel position * pixel_size (x, y separately)
+        pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
+        x_pix = position.get("x", 0.0)
+        y_pix = position.get("y", 0.0)
+        x_mm = x_pix * pixel_size_dict['x']
+        y_mm = y_pix * pixel_size_dict['y']
         
-        # If x_mm/y_mm not available, fallback to pixel position * pixel_size (x, y separately)
-        if x_mm == 0.0 and y_mm == 0.0:
-            pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
-            x_pix = position.get("x", 0.0)
-            y_pix = position.get("y", 0.0)
-            x_mm = x_pix * pixel_size_dict['x']
-            y_mm = y_pix * pixel_size_dict['y']
-        
-        # Get orientation from tracking result (Kalman filtered)
+        # Get orientation from tracking result (Kalman filtered) - orientation doesn't change with homography
         rz = orientation.get("theta_normalized_deg", 0.0)
         
         # Get pixel position for visualization
@@ -161,17 +159,19 @@ class ResponseBuilder:
         
         logger.info(
             f"Camera {camera_id}: First detection response - "
-            f"position: ({x_mm:.2f}, {y_mm:.2f}) mm, yaw: {rz:.2f} deg (Kalman filtered)"
+            f"position: ({x_mm:.2f}, {y_mm:.2f}) mm, yaw: {rz:.2f} deg (Kalman filtered, homography transformed)"
         )
         
         # Save result image
+        # Note: frame, detection, tracking_result are already transformed, so apply_homography=False
         result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
         self.save_result_image(
             camera_id,
             result_image_path,
             frame=frame,
             detections=[detection],
-            tracking_results=[tracking_result] if tracking_result else self._create_tracking_result_from_detection(detection, center, rz)
+            tracking_results=[tracking_result] if tracking_result else self._create_tracking_result_from_detection(detection, center, rz),
+            apply_homography=False  # Already transformed in _send_first_detection_response
         )
         
         return {
@@ -201,7 +201,8 @@ class ResponseBuilder:
         image_path: Path,
         frame: Optional[np.ndarray] = None,
         detections: Optional[List[Detection]] = None,
-        tracking_results: Optional[List[Dict]] = None
+        tracking_results: Optional[List[Dict]] = None,
+        apply_homography: bool = True
     ):
         """
         Save result image with tracking visualization.
@@ -210,8 +211,9 @@ class ResponseBuilder:
             camera_id: Camera ID
             image_path: Path to save image
             frame: Optional frame (will be read from loader if not provided)
-            detections: Optional detections
-            tracking_results: Optional tracking results
+            detections: Optional detections (will be transformed if apply_homography=True)
+            tracking_results: Optional tracking results (will be transformed if apply_homography=True)
+            apply_homography: Whether to apply homography transformation (default: True)
         """
         try:
             # Get frame if not provided
@@ -219,8 +221,6 @@ class ResponseBuilder:
                 loader = self.camera_manager.camera_loaders.get(camera_id)
                 if loader:
                     ret, frame = loader.read()
-                    # 호모그래피 변환은 저장 시점에만 적용 (여기서는 제거)
-                    # frame = self.camera_manager.warp_frame(camera_id, frame)
                     if not ret or frame is None:
                         return
                 else:
@@ -245,6 +245,33 @@ class ResponseBuilder:
                         "orientation": {"theta_deg": state[2]},
                         "bbox": bbox
                     })
+            
+            # Apply homography transformation at save time if requested
+            if apply_homography:
+                from src.utils.image_utils import (
+                    warp_frame_with_homography,
+                    transform_detection_with_homography,
+                    transform_tracking_result_with_homography
+                )
+                
+                homography = self.camera_manager.get_homography(camera_id)
+                if homography is not None:
+                    # Transform frame
+                    frame = warp_frame_with_homography(frame, homography)
+                    
+                    # Transform detections (bbox, masks, oriented_box_info)
+                    if detections:
+                        detections = [transform_detection_with_homography(det, homography) for det in detections]
+                    
+                    # Transform tracking results (position, trajectory, bbox)
+                    if tracking_results:
+                        tracking_results = [
+                            transform_tracking_result_with_homography(tr, homography) 
+                            if tr else tr 
+                            for tr in tracking_results
+                        ]
+                    
+                    logger.debug(f"Camera {camera_id}: Applied homography transformation in save_result_image")
             
             # Visualize and save
             vis_frame = self.visualize_results(

@@ -37,17 +37,17 @@
       "video_tracking": {
         "loader_mode": "video",
         "camera_1": {
-          "id": "data/Test_videos_11AM/CAM1_day5_11AM.mp4",
+          "id": "data/251210_Test_videos/CAM1_1.mp4",
           "config": "config/cam1_config.json",
           "tracker_config": "config/cam1_tracker_config.json"
         },
         "camera_2": {
-          "id": "data/Test_videos_11AM/CAM2_day5_11AM.mp4",
+          "id": "data/251210_Test_videos/CAM2_1.mp4",
           "config": "config/cam2_config.json",
           "tracker_config": "config/cam2_tracker_config.json"
         },
         "camera_3": {
-          "id": "data/Test_videos_11AM/CAM3_day5_11AM.mp4",
+          "id": "data/251210_Test_videos/CAM3_1.mp4",
           "config": "config/cam3_config.json",
           "tracker_config": "config/cam3_tracker_config.json"
         }

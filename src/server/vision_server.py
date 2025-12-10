@@ -806,13 +806,20 @@ class VisionServer:
             return  # Already sent
         
         # Apply homography transformation at save time only
+        # Transform data for both response calculation and image saving
         homography = self.camera_manager.get_homography(camera_id)
         if homography is not None:
             # Transform frame
             frame = warp_frame_with_homography(frame, homography)
             
+            # Get transformed frame size for mask extraction
+            transformed_h, transformed_w = frame.shape[:2]
+            
             # Transform detection (bbox, masks, oriented_box_info)
-            detection = transform_detection_with_homography(detection, homography)
+            # Pass transformed image size so oriented_box_info can be re-extracted from transformed mask
+            detection = transform_detection_with_homography(
+                detection, homography, transformed_image_size=(transformed_w, transformed_h)
+            )
             
             # Transform tracking result (position, trajectory, bbox)
             if tracking_result:
@@ -821,6 +828,7 @@ class VisionServer:
             self.logger.debug(f"Camera {camera_id}: Applied homography transformation for response")
         
         # Build response using ResponseBuilder with tracking result (Kalman filtered position)
+        # Note: tracking_result is already transformed, so response will use transformed coordinates
         response_data = self.response_builder.build_first_detection_response(
             camera_id, detection, tracking_result, frame
         )

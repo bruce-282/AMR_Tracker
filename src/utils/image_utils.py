@@ -159,7 +159,8 @@ def transform_polygon_with_homography(
 
 def transform_detection_with_homography(
     detection: Detection, 
-    homography: np.ndarray
+    homography: np.ndarray,
+    transformed_image_size: Optional[Tuple[int, int]] = None
 ) -> Detection:
     """
     Transform detection coordinates with homography.
@@ -167,6 +168,8 @@ def transform_detection_with_homography(
     Args:
         detection: Detection object
         homography: 3x3 homography matrix
+        transformed_image_size: Optional image size (width, height) of transformed frame.
+                                If None, will be estimated from transformed mask bounds.
     
     Returns:
         New Detection object with transformed coordinates
@@ -179,27 +182,6 @@ def transform_detection_with_homography(
     if detection.masks is not None:
         new_masks = transform_polygon_with_homography(detection.masks, homography)
     
-    # Transform oriented_box_info if available
-    new_oriented_box_info = None
-    if hasattr(detection, 'oriented_box_info') and detection.oriented_box_info is not None:
-        try:
-            obi = detection.oriented_box_info
-            new_oriented_box_info = obi.copy()
-            
-            # Transform center directly (same method as tracking position)
-            if "center" in obi and obi["center"] is not None:
-                center = obi["center"]
-                new_center = transform_point_with_homography((center[0], center[1]), homography)
-                new_oriented_box_info["center"] = new_center
-            
-            # Transform box_points if available (for visualization)
-            if "box_points" in obi and obi["box_points"] is not None:
-                box_pts = np.array(obi["box_points"], dtype=np.float32).reshape(-1, 1, 2)
-                transformed_box = cv2.perspectiveTransform(box_pts, homography)
-                new_oriented_box_info["box_points"] = transformed_box.reshape(-1, 2)
-        except Exception:
-            pass
-    
     # Create new detection with transformed coordinates
     new_detection = Detection(
         bbox=new_bbox,
@@ -211,8 +193,29 @@ def transform_detection_with_homography(
         masks=new_masks
     )
     
-    if new_oriented_box_info:
-        new_detection.oriented_box_info = new_oriented_box_info
+    # Re-extract oriented_box_info from transformed mask if available
+    # This ensures accurate box_points, center, width, height, and angle after homography transformation
+    if new_masks is not None:
+        # Determine image size for mask extraction
+        if transformed_image_size is None:
+            # Estimate image size from transformed mask bounds
+            poly_arr = np.asarray(new_masks, dtype=np.float32)
+            if poly_arr.ndim == 2 and poly_arr.shape[1] == 2:
+                max_x = int(np.max(poly_arr[:, 0])) + 100
+                max_y = int(np.max(poly_arr[:, 1])) + 100
+                # Use common image sizes as fallback, but ensure it's large enough
+                estimated_width = max(max_x, 1920)
+                estimated_height = max(max_y, 1080)
+                image_size = (estimated_width, estimated_height)
+            else:
+                image_size = (1920, 1080)  # Default fallback
+        else:
+            image_size = transformed_image_size
+        
+        # Extract oriented_box_info from transformed mask
+        new_oriented_box_info = Detection.extract_box_from_mask(new_masks, image_size)
+        if new_oriented_box_info:
+            new_detection.oriented_box_info = new_oriented_box_info
     
     return new_detection
 
