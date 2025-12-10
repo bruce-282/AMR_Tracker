@@ -394,7 +394,8 @@ class EnhancedAMRTracker:
         return results
 
     def visualize_results(
-        self, frame: np.ndarray, detections: List[Detection], tracking_results: List[Dict]
+        self, frame: np.ndarray, detections: List[Detection], tracking_results: List[Dict],
+        draw_oriented_box: bool = False
     ) -> np.ndarray:
         """Visualize results using appropriate visualizer"""
         # Use multi-object AMR tracker visualization
@@ -402,7 +403,7 @@ class EnhancedAMRTracker:
             # Use enhanced visualizer if available
             detection_objects = detections
             vis_frame = self.visualizer.draw_single_object(
-                frame, detection_objects, tracking_results
+                frame, detection_objects, tracking_results, draw_oriented_box=draw_oriented_box
             )
         else:
             # Use basic AMR tracker visualization

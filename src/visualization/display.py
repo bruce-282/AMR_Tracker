@@ -155,7 +155,8 @@ class Visualizer:
         return out
 
     def draw_single_object(
-        self, frame: np.ndarray, detections: List[Dict], trackings: List[Dict]
+        self, frame: np.ndarray, detections: List[Dict], trackings: List[Dict],
+        draw_oriented_box: bool = False
     ) -> np.ndarray:
         """
         Draw detection results on frame.
@@ -163,7 +164,8 @@ class Visualizer:
         Args:
             frame: Input image
             detections: List of Detection objects
-            measurements: List of measurement results
+            trackings: List of tracking results
+            draw_oriented_box: Whether to draw oriented bounding box (only for saved images)
 
         Returns:
             Frame with visualizations
@@ -210,11 +212,11 @@ class Visualizer:
                             pts = poly.reshape((-1, 1, 2)).astype(np.int32)
                             cv2.polylines(vis_frame, [pts], True, detection_color, 2)
                     
-                    # Draw oriented bounding box from extracted info
-                    box_points = detection.oriented_box_info["box_points"]
-                    # box_points = box_info["box_points"]
-                    box_i32 = box_points.reshape((-1, 1, 2)).astype(np.int32)
-                    cv2.polylines(vis_frame, [box_i32], True, box_color, 2)
+                    # Draw oriented bounding box from extracted info (only when saving image)
+                    if draw_oriented_box:
+                        box_points = detection.oriented_box_info["box_points"]
+                        box_i32 = box_points.reshape((-1, 1, 2)).astype(np.int32)
+                        cv2.polylines(vis_frame, [box_i32], True, box_color, 2)
                     
                     # Save angle from oriented box (degrees)
                     self.latest_rect_angles[track_id] = float(detection.oriented_box_info["angle"])

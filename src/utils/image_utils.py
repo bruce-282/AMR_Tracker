@@ -2,9 +2,13 @@
 
 import cv2
 import numpy as np
+import logging
 from typing import Dict, List, Optional, Tuple, Any, Union
+from pathlib import Path
 
 from src.core.detection import Detection
+
+logger = logging.getLogger(__name__)
 
 
 def draw_trajectory_on_frame(
@@ -157,10 +161,209 @@ def transform_polygon_with_homography(
     return polygon
 
 
+def refine_box_with_edges(
+    frame: np.ndarray,
+    oriented_box_info: Dict,
+    search_range_px: int = 5,
+    debug_image_path: Optional[str] = None
+) -> Optional[Dict]:
+    """
+    Refine oriented box by searching for sharpest edges along each side.
+    
+    Args:
+        frame: Input image (grayscale or BGR)
+        oriented_box_info: Dictionary with rect, center, width, height, angle, box_points
+        search_range_px: Pixel range to search along each edge (±search_range_px)
+        debug_image_path: Optional path to save debug image showing before/after refinement
+    
+    Returns:
+        Refined oriented_box_info dictionary, or None if refinement failed
+    """
+    try:
+        # Convert to grayscale if needed
+        if len(frame.shape) == 3:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = frame.copy()
+        
+        # Get Canny edges for edge detection
+        edges = cv2.Canny(gray, 50, 150)
+        
+        # Get original rect
+        rect = oriented_box_info.get("rect")
+        if rect is None:
+            return None
+        
+        center, (w, h), angle = rect
+        angle_rad = np.deg2rad(angle)
+        
+        # Get box points for the 4 sides
+        box_points = cv2.boxPoints(rect).astype(np.float32)
+        
+        # Define the 4 sides (each side is a line segment)
+        sides = [
+            (box_points[0], box_points[1]),  # Side 0
+            (box_points[1], box_points[2]),  # Side 1
+            (box_points[2], box_points[3]),  # Side 2
+            (box_points[3], box_points[0]),  # Side 3
+        ]
+        
+        refined_points = []
+        for side_idx, (p1, p2) in enumerate(sides):
+            # Calculate perpendicular direction (normal to the edge, pointing outward)
+            dx = p2[0] - p1[0]
+            dy = p2[1] - p1[1]
+            length = np.sqrt(dx*dx + dy*dy)
+            if length < 1e-6:
+                refined_points.append(p1)
+                continue
+            
+            # Normalize direction vector
+            dx_norm = dx / length
+            dy_norm = dy / length
+            
+            # Perpendicular direction (rotate 90 degrees)
+            perp_x = -dy_norm
+            perp_y = dx_norm
+            
+            # Sample points along the edge
+            num_samples = max(int(length), 10)
+            best_offset = 0.0
+            max_edge_strength = 0.0
+            
+            # Search along perpendicular direction
+            for offset in np.arange(-search_range_px, search_range_px + 0.5, 0.5):
+                edge_strength = 0.0
+                valid_samples = 0
+                
+                for i in range(num_samples):
+                    t = i / max(num_samples - 1, 1)
+                    # Point along the edge
+                    px = p1[0] + t * dx
+                    py = p1[1] + t * dy
+                    
+                    # Move perpendicular to the edge
+                    search_x = int(px + offset * perp_x)
+                    search_y = int(py + offset * perp_y)
+                    
+                    # Check bounds
+                    if (0 <= search_y < edges.shape[0] and 
+                        0 <= search_x < edges.shape[1]):
+                        edge_strength += float(edges[search_y, search_x])
+                        valid_samples += 1
+                
+                if valid_samples > 0:
+                    avg_strength = edge_strength / valid_samples
+                    if avg_strength > max_edge_strength:
+                        max_edge_strength = avg_strength
+                        best_offset = offset
+            
+            # Apply best offset to both endpoints
+            refined_p1 = (
+                p1[0] + best_offset * perp_x,
+                p1[1] + best_offset * perp_y
+            )
+            refined_p2 = (
+                p2[0] + best_offset * perp_x,
+                p2[1] + best_offset * perp_y
+            )
+            
+            # Store refined points (each side contributes its second point)
+            if side_idx == 0:
+                refined_points.append(refined_p1)  # First point of first side
+            refined_points.append(refined_p2)  # Second point of each side
+        
+        # Recalculate minAreaRect from refined points
+        refined_points_arr = np.array(refined_points, dtype=np.float32)
+        refined_rect = cv2.minAreaRect(refined_points_arr)
+        refined_center, (refined_w, refined_h), refined_angle = refined_rect
+        
+        # Normalize angle (same logic as extract_box_from_mask)
+        if refined_h > refined_w:
+            normalized_angle = refined_angle - 90
+            long_axis = refined_h
+            short_axis = refined_w
+        else:
+            normalized_angle = refined_angle
+            long_axis = refined_w
+            short_axis = refined_h
+        
+        # Normalize angle to -90 ~ 90 range
+        while normalized_angle > 90:
+            normalized_angle -= 180
+        while normalized_angle < -90:
+            normalized_angle += 180
+        
+        # Get refined box points
+        refined_box_points = cv2.boxPoints(refined_rect).astype(np.float32)
+        
+        # Create debug image if requested
+        if debug_image_path:
+            try:
+                logger.debug(f"Attempting to save refinement debug image to {debug_image_path}")
+                # Convert to BGR if grayscale
+                if len(frame.shape) == 2:
+                    debug_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                else:
+                    debug_frame = frame.copy()
+                
+                # Draw original box (blue)
+                original_box_points = oriented_box_info.get("box_points", box_points)
+                original_box_i32 = original_box_points.reshape((-1, 1, 2)).astype(np.int32)
+                cv2.polylines(debug_frame, [original_box_i32], True, (255, 0, 0), 2)  # Blue
+                
+                # Draw refined box (green)
+                refined_box_i32 = refined_box_points.reshape((-1, 1, 2)).astype(np.int32)
+                cv2.polylines(debug_frame, [refined_box_i32], True, (0, 255, 0), 2)  # Green
+                
+                # Draw original center (blue circle)
+                original_center = oriented_box_info.get("center", center)
+                cv2.circle(debug_frame, (int(original_center[0]), int(original_center[1])), 5, (255, 0, 0), -1)
+                
+                # Draw refined center (green circle)
+                cv2.circle(debug_frame, (int(refined_center[0]), int(refined_center[1])), 5, (0, 255, 0), -1)
+                
+                # Add text labels
+                cv2.putText(debug_frame, "Original (Blue)", (10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                cv2.putText(debug_frame, "Refined (Green)", (10, 60), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                
+                # Save debug image
+                debug_path_obj = Path(debug_image_path)
+                debug_path_obj.parent.mkdir(parents=True, exist_ok=True)
+                success = cv2.imwrite(debug_image_path, debug_frame)
+                if success:
+                    logger.info(f"Refinement debug image saved: {debug_image_path}")
+                else:
+                    logger.warning(f"Failed to save refinement debug image (cv2.imwrite returned False): {debug_image_path}")
+            except Exception as e:
+                logger.error(f"Failed to save refinement debug image: {e}", exc_info=True)
+        
+        # Create refined oriented_box_info
+        refined_info = oriented_box_info.copy()
+        refined_info["center"] = refined_center
+        refined_info["width"] = long_axis
+        refined_info["height"] = short_axis
+        refined_info["angle"] = normalized_angle
+        refined_info["angle_rad"] = np.deg2rad(normalized_angle)
+        refined_info["box_points"] = refined_box_points
+        refined_info["rect"] = refined_rect
+        
+        return refined_info
+        
+    except Exception as e:
+        print(f"⚠ Failed to refine box with edges: {e}")
+        return None
+
+
 def transform_detection_with_homography(
     detection: Detection, 
     homography: np.ndarray,
-    transformed_image_size: Optional[Tuple[int, int]] = None
+    transformed_image_size: Optional[Tuple[int, int]] = None,
+    frame: Optional[np.ndarray] = None,
+    debug_base_path: Optional[Path] = None,
+    camera_id: Optional[int] = None
 ) -> Detection:
     """
     Transform detection coordinates with homography.
@@ -215,7 +418,30 @@ def transform_detection_with_homography(
         # Extract oriented_box_info from transformed mask
         new_oriented_box_info = Detection.extract_box_from_mask(new_masks, image_size)
         if new_oriented_box_info:
+            # Apply edge-based refinement if rect is available
+            if "rect" in new_oriented_box_info and frame is not None:
+                # Prepare debug image path if requested
+                debug_image_path = None
+                if debug_base_path is not None and camera_id is not None:
+                    debug_image_path = str(debug_base_path / f"cam_{camera_id}_refinement_debug.png")
+                    logger.debug(f"Creating refinement debug image at {debug_image_path}")
+                else:
+                    logger.debug(f"Debug image not created: debug_base_path={debug_base_path}, camera_id={camera_id}")
+                
+                refined_oriented_box_info = refine_box_with_edges(
+                    frame, new_oriented_box_info, search_range_px=10, debug_image_path=debug_image_path
+                )
+                if refined_oriented_box_info:
+                    new_oriented_box_info = refined_oriented_box_info
+            
             new_detection.oriented_box_info = new_oriented_box_info
+            # Recalculate bbox from re-extracted oriented_box_info (same as Detection.__init__)
+            center = new_oriented_box_info["center"]
+            width = new_oriented_box_info["width"]
+            height = new_oriented_box_info["height"]
+            x = center[0] - width / 2
+            y = center[1] - height / 2
+            new_detection.bbox = [x, y, width, height]
     
     return new_detection
 

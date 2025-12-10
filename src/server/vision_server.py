@@ -816,9 +816,15 @@ class VisionServer:
             transformed_h, transformed_w = frame.shape[:2]
             
             # Transform detection (bbox, masks, oriented_box_info)
-            # Pass transformed image size so oriented_box_info can be re-extracted from transformed mask
+            # Pass transformed image size and frame so oriented_box_info can be re-extracted and refined
+            # Also pass debug_base_path for refinement debug images
+            debug_base_path = getattr(self.response_builder, 'debug_base_path', None)
             detection = transform_detection_with_homography(
-                detection, homography, transformed_image_size=(transformed_w, transformed_h)
+                detection, homography, 
+                transformed_image_size=(transformed_w, transformed_h),
+                frame=frame,
+                debug_base_path=debug_base_path,
+                camera_id=camera_id
             )
             
             # Transform tracking result (position, trajectory, bbox)

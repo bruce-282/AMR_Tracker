@@ -139,27 +139,52 @@ class ResponseBuilder:
         Returns:
             Response data dictionary
         """
-        # Use Kalman filtered position from tracking result (more accurate than raw detection)
-        # Note: tracking_result is already transformed by homography in _send_first_detection_response
-        position = tracking_result.get("position", {}) if tracking_result else {}
-        orientation = tracking_result.get("orientation", {}) if tracking_result else {}
-        
-        # Get mm coordinates from transformed pixel position * pixel_size (x, y separately)
+        # Use center from re-extracted oriented_box_info (from transformed mask) if available
+        # Otherwise fallback to Kalman filtered position from tracking result
+        # Note: detection is already transformed by homography in _send_first_detection_response
         pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
-        x_pix = position.get("x", 0.0)
-        y_pix = position.get("y", 0.0)
+        
+        # Priority 1: Use center from re-extracted oriented_box_info (from transformed mask)
+        if (hasattr(detection, 'oriented_box_info') and 
+            detection.oriented_box_info is not None and 
+            "center" in detection.oriented_box_info):
+            center = detection.oriented_box_info["center"]
+            x_pix = center[0]
+            y_pix = center[1]
+        else:
+            # Priority 2: Fallback to Kalman filtered position from tracking result
+            position = tracking_result.get("position", {}) if tracking_result else {}
+            x_pix = position.get("x", 0.0)
+            y_pix = position.get("y", 0.0)
+            center = (x_pix, y_pix)
+        
+        # Get mm coordinates from pixel position * pixel_size (x, y separately)
         x_mm = x_pix * pixel_size_dict['x']
         y_mm = y_pix * pixel_size_dict['y']
         
-        # Get orientation from tracking result (Kalman filtered) - orientation doesn't change with homography
-        rz = orientation.get("theta_normalized_deg", 0.0)
+        # Get orientation: Priority 1) from refined oriented_box_info, 2) from tracking result
+        if (hasattr(detection, 'oriented_box_info') and 
+            detection.oriented_box_info is not None and 
+            "angle" in detection.oriented_box_info):
+            # Use angle from refined oriented_box_info (from transformed mask with edge refinement)
+            rz = detection.oriented_box_info["angle"]
+        else:
+            # Fallback to Kalman filtered orientation from tracking result
+            orientation = tracking_result.get("orientation", {}) if tracking_result else {}
+            rz = orientation.get("theta_normalized_deg", 0.0)
         
-        # Get pixel position for visualization
-        center = (position.get("x", 0.0), position.get("y", 0.0))
-        
+        # Determine source for logging
+        has_oriented_box = (hasattr(detection, 'oriented_box_info') and 
+                           detection.oriented_box_info is not None)
+        if has_oriented_box and "angle" in detection.oriented_box_info:
+            source = "refined oriented_box_info (edge-based)"
+        elif has_oriented_box:
+            source = "re-extracted oriented_box_info"
+        else:
+            source = "Kalman filtered"
         logger.info(
             f"Camera {camera_id}: First detection response - "
-            f"position: ({x_mm:.2f}, {y_mm:.2f}) mm, yaw: {rz:.2f} deg (Kalman filtered, homography transformed)"
+            f"position: ({x_mm:.2f}, {y_mm:.2f}) mm, yaw: {rz:.2f} deg ({source}, homography transformed)"
         )
         
         # Save result image
@@ -261,7 +286,14 @@ class ResponseBuilder:
                     
                     # Transform detections (bbox, masks, oriented_box_info)
                     if detections:
-                        detections = [transform_detection_with_homography(det, homography) for det in detections]
+                        detections = [
+                            transform_detection_with_homography(
+                                det, homography,
+                                debug_base_path=self.debug_base_path,
+                                camera_id=camera_id
+                            ) 
+                            for det in detections
+                        ]
                     
                     # Transform tracking results (position, trajectory, bbox)
                     if tracking_results:
@@ -274,8 +306,9 @@ class ResponseBuilder:
                     logger.debug(f"Camera {camera_id}: Applied homography transformation in save_result_image")
             
             # Visualize and save
+            # draw_oriented_box=True only when saving image (not for real-time window)
             vis_frame = self.visualize_results(
-                camera_id, frame, detections, tracking_results
+                camera_id, frame, detections, tracking_results, draw_oriented_box=True
             )
             # Ensure directory exists
             image_path.parent.mkdir(parents=True, exist_ok=True)
@@ -297,7 +330,8 @@ class ResponseBuilder:
         frame: np.ndarray,
         detections: List[Detection],
         tracking_results: List[Dict],
-        draw_trajectory: bool = True
+        draw_trajectory: bool = True,
+        draw_oriented_box: bool = False
     ) -> np.ndarray:
         """
         Visualize tracking results on frame.
@@ -308,6 +342,7 @@ class ResponseBuilder:
             detections: List of detections
             tracking_results: List of tracking results
             draw_trajectory: Whether to draw trajectory
+            draw_oriented_box: Whether to draw oriented bounding box (only for saved images)
         
         Returns:
             Visualized frame
@@ -315,7 +350,7 @@ class ResponseBuilder:
         # Try to use EnhancedAMRTracker's visualizer first
         amr_tracker = self.camera_manager.amr_trackers.get(camera_id)
         if amr_tracker and amr_tracker.visualizer and amr_tracker.size_measurement:
-            return amr_tracker.visualize_results(frame, detections, tracking_results)
+            return amr_tracker.visualize_results(frame, detections, tracking_results, draw_oriented_box=draw_oriented_box)
         
         # Fallback: filter uninitialized trackers
         filtered_tracking_results = []
@@ -346,11 +381,11 @@ class ResponseBuilder:
                     result_copy = result.copy()
                     result_copy["track_id"] = 0
                     camera2_trackings.append(result_copy)
-                return visualizer.draw_single_object(frame, detections, camera2_trackings)
+                return visualizer.draw_single_object(frame, detections, camera2_trackings, draw_oriented_box=draw_oriented_box)
             else:
                 # Camera 1, 3: create empty tracking dicts for each detection (to draw detections only)
                 empty_trackings = [{"track_id": 0, "trajectory": []} for _ in detections]
-                return visualizer.draw_single_object(frame, detections, empty_trackings)
+                return visualizer.draw_single_object(frame, detections, empty_trackings, draw_oriented_box=draw_oriented_box)
         
         # Final fallback: return frame as-is
         return frame.copy()
