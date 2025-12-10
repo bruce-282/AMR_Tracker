@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 
-from config import TrackingConfig, CalibrationConfig
+# TrackingConfig removed - using dict from tracker_config files
 
 logger = logging.getLogger(__name__)
 
@@ -132,69 +132,55 @@ def get_camera_tracker_config(
     product_model_name: Optional[str],
     main_config_execution: Optional[Dict[str, Any]],
     preset_name: Optional[str] = None
-) -> Optional[Dict[str, Any]]:
+) -> Dict[str, Any]:
     """
-    Get tracker configuration (detector, tracker, measurement) for a camera.
-    
-    Priority:
-    1. Camera-specific tracker_config file (from preset)
-    2. Product model config file (config/{product_model_name}.json)
+    Get tracker configuration (detector, tracker, measurement) for a camera from tracker_config file.
     
     Args:
         camera_id: Camera ID (1, 2, or 3)
-        product_model_name: Product model name (e.g., "zoom1")
-        main_config_execution: Execution config from main config file
+        product_model_name: Product model name (e.g., "zoom1") (required)
+        main_config_execution: Execution config from zoom1.json
         preset_name: Preset name to use
     
     Returns:
-        Dictionary with 'detector', 'tracker', 'measurement' keys, or None
+        Dictionary with 'detector', 'tracker', 'measurement' keys from tracker_config file
+    
+    Raises:
+        ValueError: If required configs are missing
     """
+    if not product_model_name:
+        raise ValueError(f"Camera {camera_id}: product_model_name is required")
+    
     exec_config = get_execution_config(product_model_name, main_config_execution)
     
     if not exec_config:
-        return None
+        raise ValueError(f"Camera {camera_id}: Failed to load execution config from {product_model_name}.json")
     
     # Get preset name
     if not preset_name:
         preset_name = exec_config.get("use_preset")
     
     if not preset_name:
-        return None
+        raise ValueError(f"Camera {camera_id}: No preset name found in {product_model_name}.json")
     
     presets = exec_config.get("presets", {})
     preset = presets.get(preset_name, {})
     
     if not preset:
-        return None
+        raise ValueError(f"Camera {camera_id}: Preset '{preset_name}' not found in {product_model_name}.json")
     
     # Try to get tracker_config path from preset
     tracker_config_path = get_camera_tracker_config_path(camera_id, preset)
     
-    if tracker_config_path:
-        tracker_config = load_tracker_config_file(tracker_config_path)
-        if tracker_config:
-            logger.info(f"Camera {camera_id}: Loaded tracker config from {tracker_config_path}")
-            return tracker_config
+    if not tracker_config_path:
+        raise ValueError(f"Camera {camera_id}: tracker_config path not found in preset '{preset_name}'")
     
-    # Fallback: use product model config's top-level detector/tracker/measurement
-    if product_model_name:
-        product_config = load_product_model_config(product_model_name)
-        if product_config:
-            result = {}
-            if "detector" in product_config:
-                result["detector"] = product_config["detector"]
-            if "tracker" in product_config:
-                result["tracker"] = product_config["tracker"]
-            # Try to get measurement from preset's camera config (legacy support)
-            camera_key = f"camera_{camera_id}"
-            camera_config = preset.get(camera_key, {})
-            if isinstance(camera_config, dict) and "measurement" in camera_config:
-                result["measurement"] = camera_config["measurement"]
-            if result:
-                logger.debug(f"Camera {camera_id}: Using product model config for tracker settings")
-                return result
+    tracker_config = load_tracker_config_file(tracker_config_path)
+    if not tracker_config:
+        raise ValueError(f"Camera {camera_id}: Failed to load tracker_config from {tracker_config_path}")
     
-    return None
+    logger.info(f"Camera {camera_id}: Loaded tracker config from {tracker_config_path}")
+    return tracker_config
 
 
 def get_execution_config(
@@ -218,12 +204,10 @@ def get_execution_config(
             logger.debug(f"Using product model config ({product_model_name}.json) for execution")
             return product_config.get("execution", {})
     
-    # Fallback to main config
-    if main_config_execution:
-        logger.debug("Using main config (tracker_config.json) for execution")
-        return main_config_execution
-    
-    return None
+    # No fallback - execution config must be in product_model_name.json
+    if not product_model_name:
+        raise ValueError("product_model_name is required")
+    raise ValueError(f"Failed to load execution config from {product_model_name}.json")
 
 
 def get_camera_config_from_preset(
@@ -292,8 +276,7 @@ def get_camera_config(
     exec_config = get_execution_config(product_model_name, main_config_execution)
     
     if not exec_config:
-        # Fallback defaults if no config
-        return "camera", None, 30.0, None
+        raise ValueError(f"Camera {camera_id}: Failed to load execution config from {product_model_name}.json")
     
     # Get preset name
     if not preset_name:
@@ -320,140 +303,116 @@ def get_camera_config(
         else:
             logger.warning(f"Preset '{preset_name}' not found in config")
     
-    # If preset not found or not specified, use default settings
-    if isinstance(exec_config, dict):
-        loader_mode = exec_config.get("default_loader_mode", "camera")
-        source = exec_config.get("default_source", camera_id - 1)
-        fps = exec_config.get("default_fps", 30.0)
-        config_path = None
-    else:
-        loader_mode = "camera"
-        source = camera_id - 1
-        fps = 30.0
-        config_path = None
-    
-    logger.info(f"Camera {camera_id}: Using default settings (loader_mode={loader_mode}, source={source}, fps={fps})")
-    return loader_mode, source, fps, config_path
+    # Preset is required - no fallback to defaults
+    raise ValueError(f"Camera {camera_id}: Preset '{preset_name}' not found or invalid in {product_model_name}.json")
 
 
-def _extract_pixel_size_from_measurement(measurement: Dict[str, Any], default_pixel_size: float) -> Dict[str, float]:
+def _extract_pixel_size_from_measurement(measurement: Dict[str, Any]) -> Dict[str, float]:
     """
-    Extract pixel size from measurement dictionary.
+    Extract pixel size from measurement dictionary in tracker_config file.
     
     Args:
-        measurement: Measurement dictionary (may contain PixelSize or pixel_size)
-        default_pixel_size: Default value to use if not found
+        measurement: Measurement dictionary from tracker_config (must contain PixelSize)
     
     Returns:
         Dictionary with 'x', 'y', 'average' keys
+    
+    Raises:
+        ValueError: If PixelSize is not found in measurement
     """
-    default_pixel_size_dict = {'x': default_pixel_size, 'y': default_pixel_size, 'average': default_pixel_size}
-    
     if not isinstance(measurement, dict):
-        return default_pixel_size_dict
+        raise ValueError("measurement must be a dictionary")
     
-    # 새 형식: PixelSize.x, PixelSize.y
+    # 새 형식: PixelSize.x, PixelSize.y (required)
     if "PixelSize" in measurement:
         pixel_size_data = measurement.get("PixelSize", {})
         if isinstance(pixel_size_data, dict):
-            px = pixel_size_data.get("x", default_pixel_size)
-            py = pixel_size_data.get("y", default_pixel_size)
+            px = pixel_size_data.get("x")
+            py = pixel_size_data.get("y")
+            if px is None or py is None:
+                raise ValueError("PixelSize must contain both 'x' and 'y' values")
             avg = pixel_size_data.get("average", (px + py) / 2)
             return {'x': px, 'y': py, 'average': avg}
+        else:
+            raise ValueError("PixelSize must be a dictionary with 'x' and 'y' keys")
     
-    # 기존 형식: pixel_size (단일 값)
+    # 기존 형식: pixel_size (단일 값) - deprecated but supported for backward compatibility
     if "pixel_size" in measurement:
-        pixel_size = measurement.get("pixel_size", default_pixel_size)
+        pixel_size = measurement.get("pixel_size")
+        if pixel_size is None:
+            raise ValueError("pixel_size must have a value")
         return {'x': pixel_size, 'y': pixel_size, 'average': pixel_size}
     
-    return default_pixel_size_dict
+    raise ValueError("measurement must contain either 'PixelSize' (dict with x, y) or 'pixel_size' (single value)")
 
 
 def get_camera_pixel_sizes(
     product_model_name: Optional[str],
     main_config_execution: Optional[Dict[str, Any]],
-    main_config_measurement: Optional[Any],
+    main_config_measurement: Optional[Any] = None,  # Not used - kept for compatibility
     preset_name: Optional[str] = None
 ) -> Dict[int, Dict[str, float]]:
     """
-    Get pixel sizes for all cameras from preset configuration.
-    
-    Priority:
-    1. Camera-specific tracker_config file (detector, tracker, measurement)
-    2. Preset's camera measurement (legacy support)
-    3. Default pixel_size from main config
+    Get pixel sizes for all cameras from tracker_config files.
     
     Args:
-        product_model_name: Product model name (e.g., "zoom1")
-        main_config_execution: Execution config from main config file
-        main_config_measurement: Measurement config from main config file
+        product_model_name: Product model name (e.g., "zoom1") (required)
+        main_config_execution: Execution config from zoom1.json
+        main_config_measurement: Not used (deprecated)
         preset_name: Preset name to use
     
     Returns:
         Dictionary mapping camera_id -> {'x': float, 'y': float, 'average': float}
-    """
-    result = {}
-    default_pixel_size = 1.0
-    if main_config_measurement and hasattr(main_config_measurement, 'pixel_size'):
-        default_pixel_size = main_config_measurement.pixel_size
     
-    default_pixel_size_dict = {'x': default_pixel_size, 'y': default_pixel_size, 'average': default_pixel_size}
+    Raises:
+        ValueError: If required configs are missing
+    """
+    if not product_model_name:
+        raise ValueError("product_model_name is required")
     
     exec_config = get_execution_config(product_model_name, main_config_execution)
     
     if not exec_config:
-        # No config available, use default
-        for camera_id in [1, 2, 3]:
-            result[camera_id] = default_pixel_size_dict.copy()
-        return result
+        raise ValueError(f"Failed to load execution config from {product_model_name}.json")
     
     # Get preset name
     if not preset_name:
         preset_name = exec_config.get("use_preset")
     
     if not preset_name:
-        # No preset, use default
-        for camera_id in [1, 2, 3]:
-            result[camera_id] = default_pixel_size_dict.copy()
-        return result
+        raise ValueError(f"No preset name found in {product_model_name}.json")
     
     presets = exec_config.get("presets", {})
     preset = presets.get(preset_name, {})
-    if not preset:
-        # Preset not found, use default
-        for camera_id in [1, 2, 3]:
-            result[camera_id] = default_pixel_size_dict.copy()
-        return result
     
-    # Load pixel_size for each camera
+    if not preset:
+        raise ValueError(f"Preset '{preset_name}' not found in {product_model_name}.json")
+    
+    result = {}
+    
+    # Load pixel_size for each camera from tracker_config files
     for camera_id in [1, 2, 3]:
         camera_key = f"camera_{camera_id}"
         camera_config = preset.get(camera_key, {})
         
         if not isinstance(camera_config, dict):
-            result[camera_id] = default_pixel_size_dict.copy()
-            continue
+            raise ValueError(f"Camera {camera_id}: Invalid camera_config for {camera_key} in preset '{preset_name}'")
         
-        # Priority 1: Try tracker_config file
+        # Load from tracker_config file (required)
         tracker_config_path = camera_config.get("tracker_config")
-        if tracker_config_path:
-            tracker_config = load_tracker_config_file(tracker_config_path)
-            if tracker_config and "measurement" in tracker_config:
-                pixel_size = _extract_pixel_size_from_measurement(
-                    tracker_config["measurement"], default_pixel_size
-                )
-                result[camera_id] = pixel_size
-                logger.debug(f"Camera {camera_id}: pixel_size from tracker_config '{tracker_config_path}'")
-                continue
+        if not tracker_config_path:
+            raise ValueError(f"Camera {camera_id}: tracker_config path not found in {camera_key} of preset '{preset_name}'")
         
-        # Priority 2: Try preset's camera measurement (legacy)
-        measurement = camera_config.get("measurement", {})
-        pixel_size = _extract_pixel_size_from_measurement(measurement, default_pixel_size)
-        if pixel_size != default_pixel_size_dict:
-            result[camera_id] = pixel_size
-            logger.debug(f"Camera {camera_id}: pixel_size from preset '{preset_name}'")
-        else:
-            result[camera_id] = default_pixel_size_dict.copy()
+        tracker_config = load_tracker_config_file(tracker_config_path)
+        if not tracker_config:
+            raise ValueError(f"Camera {camera_id}: Failed to load tracker_config from {tracker_config_path}")
+        
+        if "measurement" not in tracker_config:
+            raise ValueError(f"Camera {camera_id}: 'measurement' section not found in {tracker_config_path}")
+        
+        pixel_size = _extract_pixel_size_from_measurement(tracker_config["measurement"])
+        result[camera_id] = pixel_size
+        logger.debug(f"Camera {camera_id}: pixel_size from tracker_config '{tracker_config_path}': {pixel_size}")
     
     return result
 
@@ -464,59 +423,66 @@ def get_camera_distance_map_paths(
     preset_name: Optional[str] = None
 ) -> Dict[int, Optional[str]]:
     """
-    Get distance_map_path for all cameras from preset configuration.
-    
-    Priority:
-    1. Product model config file (config/{product_model_name}.json)
-    2. Main config file (tracker_config.json)
+    Get distance map paths for all cameras from tracker_config files.
     
     Args:
-        product_model_name: Product model name (e.g., "zoom1")
-        main_config_execution: Execution config from main config file
+        product_model_name: Product model name (e.g., "zoom1") (required)
+        main_config_execution: Execution config from zoom1.json
         preset_name: Preset name to use
     
     Returns:
-        Dictionary mapping camera_id -> distance_map_path (None if not set)
+        Dictionary mapping camera_id -> distance_map_path (None if not set in tracker_config)
+    
+    Raises:
+        ValueError: If required configs are missing
     """
-    result = {}
+    if not product_model_name:
+        raise ValueError("product_model_name is required")
     
     exec_config = get_execution_config(product_model_name, main_config_execution)
     
     if not exec_config:
-        # No config available
-        for camera_id in [1, 2, 3]:
-            result[camera_id] = None
-        return result
+        raise ValueError(f"Failed to load execution config from {product_model_name}.json")
     
     # Get preset name
     if not preset_name:
         preset_name = exec_config.get("use_preset")
     
     if not preset_name:
-        # No preset
-        for camera_id in [1, 2, 3]:
-            result[camera_id] = None
-        return result
+        raise ValueError(f"No preset name found in {product_model_name}.json")
     
     presets = exec_config.get("presets", {})
     preset = presets.get(preset_name, {})
-    if not preset:
-        # Preset not found
-        for camera_id in [1, 2, 3]:
-            result[camera_id] = None
-        return result
     
-    # Load distance_map_path for each camera from preset
+    if not preset:
+        raise ValueError(f"Preset '{preset_name}' not found in {product_model_name}.json")
+    
+    result = {}
+    
+    # Load distance_map_path for each camera from tracker_config files
     for camera_id in [1, 2, 3]:
         camera_key = f"camera_{camera_id}"
         camera_config = preset.get(camera_key, {})
         
-        if isinstance(camera_config, dict):
-            measurement = camera_config.get("measurement", {})
+        if not isinstance(camera_config, dict):
+            raise ValueError(f"Camera {camera_id}: Invalid camera_config for {camera_key} in preset '{preset_name}'")
+        
+        # Load from tracker_config file
+        tracker_config_path = camera_config.get("tracker_config")
+        if not tracker_config_path:
+            raise ValueError(f"Camera {camera_id}: tracker_config path not found in {camera_key} of preset '{preset_name}'")
+        
+        tracker_config = load_tracker_config_file(tracker_config_path)
+        if not tracker_config:
+            raise ValueError(f"Camera {camera_id}: Failed to load tracker_config from {tracker_config_path}")
+        
+        # distance_map_path is optional - return None if not found
+        if "measurement" in tracker_config:
+            measurement = tracker_config["measurement"]
             if isinstance(measurement, dict) and "distance_map_path" in measurement:
                 distance_map_path = measurement.get("distance_map_path")
                 result[camera_id] = distance_map_path
-                logger.debug(f"Camera {camera_id}: distance_map_path={distance_map_path} from preset '{preset_name}'")
+                logger.debug(f"Camera {camera_id}: distance_map_path={distance_map_path} from tracker_config '{tracker_config_path}'")
             else:
                 result[camera_id] = None
         else:
@@ -603,18 +569,21 @@ def get_camera_homographies(
 def load_tracking_config(
     product_model_name: Optional[str],
     main_config_tracking: Optional[Any]
-) -> TrackingConfig:
+) -> Optional[Dict[str, Any]]:
     """
-    Load tracking configuration with priority: product model config > main config > default.
+    Load tracking configuration from product model config.
+    
+    Note: This function is deprecated. Use load_camera_tracking_config instead.
+    All tracking configs should be loaded from tracker_config files per camera.
     
     Args:
         product_model_name: Product model name (e.g., "zoom1")
-        main_config_tracking: Tracking config from main config file
+        main_config_tracking: Tracking config from main config file (deprecated)
     
     Returns:
-        TrackingConfig instance
+        Tracking config dict or None
     """
-    # Try product model config first
+    # Try product model config
     if product_model_name:
         product_config = load_product_model_config(product_model_name)
         if product_config and "tracker" in product_config:
@@ -622,16 +591,10 @@ def load_tracking_config(
             # Filter out comment/description keys (e.g., _comment, _desc_*)
             tracker_data = {k: v for k, v in tracker_data.items() if not k.startswith("_")}
             logger.info(f"Loaded tracking config from product model config ({product_model_name}.json)")
-            return TrackingConfig(**tracker_data)
+            return tracker_data
     
-    # Fallback to main config
-    if main_config_tracking:
-        logger.debug("Using tracking config from main config")
-        return main_config_tracking
-    
-    # Fallback to default
-    logger.debug("Using default tracking config")
-    return TrackingConfig()
+    # No fallback - return None
+    return None
 
 
 def load_camera_tracking_config(
@@ -640,54 +603,66 @@ def load_camera_tracking_config(
     main_config_execution: Optional[Dict[str, Any]],
     main_config_tracking: Optional[Any],
     preset_name: Optional[str] = None
-) -> TrackingConfig:
+) -> Dict[str, Any]:
     """
-    Load tracking configuration for a specific camera.
+    Load tracking configuration for a specific camera from tracker_config file.
     
     Priority:
-    1. Camera-specific tracker_config file
-    2. Product model config (top-level tracker)
-    3. Main config
-    4. Default
+    1. Camera-specific tracker_config file (required)
     
     Args:
         camera_id: Camera ID (1, 2, or 3)
         product_model_name: Product model name (e.g., "zoom1")
-        main_config_execution: Execution config from main config file
-        main_config_tracking: Tracking config from main config file
+        main_config_execution: Execution config json
+        main_config_tracking: Not used (deprecated)
         preset_name: Preset name to use
     
     Returns:
-        TrackingConfig instance
+        Tracking config dict from tracker_config file
     """
+    if not product_model_name:
+        raise ValueError(f"Camera {camera_id}: product_model_name is required")
+    
     exec_config = get_execution_config(product_model_name, main_config_execution)
     
-    if exec_config:
-        if not preset_name:
-            preset_name = exec_config.get("use_preset")
-        
-        if preset_name:
-            presets = exec_config.get("presets", {})
-            preset = presets.get(preset_name, {})
-            
-            if preset:
-                camera_key = f"camera_{camera_id}"
-                camera_config = preset.get(camera_key, {})
-                
-                if isinstance(camera_config, dict):
-                    # Priority 1: Try tracker_config file
-                    tracker_config_path = camera_config.get("tracker_config")
-                    if tracker_config_path:
-                        tracker_config = load_tracker_config_file(tracker_config_path)
-                        if tracker_config and "tracker" in tracker_config:
-                            tracker_data = tracker_config["tracker"]
-                            # Filter out comment/description keys
-                            tracker_data = {k: v for k, v in tracker_data.items() if not k.startswith("_")}
-                            logger.info(f"Camera {camera_id}: Loaded tracking config from {tracker_config_path}")
-                            return TrackingConfig(**tracker_data)
+    if not exec_config:
+        raise ValueError(f"Camera {camera_id}: Failed to load execution config from {product_model_name}.json")
     
-    # Fallback to product model / main config / default
-    return load_tracking_config(product_model_name, main_config_tracking)
+    if not preset_name:
+        preset_name = exec_config.get("use_preset")
+    
+    if not preset_name:
+        raise ValueError(f"Camera {camera_id}: No preset name found in {product_model_name}.json")
+    
+    presets = exec_config.get("presets", {})
+    preset = presets.get(preset_name, {})
+    
+    if not preset:
+        raise ValueError(f"Camera {camera_id}: Preset '{preset_name}' not found in {product_model_name}.json")
+    
+    camera_key = f"camera_{camera_id}"
+    camera_config = preset.get(camera_key, {})
+    
+    if not isinstance(camera_config, dict):
+        raise ValueError(f"Camera {camera_id}: Invalid camera_config for {camera_key} in preset '{preset_name}'")
+    
+    # Load from tracker_config file (required)
+    tracker_config_path = camera_config.get("tracker_config")
+    if not tracker_config_path:
+        raise ValueError(f"Camera {camera_id}: tracker_config path not found in {camera_key} of preset '{preset_name}'")
+    
+    tracker_config = load_tracker_config_file(tracker_config_path)
+    if not tracker_config:
+        raise ValueError(f"Camera {camera_id}: Failed to load tracker_config from {tracker_config_path}")
+    
+    if "tracker" not in tracker_config:
+        raise ValueError(f"Camera {camera_id}: 'tracker' section not found in {tracker_config_path}")
+    
+    tracker_data = tracker_config["tracker"]
+    # Filter out comment/description keys
+    tracker_data = {k: v for k, v in tracker_data.items() if not k.startswith("_")}
+    logger.info(f"Camera {camera_id}: Loaded tracking config from {tracker_config_path}")
+    return tracker_data
 
 
 def load_camera_detector_config(
@@ -695,59 +670,65 @@ def load_camera_detector_config(
     product_model_name: Optional[str],
     main_config_execution: Optional[Dict[str, Any]],
     preset_name: Optional[str] = None
-) -> Optional[Dict[str, Any]]:
+) -> Dict[str, Any]:
     """
-    Load detector configuration for a specific camera.
-    
-    Priority:
-    1. Camera-specific tracker_config file
-    2. Product model config (top-level detector)
+    Load detector configuration for a specific camera from tracker_config file.
     
     Args:
         camera_id: Camera ID (1, 2, or 3)
-        product_model_name: Product model name (e.g., "zoom1")
-        main_config_execution: Execution config from main config file
+        product_model_name: Product model name (e.g., "zoom1") (required)
+        main_config_execution: Execution config from zoom1.json
         preset_name: Preset name to use
     
     Returns:
-        Detector config dictionary, or None
+        Detector config dictionary from tracker_config file
+    
+    Raises:
+        ValueError: If required configs are missing
     """
+    if not product_model_name:
+        raise ValueError(f"Camera {camera_id}: product_model_name is required")
+    
     exec_config = get_execution_config(product_model_name, main_config_execution)
     
-    if exec_config:
-        if not preset_name:
-            preset_name = exec_config.get("use_preset")
-        
-        if preset_name:
-            presets = exec_config.get("presets", {})
-            preset = presets.get(preset_name, {})
-            
-            if preset:
-                camera_key = f"camera_{camera_id}"
-                camera_config = preset.get(camera_key, {})
-                
-                if isinstance(camera_config, dict):
-                    # Priority 1: Try tracker_config file
-                    tracker_config_path = camera_config.get("tracker_config")
-                    if tracker_config_path:
-                        tracker_config = load_tracker_config_file(tracker_config_path)
-                        if tracker_config and "detector" in tracker_config:
-                            detector_data = tracker_config["detector"]
-                            # Filter out comment/description keys
-                            detector_data = {k: v for k, v in detector_data.items() if not k.startswith("_")}
-                            logger.info(f"Camera {camera_id}: Loaded detector config from {tracker_config_path}")
-                            return detector_data
+    if not exec_config:
+        raise ValueError(f"Camera {camera_id}: Failed to load execution config from {product_model_name}.json")
     
-    # Fallback to product model config
-    if product_model_name:
-        product_config = load_product_model_config(product_model_name)
-        if product_config and "detector" in product_config:
-            detector_data = product_config["detector"]
-            detector_data = {k: v for k, v in detector_data.items() if not k.startswith("_")}
-            logger.debug(f"Camera {camera_id}: Using detector config from product model ({product_model_name}.json)")
-            return detector_data
+    if not preset_name:
+        preset_name = exec_config.get("use_preset")
     
-    return None
+    if not preset_name:
+        raise ValueError(f"Camera {camera_id}: No preset name found in {product_model_name}.json")
+    
+    presets = exec_config.get("presets", {})
+    preset = presets.get(preset_name, {})
+    
+    if not preset:
+        raise ValueError(f"Camera {camera_id}: Preset '{preset_name}' not found in {product_model_name}.json")
+    
+    camera_key = f"camera_{camera_id}"
+    camera_config = preset.get(camera_key, {})
+    
+    if not isinstance(camera_config, dict):
+        raise ValueError(f"Camera {camera_id}: Invalid camera_config for {camera_key} in preset '{preset_name}'")
+    
+    # Load from tracker_config file (required)
+    tracker_config_path = camera_config.get("tracker_config")
+    if not tracker_config_path:
+        raise ValueError(f"Camera {camera_id}: tracker_config path not found in {camera_key} of preset '{preset_name}'")
+    
+    tracker_config = load_tracker_config_file(tracker_config_path)
+    if not tracker_config:
+        raise ValueError(f"Camera {camera_id}: Failed to load tracker_config from {tracker_config_path}")
+    
+    if "detector" not in tracker_config:
+        raise ValueError(f"Camera {camera_id}: 'detector' section not found in {tracker_config_path}")
+    
+    detector_data = tracker_config["detector"]
+    # Filter out comment/description keys
+    detector_data = {k: v for k, v in detector_data.items() if not k.startswith("_")}
+    logger.info(f"Camera {camera_id}: Loaded detector config from {tracker_config_path}")
+    return detector_data
 
 
 def load_calibration_config(

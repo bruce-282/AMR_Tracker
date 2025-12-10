@@ -6,10 +6,18 @@ from typing import Dict, Optional, Tuple, Any
 import cv2
 
 from src.utils.sequence_loader import create_sequence_loader, BaseLoader
-from src.utils.config_loader import get_camera_config, get_camera_pixel_sizes, get_camera_distance_map_paths, get_camera_homographies
+from src.utils.config_loader import (
+    get_camera_config, 
+    get_camera_pixel_sizes, 
+    get_camera_distance_map_paths, 
+    get_camera_homographies,
+    get_execution_config,
+    load_tracker_config_file,
+    load_product_model_config
+)
 from src.core.amr_tracker import EnhancedAMRTracker
 from .model_config import ModelConfig
-from config import SystemConfig
+# SystemConfig removed - all configs loaded directly json
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +28,7 @@ class CameraManager:
     def __init__(
         self,
         model_config: ModelConfig,
-        system_config: Optional[SystemConfig] = None,
+        system_config: Optional[Any] = None,  # Not used - kept for compatibility
         preset_name: Optional[str] = None
     ):
         """
@@ -28,11 +36,11 @@ class CameraManager:
         
         Args:
             model_config: Model configuration manager
-            system_config: System configuration
+            system_config: Not used (deprecated - all configs json)
             preset_name: Preset name override
         """
         self.model_config = model_config
-        self.config = system_config
+        self.config = None  # Not used - all configs json
         self.preset_name = preset_name
         
         # Camera resources
@@ -63,10 +71,12 @@ class CameraManager:
         if product_model_name is None:
             product_model_name = self.model_config.get_selected_model()
         
+        # Load execution config json
+        exec_config = get_execution_config(product_model_name, None)
         loader_mode, source, fps, config_path = get_camera_config(
             camera_id=camera_id,
             product_model_name=product_model_name,
-            main_config_execution=self.config.execution if self.config and hasattr(self.config, 'execution') and self.config.execution else None,
+            main_config_execution=exec_config,
             preset_name=self.preset_name
         )
         
@@ -85,10 +95,11 @@ class CameraManager:
         if preset_name is None:
             preset_name = self.preset_name
         
+        # Load from tracker_config files only - no SystemConfig needed
         pixel_sizes = get_camera_pixel_sizes(
             product_model_name=product_model_name,
-            main_config_execution=self.config.execution if self.config and hasattr(self.config, 'execution') and self.config.execution else None,
-            main_config_measurement=self.config.measurement if self.config and hasattr(self.config, 'measurement') else None,
+            main_config_execution=get_execution_config(product_model_name, None),
+            main_config_measurement=None,  # Not used - kept for compatibility
             preset_name=preset_name
         )
         
@@ -102,9 +113,10 @@ class CameraManager:
         if preset_name is None:
             preset_name = self.preset_name
         
+        # Load json directly - no SystemConfig needed
         distance_map_paths = get_camera_distance_map_paths(
             product_model_name=product_model_name,
-            main_config_execution=self.config.execution if self.config and hasattr(self.config, 'execution') and self.config.execution else None,
+            main_config_execution=get_execution_config(product_model_name, None),
             preset_name=preset_name
         )
         
@@ -117,7 +129,10 @@ class CameraManager:
         return None
     
     def load_camera_homographies(self, preset_name: Optional[str] = None, product_model_name: Optional[str] = None):
-        """Load homography matrices from preset config (zoom1.json) or camera config files."""
+        """Load homography matrices from preset config (zoom1.json) or camera config files.
+        
+        Also loads WarpOffset from tracker_config file and applies it to homography if available.
+        """
         import json
         import numpy as np
         
@@ -131,13 +146,54 @@ class CameraManager:
             preset_name or self.preset_name
         )
         
+        # Get execution config to find tracker_config paths
+        exec_config = get_execution_config(product_model_name, None)
+        if exec_config:
+            preset_name_actual = preset_name or self.preset_name or exec_config.get("use_preset")
+            presets = exec_config.get("presets", {})
+            preset = presets.get(preset_name_actual, {}) if preset_name_actual else {}
+        else:
+            preset = {}
+        
         for camera_id in [1, 2, 3]:
             homography_list = homographies_from_preset.get(camera_id)
             
             if homography_list:
                 # Preset에서 Homography를 찾음
-                self.camera_homographies[camera_id] = np.array(homography_list, dtype=np.float64)
-                logger.info(f"Camera {camera_id}: Homography loaded from preset config")
+                homography = np.array(homography_list, dtype=np.float64)
+                
+                # Try to load WarpOffset from tracker_config file
+                camera_key = f"camera_{camera_id}"
+                camera_config = preset.get(camera_key, {})
+                tracker_config_path = camera_config.get("tracker_config") if isinstance(camera_config, dict) else None
+                
+                if tracker_config_path:
+                    try:
+                        tracker_config = load_tracker_config_file(tracker_config_path)
+                        if tracker_config and "measurement" in tracker_config:
+                            measurement = tracker_config["measurement"]
+                            if isinstance(measurement, dict) and "WarpOffset" in measurement:
+                                warp_offset = measurement["WarpOffset"]
+                                offset_x = warp_offset.get("x", 0.0)
+                                offset_y = warp_offset.get("y", 0.0)
+                                
+                                # Apply offset to homography
+                                translation = np.array([
+                                    [1, 0, offset_x],
+                                    [0, 1, offset_y],
+                                    [0, 0, 1]
+                                ], dtype=np.float64)
+                                
+                                homography = translation @ homography
+                                logger.info(f"Camera {camera_id}: Homography loaded from preset config with WarpOffset (x={offset_x:.1f}, y={offset_y:.1f})")
+                            else:
+                                logger.info(f"Camera {camera_id}: Homography loaded from preset config (no WarpOffset)")
+                        else:
+                            logger.info(f"Camera {camera_id}: Homography loaded from preset config (no WarpOffset)")
+                    except Exception as e:
+                        logger.debug(f"Camera {camera_id}: Failed to load WarpOffset: {e}, using homography without offset")
+                
+                self.camera_homographies[camera_id] = homography
                 continue
             
             # 2. Preset에 없으면 camera_config.json의 calibration에서 로드 시도 (fallback)
@@ -186,7 +242,8 @@ class CameraManager:
                 return pixel_size_data.get('average', 1.0)
             return pixel_size_data
         
-        return self.config.measurement.pixel_size if self.config and hasattr(self.config, 'measurement') else 1.0
+        # Not used - pixel sizes loaded from tracker_config files per camera
+        return 1.0
     
     def get_pixel_size_dict(self, camera_id: Optional[int] = None) -> Dict[str, float]:
         """Get pixel size dict for a camera (x, y, average)."""
@@ -199,18 +256,14 @@ class CameraManager:
             # 단일 값이면 dict로 변환
             return {'x': pixel_size_data, 'y': pixel_size_data, 'average': pixel_size_data}
         
-        if self.config and hasattr(self.config, 'measurement'):
-            ps = self.config.measurement.pixel_size
-            return {'x': ps, 'y': ps, 'average': ps}
-        
+        # Not used - pixel sizes loaded from tracker_config files per camera
         return default_dict
     
     def get_fps_from_loader(self, loader: BaseLoader) -> float:
         """Get FPS from loader or config."""
         if loader and hasattr(loader, 'fps'):
             return loader.fps
-        elif self.config and hasattr(self.config, 'measurement'):
-            return self.config.measurement.fps
+        # Default FPS if loader doesn't provide it
         return 30.0
     
     def initialize_camera(
@@ -292,14 +345,21 @@ class CameraManager:
         # Enable buffering for camera mode (real-time streams) to prevent frame drops
         enable_buffering = (loader_mode == "camera")
         
-        # Read buffer settings from config (zoom1.json -> buffer section)
-        buffer_config = getattr(self.config, 'buffer', None) if self.config else None
-        if buffer_config:
-            buffer_size = getattr(buffer_config, 'size', 15)
-            buffer_drop_policy = getattr(buffer_config, 'drop_policy', 'oldest')
-        else:
-            buffer_size = 15  # Default: ~0.5 second at 30fps (low latency)
-            buffer_drop_policy = "oldest"  # Drop oldest frames when buffer is full (maintains real-time)
+        # Read buffer settings json -> buffer section
+        buffer_size = 40  # Default: ~0.5 second at 30fps (low latency)
+        buffer_drop_policy = "oldest"  # Drop oldest frames when buffer is full (maintains real-time)
+        
+        try:
+            product_model_name = self.model_config.get_selected_model() if self.model_config else None
+            if product_model_name:
+                product_config = load_product_model_config(product_model_name)
+                if product_config and "buffer" in product_config:
+                    buffer_data = product_config["buffer"]
+                    buffer_size = buffer_data.get("size", buffer_size)
+                    buffer_drop_policy = buffer_data.get("drop_policy", buffer_drop_policy)
+                    logger.debug(f"Loaded buffer config from {product_model_name}.json: size={buffer_size}, policy={buffer_drop_policy}")
+        except Exception as e:
+            logger.debug(f"Failed to load buffer config from {product_model_name}.json: {e}")
         
         loader = create_sequence_loader(
             source, 
@@ -340,6 +400,19 @@ class CameraManager:
         # Get detector_type from detector_config, default to "yolo"
         detector_type = (detector_config or {}).get("detector_type", "yolo")
         
+        # Prepare calibration_config with homography from camera_manager (loaded from tracker_config)
+        # Note: camera_height, calibration_image_size, and pixel_size are not actually used in SizeMeasurement
+        # They are kept for backward compatibility but can be None/default values
+        calibration_config_for_tracker = None
+        homography = self.get_homography(camera_id)
+        if homography is not None:
+            # Use homography from camera_manager (loaded from tracker_config)
+            # SizeMeasurement only uses homography for transformation, other params are unused
+            calibration_config_for_tracker = {
+                "homography": homography.tolist() if hasattr(homography, 'tolist') else homography,
+            }
+            logger.info(f"Camera {camera_id}: Using homography from camera_manager for Visualizer")
+        
         self.amr_trackers[camera_id] = EnhancedAMRTracker(
             config=self.config,
             detector_type=detector_type,
@@ -348,6 +421,7 @@ class CameraManager:
             model_path=model_path_str,
             detector_config=detector_config or {},
             tracker_config=tracker_config or {},
+            calibration_config=calibration_config_for_tracker,
             fps=fps,
         )
         

@@ -2,7 +2,7 @@
 
 import cv2
 import numpy as np
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Union
 
 from src.core.detection import Detection
 
@@ -259,7 +259,7 @@ def transform_tracking_result_with_homography(
 def transform_trajectory_data_with_homography(
     trajectory_data: List[Dict],
     homography: np.ndarray,
-    pixel_size: float = 1.0
+    pixel_size: Union[float, Dict[str, float]] = 1.0
 ) -> List[Dict]:
     """
     Transform trajectory data points with homography.
@@ -267,11 +267,19 @@ def transform_trajectory_data_with_homography(
     Args:
         trajectory_data: List of trajectory points with x_pix, y_pix
         homography: 3x3 homography matrix
-        pixel_size: Pixel size for recalculating mm values
+        pixel_size: Pixel size for recalculating mm values - float or dict with 'x', 'y' keys
     
     Returns:
         Transformed trajectory data
     """
+    # Extract pixel_size_x and pixel_size_y
+    if isinstance(pixel_size, dict):
+        pixel_size_x = pixel_size.get('x', 1.0)
+        pixel_size_y = pixel_size.get('y', 1.0)
+    else:
+        pixel_size_x = pixel_size
+        pixel_size_y = pixel_size
+    
     transformed_trajectory = []
     
     for point in trajectory_data:
@@ -284,8 +292,9 @@ def transform_trajectory_data_with_homography(
         transformed_point = point.copy()
         transformed_point["x_pix"] = round(new_x_pix, 1)
         transformed_point["y_pix"] = round(new_y_pix, 1)
-        transformed_point["x"] = round(new_x_pix * pixel_size, 3)
-        transformed_point["y"] = round(new_y_pix * pixel_size, 3)
+        # Use pixel_size_x and pixel_size_y separately
+        transformed_point["x"] = round(new_x_pix * pixel_size_x, 3)
+        transformed_point["y"] = round(new_y_pix * pixel_size_y, 3)
         transformed_trajectory.append(transformed_point)
     
     return transformed_trajectory

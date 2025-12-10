@@ -285,9 +285,9 @@ class Visualizer:
             
             # Build info string
             if x_mm is not None and y_mm is not None:
-                lines.append(f"ID {track_id}  px({cx},{cy}) mm({x_mm:.1f},{y_mm:.1f}) yaw={theta_deg:.1f}")
+                lines.append(f"pos: {x_mm:.1f}mm, {y_mm:.1f}mm ({cx}, {cy}px), yaw: {theta_deg:.1f}deg")
             else:
-                lines.append(f"ID {track_id}  px({cx},{cy}) yaw={theta_deg:.1f}")
+                lines.append(f"pos: {cx},{cy}px, yaw: {theta_deg:.1f}deg")
 
         overlay_text = " | ".join(lines) if lines else ""
         if overlay_text:

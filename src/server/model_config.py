@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-from config import TrackingConfig
+# TrackingConfig removed - using dict from tracker_config files
 from src.utils.config_loader import load_product_model_config
 
 logger = logging.getLogger(__name__)
@@ -124,8 +124,8 @@ class ModelConfig:
                         # Backward compatibility: if detector not nested, use flat structure
                         detector_config = {
                             "model_path": config.get("model_path", str(self.weights_path / product_model_name / self.DEFAULT_MODEL_FILE)),
-                            "confidence_threshold": config.get("confidence_threshold", 0.2),
-                            "imgsz": config.get("imgsz", 640),
+                            "confidence_threshold": config.get("confidence_threshold", 0.7),
+                            "imgsz": config.get("imgsz", 1280),
                             "target_classes": config.get("target_classes", [0])
                         }
                     
@@ -146,8 +146,8 @@ class ModelConfig:
             "camera_3": 2,
             "detector": {
                 "model_path": str(model_path),
-                "confidence_threshold": 0.2,
-                "imgsz": 1536,
+                "confidence_threshold": 0.7,
+                "imgsz": 1280,
                 "target_classes": [0]
             }
         }
@@ -201,24 +201,25 @@ class ModelConfig:
         self, 
         product_model_name: Optional[str] = None,
         main_config_tracking: Optional[Any] = None
-    ) -> TrackingConfig:
+    ) -> Optional[Dict[str, Any]]:
         """
         Get tracking configuration for a product model.
         
-        Priority: product model config > main config > default
+        Note: This method is deprecated. Tracking configs should be loaded per camera
+        from tracker_config files using load_camera_tracking_config in config_loader.
         
         Args:
             product_model_name: Product model name (e.g., "zoom1"). 
                                If None, uses selected_model.
-            main_config_tracking: Tracking config from main config file (optional)
+            main_config_tracking: Not used (deprecated)
         
         Returns:
-            TrackingConfig instance
+            Tracking config dict or None
         """
         if product_model_name is None:
             product_model_name = self.selected_model
         
-        # Try product model config first
+        # Try product model config
         if product_model_name:
             product_config = self._load_product_model_config_file(product_model_name)
             if product_config and "tracker" in product_config:
@@ -226,16 +227,10 @@ class ModelConfig:
                 # Filter out comment/description keys (e.g., _comment, _desc_*)
                 tracker_data = {k: v for k, v in tracker_data.items() if not k.startswith("_")}
                 logger.info(f"Loaded tracking config from product model config ({product_model_name}.json)")
-                return TrackingConfig(**tracker_data)
+                return tracker_data
         
-        # Fallback to main config
-        if main_config_tracking:
-            logger.debug("Using tracking config from main config")
-            return main_config_tracking
-        
-        # Fallback to default
-        logger.debug("Using default tracking config")
-        return TrackingConfig()
+        # No fallback - return None
+        return None
     
     def get_calibration_config(
         self,

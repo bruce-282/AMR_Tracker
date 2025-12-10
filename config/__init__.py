@@ -1,3 +1,4 @@
-from .config import SystemConfig, CalibrationConfig, MeasurementConfig, TrackingConfig
+# Config module - all configs are loaded directly json and tracker_config files
+# No dataclass wrappers needed
 
-__all__ = ["SystemConfig", "CalibrationConfig", "MeasurementConfig", "TrackingConfig"]
+__all__ = []

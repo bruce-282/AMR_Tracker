@@ -837,62 +837,9 @@ def input_world_coordinates(n_points: int) -> np.ndarray:
     return np.array(world_points)
 
 
-if __name__ == "__main__":
-    # ===== Argument Parser =====
-    parser = argparse.ArgumentParser(
-        description="Pixel Distance Mapper - 이미지 픽셀과 실제 거리 매핑\n"
-                    "원본 이미지를 입력하면 내부에서 자동으로 undistortion을 수행합니다."
-    )
-    parser.add_argument(
-        "--image",
-        type=str,
-        default="data/aruco/cam1/cam1.png",
-        help="입력 이미지 경로 (원본 이미지 가능 - 내부에서 undistortion 수행)"
-    )
-    parser.add_argument(
-        "--camera-config",
-        type=str,
-        default="config/cam1_config.json",
-        help="카메라 설정 파일 경로"
-    )
-    parser.add_argument(
-        "--output",
-        type=str,
-        default="data/homography.npz",
-        help="호모그래피 및 distance map 저장 경로"
-    )
-    parser.add_argument(
-        "--real-dist-x",
-        type=float,
-        default=900,
-        help="점1-점2 간의 실제 물리적 거리 (mm)"
-    )
-    parser.add_argument(
-        "--real-dist-y",
-        type=float,
-        default=450,
-        help="점1-점3 간의 실제 물리적 거리 (mm)"
-    )
-    parser.add_argument(
-        "--mode",
-        type=str,
-        choices=["manual", "aruco"],
-        default="aruco",
-        help="포인트 선택 모드: 'manual' (수동 선택) 또는 'aruco' (ArUco 자동 검출)"
-    )
-    parser.add_argument(
-        "--min-markers",
-        type=int,
-        default=4,
-        help="ArUco 모드에서 최소 필요한 마커 개수 (기본: 4)"
-    )
-    parser.add_argument(
-        "--world-coords",
-        type=str,
-        default=None,
-        help="모든 점의 실제 world 좌표 JSON 파일 경로 (정확한 보정용). 형식: {\"points\": [[x1,y1], [x2,y2], ...]} (mm 단위)"
-    )
-    args = parser.parse_args()
+
+def main(args):
+    """메인 함수: Pixel Distance Mapper 실행"""
     
     # ===== 설정 =====
     IMAGE_PATH = args.image
@@ -1127,6 +1074,21 @@ if __name__ == "__main__":
                 selected_indices = np.arange(4)
             unselected_points = np.array([])
         
+        # 재정렬된 순서 계산 (world 좌표 매핑에 필요)
+        if n_points > 4:
+            all_indices = set(range(n_points))
+            unselected_indices_set = all_indices - set(selected_indices)
+            # unselected_indices를 원본 순서대로 정렬
+            unselected_indices_list = sorted(list(unselected_indices_set))
+            point_order = np.concatenate([selected_indices, unselected_indices_list])
+        else:
+            point_order = selected_indices.copy()
+        
+        # 모든 인덱스가 포함되었는지 확인
+        if len(set(point_order)) != n_points or len(point_order) != n_points:
+            print(f"  ⚠ 경고: point_order 계산 실패. 원본 순서 사용")
+            point_order = np.arange(n_points)
+        
         # World 좌표 로드 또는 자동 계산
         if args.world_coords and os.path.exists(args.world_coords):
             # JSON 파일에서 모든 점의 실제 좌표 로드
@@ -1141,13 +1103,36 @@ if __name__ == "__main__":
                     print(f"  ⚠ 경고: 파일에 {len(world_points_list)}개 점이 있지만, 검출된 점은 {n_points}개입니다.")
                     print(f"  처음 {min(len(world_points_list), n_points)}개만 사용합니다.")
                 
-                # 모든 점의 world 좌표를 원본 순서대로 설정
+                # JSON 파일의 points는 재정렬된 순서로 되어 있음
+                # point_order를 사용하여 원본 인덱스에 매핑
                 world_points_all = np.zeros((n_points, 2))
-                for i in range(min(len(world_points_list), n_points)):
-                    world_points_all[i] = world_points_list[i]
+                for reordered_idx, original_idx in enumerate(point_order):
+                    if reordered_idx < len(world_points_list):
+                        world_points_all[original_idx] = world_points_list[reordered_idx]
+                
+                # 사용자가 지정한 각도만큼 회전 적용
+                if args.rotate != 0.0 and len(selected_indices) >= 4:
+                    # 첫 번째 점(재정렬된 순서의 첫 번째)을 중심으로 회전
+                    first_point_idx = selected_indices[0] if len(selected_indices) > 0 else 0
+                    p1_world = world_points_all[first_point_idx].copy()
+                    
+                    # 각도를 라디안으로 변환 (시계방향이 양수)
+                    angle_rad = np.radians(-args.rotate)  # 시계방향이 양수이므로 반대 방향으로 회전
+                    cos_a = np.cos(angle_rad)
+                    sin_a = np.sin(angle_rad)
+                    rotation_matrix = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
+                    
+                    # 모든 world 좌표를 첫 번째 점 기준으로 회전
+                    for i in range(n_points):
+                        rel_pos = world_points_all[i] - p1_world
+                        rotated_rel = rotation_matrix @ rel_pos
+                        world_points_all[i] = p1_world + rotated_rel
+                    
+                    print(f"  회전 적용: {args.rotate:.2f}° (첫 번째 점 중심)")
                 
                 world_points = world_points_all
                 print(f"  ✓ {len(world_points_list)}개 점의 실제 좌표 로드 완료")
+                print(f"  재정렬된 순서: {point_order + 1} (원본 인덱스 기준)")
                 
             except Exception as e:
                 print(f"  ✗ World 좌표 파일 로드 실패: {e}")
@@ -1201,15 +1186,16 @@ if __name__ == "__main__":
             
             world_points = world_points_all
         
+        # 픽셀 거리 계산 (world 좌표 로드 여부와 관계없이 항상 계산)
+        dist_x = np.linalg.norm(image_points_4[1] - image_points_4[0])
+        dist_y = np.linalg.norm(image_points_4[2] - image_points_4[0])
+        
         if args.world_coords and os.path.exists(args.world_coords):
             print(f"\n=== World 좌표 (파일에서 로드) ===")
         else:
             print(f"\n=== World 좌표 (자동 계산) ===")
             if n_points > 4:
                 print(f"  기준 좌표계: 마커 {selected_indices + 1} (가장 멀리 떨어진 4개)")
-            p1 = image_points_4[0]
-            dist_x = np.linalg.norm(image_points_4[1] - image_points_4[0])
-            dist_y = np.linalg.norm(image_points_4[2] - image_points_4[0])
             print(f"  점1-점2 픽셀 거리: {dist_x:.1f}px")
             print(f"  점1-점3 픽셀 거리: {dist_y:.1f}px")
         print(f"  총 {n_points}개 점 사용")
@@ -1220,24 +1206,7 @@ if __name__ == "__main__":
         # ArUco 모드일 때 선택된 인덱스로 다시 시각화 (재정렬된 순서 반영)
         if args.mode == "aruco" and output_image_path is not None:
             print(f"\n=== 재정렬된 순서로 시각화 업데이트 ===")
-            # 재정렬된 순서: selected_indices (재정렬된 4개) + unselected_indices (나머지, 원본 순서 유지)
-            if n_points > 4:
-                all_indices = set(range(n_points))
-                unselected_indices_set = all_indices - set(selected_indices)
-                # unselected_indices를 원본 순서대로 정렬
-                unselected_indices_list = sorted(list(unselected_indices_set))
-                point_order = np.concatenate([selected_indices, unselected_indices_list])
-            else:
-                point_order = selected_indices.copy()
-            
-            # 모든 인덱스가 포함되었는지 확인
-            if len(set(point_order)) != n_points or len(point_order) != n_points:
-                print(f"  ⚠ 경고: point_order에 모든 인덱스가 포함되지 않았습니다.")
-                print(f"    point_order: {point_order}, n_points: {n_points}")
-                print(f"    원본 순서 사용")
-                point_order = None
-            else:
-                print(f"  재정렬된 순서: {point_order + 1} (원본 인덱스 기준)")
+            print(f"  재정렬된 순서: {point_order + 1} (원본 인덱스 기준)")
             
             visualize_aruco_detection(image, corners, ids, image_points, str(output_image_path), 
                                      highlight_indices=selected_indices, point_order=point_order)
@@ -1249,8 +1218,42 @@ if __name__ == "__main__":
     pixel_size_x = None
     pixel_size_y = None
     pixel_size_avg = None
+    real_dist_x = None
+    real_dist_y = None
+    pixel_dist_x = None
+    pixel_dist_y = None
     
-    if args.real_dist_x is not None and args.real_dist_y is not None:
+    # World 좌표가 로드된 경우 자동으로 pixel size 계산
+    if args.world_coords and os.path.exists(args.world_coords) and len(selected_indices) >= 4:
+        # 선택된 4개 점의 world 좌표로부터 실제 거리 계산
+        world_pts_4 = world_points[selected_indices]
+        real_dist_x = np.linalg.norm(world_pts_4[1] - world_pts_4[0])  # 점1-점2 world 거리
+        real_dist_y = np.linalg.norm(world_pts_4[2] - world_pts_4[0])  # 점1-점3 world 거리
+        pixel_dist_x = np.linalg.norm(image_points_4[1] - image_points_4[0])  # 점1-점2 픽셀 거리
+        pixel_dist_y = np.linalg.norm(image_points_4[2] - image_points_4[0])  # 점1-점3 픽셀 거리
+        
+        if pixel_dist_x > 0 and pixel_dist_y > 0:
+            pixel_size_x = real_dist_x / pixel_dist_x  # mm/pixel
+            pixel_size_y = real_dist_y / pixel_dist_y  # mm/pixel
+            pixel_size_avg = (pixel_size_x + pixel_size_y) / 2
+            
+            print(f"\n=== Pixel Size 계산 (World 좌표에서 자동 계산) ===")
+            print(f"  점1-점2 실제 거리: {real_dist_x:.1f}mm")
+            print(f"  점1-점3 실제 거리: {real_dist_y:.1f}mm")
+            print(f"  점1-점2 픽셀 거리: {pixel_dist_x:.1f}px")
+            print(f"  점1-점3 픽셀 거리: {pixel_dist_y:.1f}px")
+            print(f"  Pixel Size (X축): {pixel_size_x:.6f} mm/pixel")
+            print(f"  Pixel Size (Y축): {pixel_size_y:.6f} mm/pixel")
+            print(f"  Pixel Size (평균): {pixel_size_avg:.6f} mm/pixel")
+            
+            if abs(pixel_size_x - pixel_size_y) / pixel_size_avg > 0.1:
+                print(f"  ⚠ 경고: X/Y pixel size 차이가 10% 이상입니다. 호모그래피 적용 후에는 균일해집니다.")
+    elif args.real_dist_x is not None and args.real_dist_y is not None:
+        # 명시적으로 제공된 경우
+        real_dist_x = args.real_dist_x
+        real_dist_y = args.real_dist_y
+        pixel_dist_x = dist_x
+        pixel_dist_y = dist_y
         pixel_size_x = args.real_dist_x / dist_x  # mm/pixel
         pixel_size_y = args.real_dist_y / dist_y  # mm/pixel
         pixel_size_avg = (pixel_size_x + pixel_size_y) / 2
@@ -1293,9 +1296,49 @@ if __name__ == "__main__":
     
     # ===== 호모그래피 Warp 이미지 저장 =====
     print(f"\n=== 호모그래피 Warp 이미지 생성 ===")
+    # 오프셋 정보 초기화 (JSON 저장에 사용)
+    offset_x = None
+    offset_y = None
+    margin = None
+    
     try:
-        # 호모그래피로 undistortion된 이미지를 world 좌표계로 변환 (원본 크기 유지)
-        warped_image = cv2.warpPerspective(image, mapper.H, (w, h), 
+        # 이미지의 4개 모서리를 호모그래피로 변환하여 world 좌표 범위 계산
+        corners_original = np.array([
+            [[0, 0]],      # 좌상
+            [[w, 0]],      # 우상
+            [[w, h]],      # 우하
+            [[0, h]]       # 좌하
+        ], dtype=np.float32)
+        
+        corners_world = cv2.perspectiveTransform(corners_original, mapper.H)
+        corners_world = corners_world.reshape(-1, 2)
+        
+        # World 좌표 범위 계산
+        min_x = corners_world[:, 0].min()
+        min_y = corners_world[:, 1].min()
+        max_x = corners_world[:, 0].max()
+        max_y = corners_world[:, 1].max()
+        
+        # 마진 추가 (첫 번째 점이 (0,0)이 아닌 적절한 위치에 오도록)
+        margin = args.warp_margin  # 픽셀 단위 마진
+        offset_x = -min_x + margin
+        offset_y = -min_y + margin
+        
+        # 변환된 이미지 크기 계산
+        warped_width = int(max_x - min_x + 2 * margin)
+        warped_height = int(max_y - min_y + 2 * margin)
+        
+        # 오프셋을 적용한 호모그래피 행렬 생성
+        translation = np.array([
+            [1, 0, offset_x],
+            [0, 1, offset_y],
+            [0, 0, 1]
+        ], dtype=np.float64)
+        
+        H_with_offset = translation @ mapper.H
+        
+        # 호모그래피로 undistortion된 이미지를 world 좌표계로 변환
+        warped_image = cv2.warpPerspective(image, H_with_offset, (warped_width, warped_height), 
                                           flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
         
         # 결과 이미지 저장 경로
@@ -1305,6 +1348,8 @@ if __name__ == "__main__":
         if success:
             print(f"✓ 호모그래피 Warp 이미지 저장 완료: {output_image_path}")
             print(f"  출력 이미지 크기: {warped_image.shape[1]}x{warped_image.shape[0]} 픽셀")
+            print(f"  World 좌표 범위: X=[{min_x:.1f}, {max_x:.1f}], Y=[{min_y:.1f}, {max_y:.1f}]")
+            print(f"  오프셋 적용: X={offset_x:.1f}, Y={offset_y:.1f} (마진: {margin}px)")
             
             # 창으로 표시
             cv2.namedWindow("Homography Warped Image", cv2.WINDOW_NORMAL)
@@ -1327,14 +1372,10 @@ if __name__ == "__main__":
         # 호모그래피 행렬을 리스트로 변환
         homography_list = mapper.H.tolist()
         
-        # 별도 파일에 저장할 데이터
-        homography_data = {
-            "Homography": homography_list,
-            "image_path": str(IMAGE_PATH),
-            "camera_config_path": str(CAMERA_CONFIG_PATH)
-        }
+        # 별도 파일에 저장할 데이터 (순서: PixelSize -> Homography -> 기타)
+        homography_data = {}
         
-        # Pixel Size가 계산되었으면 같이 저장
+        # Pixel Size가 계산되었으면 먼저 저장
         if pixel_size_avg is not None:
             homography_data["PixelSize"] = {
                 "x": float(pixel_size_x),
@@ -1342,15 +1383,23 @@ if __name__ == "__main__":
                 "average": float(pixel_size_avg),
                 "unit": "mm/pixel"
             }
-            homography_data["RealDistance"] = {
-                "x": float(args.real_dist_x),
-                "y": float(args.real_dist_y),
-                "unit": "mm"
-            }
-            homography_data["PixelDistance"] = {
-                "x": float(dist_x),
-                "y": float(dist_y),
-                "unit": "pixel"
+            # RealDistance와 PixelDistance는 사용되지 않으므로 저장하지 않음
+        
+        # Homography 저장
+        homography_data["Homography"] = homography_list
+        
+        # 기타 정보 저장
+        homography_data["image_path"] = str(IMAGE_PATH)
+        homography_data["camera_config_path"] = str(CAMERA_CONFIG_PATH)
+        
+        # Warp 이미지 생성 시 사용된 오프셋 정보 저장 (있는 경우)
+        if offset_x is not None and offset_y is not None:
+            homography_data["WarpOffset"] = {
+                "x": float(offset_x),
+                "y": float(offset_y),
+                "margin": margin,
+                "unit": "pixel",
+                "_description": "호모그래피 warp 이미지 생성 시 적용된 오프셋. 첫 번째 점이 (0,0)이 아닌 적절한 위치에 오도록 조정"
             }
         
         # 저장
@@ -1391,10 +1440,84 @@ if __name__ == "__main__":
     cv2.destroyAllWindows()
 
 
-# ArUco 모드로 실행
+# ArUco 모드로 실행 예시
 # python scripts/pixel_distance_mapper.py \
 #     --mode aruco \
 #     --images img1.jpg img2.jpg img3.jpg img4.jpg \
 #     --camera-config config/camera1_config.json \
 #     --real-dist-x 900 \
 #     --real-dist-y 450
+def parse_arguments():
+    """명령줄 인자 파싱"""
+    parser = argparse.ArgumentParser(
+        description="Pixel Distance Mapper - 이미지 픽셀과 실제 거리 매핑\n"
+                    "원본 이미지를 입력하면 내부에서 자동으로 undistortion을 수행합니다."
+    )
+    parser.add_argument(
+        "--image",
+        type=str,
+        default="data/aruco/cam3/cam3.png",
+        help="입력 이미지 경로 (원본 이미지 가능 - 내부에서 undistortion 수행)"
+    )
+    parser.add_argument(
+        "--camera-config",
+        type=str,
+        default="config/cam3_config.json",
+        help="카메라 설정 파일 경로"
+    )
+    parser.add_argument(
+        "--world-coords",
+        type=str,
+        default="data/cam3_world_coords.json",
+        help="모든 점의 실제 world 좌표 JSON 파일 경로 (정확한 보정용). 형식: {\"points\": [[x1,y1], [x2,y2], ...]} (mm 단위)"
+    )
+    parser.add_argument(
+        "--rotate",
+        type=float,
+        default=-30.0,
+        help="World 좌표를 회전할 각도 (도 단위, 시계방향이 양수). 첫 번째 점을 중심으로 회전합니다."
+    )
+    parser.add_argument(
+        "--warp-margin",
+        type=int,
+        default=0,
+        help="호모그래피 warp 이미지 생성 시 적용할 마진 (픽셀 단위, 기본: 100). 첫 번째 점이 (0,0)이 아닌 적절한 위치에 오도록 조정"
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="data/homography.npz",
+        help="호모그래피 및 distance map 저장 경로"
+    )
+    parser.add_argument(
+        "--real-dist-x",
+        type=float,
+        default=None,
+        help="점1-점2 간의 실제 물리적 거리 (mm)"
+    )
+    parser.add_argument(
+        "--real-dist-y",
+        type=float,
+        default=None,
+        help="점1-점3 간의 실제 물리적 거리 (mm)"
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["manual", "aruco"],
+        default="aruco",
+        help="포인트 선택 모드: 'manual' (수동 선택) 또는 'aruco' (ArUco 자동 검출)"
+    )
+    parser.add_argument(
+        "--min-markers",
+        type=int,
+        default=4,
+        help="ArUco 모드에서 최소 필요한 마커 개수 (기본: 4)"
+    )
+    return parser.parse_args()
+
+
+
+if __name__ == "__main__":
+    args = parse_arguments()
+    main(args)

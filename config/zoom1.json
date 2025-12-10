@@ -1,11 +1,4 @@
 {
-  "calibration": {
-    "checkerboard_size": [8, 7],
-    "square_size": 20.0,
-    "num_calibration_images": 29,
-    "camera_height": 0.0,
-    "calibration_data_path": "calibration_data.json"
-  },
   "buffer": {
     "size": 40,
     "_desc_size": "버퍼 크기 (프레임 수). 30fps 기준: 15=0.5초, 30=1초. 낮을수록 레이턴시 감소",

@@ -47,7 +47,7 @@ from src.utils.image_utils import (
     warp_frame_with_homography,
     save_image,
 )
-from config import SystemConfig, TrackingConfig
+# Config classes removed - all configs loaded directly json and tracker_config files
 
 
 
@@ -58,8 +58,7 @@ LOADER_MODE_MAP = {
     "camera": "camera_device"
 }
 
-# Default tracking config (used when config file not loaded)
-DEFAULT_TRACKING_CONFIG = TrackingConfig()
+# No default tracking config - must be loaded from tracker_config file
 
 
 class VisionServer:
@@ -113,8 +112,9 @@ class VisionServer:
             # Load product model config file
             product_model_config = load_product_model_config(selected_model)
             if product_model_config:
-                # Load configs using existing functions
-                self.tracking_config = load_tracking_config(selected_model, None)
+                # Load configs - tracking config is loaded per camera from tracker_config files
+                # No global tracking_config needed
+                self.tracking_config = None
                 calibration_data = load_calibration_config(selected_model, None)
                 execution_config = get_execution_config(selected_model, None)
                 
@@ -195,8 +195,8 @@ class VisionServer:
                 self.log_base_path = Path("C:/CMES_AI/Log")
                 self.log_base_path.mkdir(parents=True, exist_ok=True)
                 self.log_level = "DEBUG"
-                self.tracking_config = DEFAULT_TRACKING_CONFIG
-                self.logger.warning(f"Failed to load config file for model: {selected_model}, using defaults")
+                self.tracking_config = None
+                self.logger.warning(f"Failed to load config file for model: {selected_model}")
                 # Setup file logging
                 self._setup_file_logging()
         else:
@@ -211,8 +211,8 @@ class VisionServer:
             self.log_base_path = Path("C:/CMES_AI/Log")
             self.log_base_path.mkdir(parents=True, exist_ok=True)
             self.log_level = "DEBUG"
-            self.tracking_config = DEFAULT_TRACKING_CONFIG
-            self.logger.warning("No model selected in model_config.json, using defaults")
+            self.tracking_config = None
+            self.logger.warning("No model selected in model_config.json")
             # Setup file logging
             self._setup_file_logging()
         
@@ -224,10 +224,8 @@ class VisionServer:
         # Camera state manager - centralized state management for all cameras
         self.camera_state_manager = CameraStateManager()
 
-        # Tracking configuration is already set above from selected model config
-        # If not set, use default
-        if not hasattr(self, 'tracking_config') or self.tracking_config is None:
-            self.tracking_config = self.config.tracking if self.config and self.config.tracking else DEFAULT_TRACKING_CONFIG
+        # Tracking configuration is loaded from tracker_config files per camera
+        # No global tracking_config needed - each camera loads its own from tracker_config file
 
         # Initialize managers (delegates for camera, tracking, and response handling)
         self.camera_manager = CameraManager(
@@ -373,8 +371,8 @@ class VisionServer:
         # Get pixel_size for this specific camera (dict with x, y, average)
         pixel_size = self.camera_manager.get_pixel_size_dict(camera_id)
         
-        # Get max_frames_lost from tracking_config
-        max_frames_lost = self.tracking_config.max_frames_lost if hasattr(self.tracking_config, 'max_frames_lost') else 500
+        # Get max_frames_lost from tracking_config (dict or None)
+        max_frames_lost = self.tracking_config.get('max_frames_lost', 500) if isinstance(self.tracking_config, dict) else 500
         
         return KalmanTracker(
             fps=fps,
@@ -483,10 +481,16 @@ class VisionServer:
         if detections:
             self.latest_detections[camera_id] = detections[0]
 
-        # Get tracking config thresholds
-        speed_near_zero_thresh = self.tracking_config.speed_near_zero_threshold
-        speed_zero_frames_thresh = self.tracking_config.speed_zero_frames_threshold
-        speed_thresh = self.tracking_config.speed_threshold_pix_per_frame
+        # Get tracking config thresholds (dict or None)
+        if isinstance(self.tracking_config, dict):
+            speed_near_zero_thresh = self.tracking_config.get('speed_near_zero_threshold', 3.0)
+            speed_zero_frames_thresh = self.tracking_config.get('speed_zero_frames_threshold', 20)
+            speed_thresh = self.tracking_config.get('speed_threshold_pix_per_frame', 5.0)
+        else:
+            # Default values if tracking_config not loaded
+            speed_near_zero_thresh = 3.0
+            speed_zero_frames_thresh = 20
+            speed_thresh = 5.0
 
         if not tracking_results:
             return True
@@ -612,8 +616,14 @@ class VisionServer:
         Returns:
             True if tracking should continue, False if should break.
         """
-        detection_loss_thresh = self.tracking_config.detection_loss_threshold_frames
-        camera2_trajectory_max_frames = self.tracking_config.camera2_trajectory_max_frames
+        # Get tracking config thresholds (dict or None)
+        if isinstance(self.tracking_config, dict):
+            detection_loss_thresh = self.tracking_config.get('detection_loss_threshold_frames', 30)
+            camera2_trajectory_max_frames = self.tracking_config.get('camera2_trajectory_max_frames', 300)
+        else:
+            # Default values if tracking_config not loaded
+            detection_loss_thresh = 30
+            camera2_trajectory_max_frames = 300
 
         if tracking_results:
             # Try to get tracker from EnhancedAMRTracker first, then fallback to trackers dict
@@ -625,9 +635,12 @@ class VisionServer:
             
             if tracker:
                 kf_state = tracker.kf.statePost.flatten()
-                pixel_size = self.camera_manager.get_pixel_size(camera_id)
-                x_mm = kf_state[0] * pixel_size
-                y_mm = kf_state[1] * pixel_size
+                # Use pixel_size_x and pixel_size_y separately (same as KalmanTracker)
+                pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
+                x_pix = kf_state[0]
+                y_pix = kf_state[1]
+                x_mm = x_pix * pixel_size_dict['x']
+                y_mm = y_pix * pixel_size_dict['y']
                 rz_deg = kf_state[2]
 
                 trajectory_index = len(self.camera2_trajectory)
@@ -635,7 +648,9 @@ class VisionServer:
                     "track_idx": trajectory_index,
                     "x": round(float(x_mm), 3),
                     "y": round(float(y_mm), 3),
-                    "rz": round(float(rz_deg), 3)
+                    "rz": round(float(rz_deg), 3),
+                    "x_pix": round(float(x_pix), 1),
+                    "y_pix": round(float(y_pix), 1)
                 })
 
         # Check if detection lost
@@ -712,9 +727,10 @@ class VisionServer:
         
         # Transform trajectory points if homography is available
         if homography is not None and len(trajectory_data) > 0:
-            pixel_size = self.camera_manager.get_pixel_size(camera_id)
+            # Use pixel_size_x and pixel_size_y separately
+            pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
             trajectory_data = transform_trajectory_data_with_homography(
-                trajectory_data, homography, pixel_size
+                trajectory_data, homography, pixel_size_dict
             )
             self.logger.debug(f"Camera {camera_id}: Applied homography transformation to {len(trajectory_data)} trajectory points")
         
@@ -986,20 +1002,10 @@ class VisionServer:
                 if not product_model_name:
                     raise ValueError("No model selected. Please provide model in request or set in config.")
             
-            # Get all configurations from model_config (consistent interface)
-            detector_config = self.model_config.get_detector_config(product_model_name)
-            tracking_config = self.model_config.get_tracking_config(
-                product_model_name=product_model_name,
-                main_config_tracking=self.config.tracking if self.config and self.config.tracking else None
-            )
-            calibration_data = self.model_config.get_calibration_config(
-                product_model_name=product_model_name,
-                main_config_calibration=self.config.calibration if self.config and self.config.calibration else None
-            )
-            
-            # Get execution config settings
+            # Get execution config settings first (needed for camera-specific config loading)
             image_undistortion = False
             product_model_config = load_product_model_config(product_model_name)
+            exec_config = {}
             if product_model_config and "execution" in product_model_config:
                 exec_config = product_model_config["execution"]
                 image_undistortion = exec_config.get("image_undistortion", False)
@@ -1008,13 +1014,42 @@ class VisionServer:
                 self.response_builder.result_base_path = self.result_base_path
                 self.response_builder.debug_base_path = self.debug_base_path
             
+            # Get all configurations from model_config (consistent interface)
+            # Note: This is a fallback - actual camera initialization uses camera-specific configs
+            detector_config = self.model_config.get_detector_config(product_model_name)
+            # Tracking config is loaded per camera from tracker_config files
+            # No global tracking_config needed
+            tracking_config = None
+            calibration_data = self.model_config.get_calibration_config(
+                product_model_name=product_model_name,
+                main_config_calibration=self.config.calibration if self.config and self.config.calibration else None
+            )
+            
             # Add image_undistortion to calibration_data so it can be passed to loaders
             if calibration_data:
                 calibration_data["enable_undistortion"] = image_undistortion
             
+            # Check if camera-specific detector configs exist (for logging)
+            main_config_execution = exec_config if isinstance(exec_config, dict) else {}
+            preset_name = self.preset_name or main_config_execution.get("use_preset")
+            camera_specific_configs_found = False
+            for camera_id in [1, 2, 3]:
+                camera_detector_config = load_camera_detector_config(
+                    camera_id=camera_id,
+                    product_model_name=product_model_name,
+                    main_config_execution=main_config_execution,
+                    preset_name=preset_name
+                )
+                if camera_detector_config:
+                    camera_specific_configs_found = True
+                    break
+            
             # Get detector type and model path from detector config
             detector_type = detector_config.get("detector_type", "yolo")
-            self.logger.info(f"Detector config: {detector_config}")
+            if camera_specific_configs_found:
+                self.logger.info(f"Detector config (fallback, camera-specific configs will be used): {detector_config}")
+            else:
+                self.logger.warning(f"Detector config (using fallback/default values - no camera-specific configs found): {detector_config}")
             
             # Model path is only required for YOLO detector
             if detector_type == "yolo":
@@ -1043,10 +1078,13 @@ class VisionServer:
             self.detector_config = detector_config
             self.calibration_config = calibration_data  # Store calibration config for EnhancedAMRTracker
             
-            # Store tracking config
-            self.tracking_config = tracking_config
+            # Tracking config is loaded per camera from tracker_config files
+            # No global tracking_config needed
+            self.tracking_config = None
             # Update camera2_trajectory maxlen and share with TrackingManager
-            self.camera2_trajectory = deque(maxlen=self.tracking_config.camera2_trajectory_max_frames * 2)
+            # Use default value - actual max_frames comes from camera-specific config
+            camera2_trajectory_max_frames = 300  # Default, will be overridden by camera-specific config
+            self.camera2_trajectory = deque(maxlen=camera2_trajectory_max_frames * 2)
             self.tracking_manager.camera2_trajectory = self.camera2_trajectory
             self.tracking_manager.camera2_trajectory_sent = False
             
@@ -1098,8 +1136,8 @@ class VisionServer:
                     except Exception as e:
                         self.logger.warning(f"Camera {camera_id}: Error loading distance_map_path={distance_map_path}: {e}")
                 else:
-                    pixel_size = self.camera_manager.get_pixel_size(camera_id)
-                    self.logger.info(f"Camera {camera_id}: Using pixel_size={pixel_size} (no distance_map_path)")
+                    pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
+                    self.logger.info(f"Camera {camera_id}: Using pixel_size (x={pixel_size_dict['x']:.6f}, y={pixel_size_dict['y']:.6f}) (no distance_map_path)")
              
             # Load visualize_stream from product model config (execution.visualize_stream)
             product_model_config = load_product_model_config(product_model_name)
@@ -1373,24 +1411,32 @@ class VisionServer:
         elif detector_type == "yolo" and model_path is None:
             raise ValueError("model_path is required for YOLO detector")
         
-        # Get enable_undistortion from config
+        # Get enable_undistortion json -> execution.image_undistortion
         enable_undistortion = False
-        if self.config and hasattr(self.config, 'execution') and self.config.execution:
-            enable_undistortion = getattr(self.config.execution, 'image_undistortion', False)
+        try:
+            product_model_config = load_product_model_config(product_model_name)
+            if product_model_config and "execution" in product_model_config:
+                exec_config = product_model_config["execution"]
+                enable_undistortion = exec_config.get("image_undistortion", False)
+                self.logger.info(f"Camera {camera_id}: Image undistortion from {product_model_name}.json: {enable_undistortion}")
+            else:
+                self.logger.debug(f"Camera {camera_id}: No execution section in {product_model_name}.json, undistortion disabled")
+        except Exception as e:
+            self.logger.warning(f"Camera {camera_id}: Failed to load image_undistortion from {product_model_name}.json: {e}")
         
-        # Load camera-specific tracking config and set to TrackingManager
+        # Load camera-specific tracking config from tracker_config file and set to TrackingManager
         camera_tracking_config = load_camera_tracking_config(
             camera_id=camera_id,
             product_model_name=product_model_name,
             main_config_execution=main_config_execution,
-            main_config_tracking=self.config.tracking if self.config and self.config.tracking else None,
+            main_config_tracking=None,  # Not used - all configs from tracker_config files
             preset_name=preset_name
         )
         self.tracking_manager.set_camera_tracking_config(camera_id, camera_tracking_config)
         self.logger.info(f"Camera {camera_id}: Loaded tracking config - "
-                         f"speed_near_zero={camera_tracking_config.speed_near_zero_threshold}, "
-                         f"speed_zero_frames={camera_tracking_config.speed_zero_frames_threshold}, "
-                         f"speed_threshold={camera_tracking_config.speed_threshold_pix_per_frame}")
+                         f"speed_near_zero={camera_tracking_config.get('speed_near_zero_threshold', 3.0)}, "
+                         f"speed_zero_frames={camera_tracking_config.get('speed_zero_frames_threshold', 20)}, "
+                         f"speed_threshold={camera_tracking_config.get('speed_threshold_pix_per_frame', 5.0)}")
         
         # Get raw tracker config dict for KalmanTracker (boundary_margin_ratio, etc.)
         raw_tracker_config = get_camera_tracker_config(
@@ -1399,7 +1445,7 @@ class VisionServer:
             main_config_execution=main_config_execution,
             preset_name=preset_name
         )
-        tracker_config_dict = raw_tracker_config.get("tracker", {}) if raw_tracker_config else {}
+        tracker_config_dict = raw_tracker_config.get("tracker", {})
         
         # Delegate to CameraManager
         self.camera_manager.initialize_camera(

@@ -207,7 +207,7 @@ def main():
     parser = argparse.ArgumentParser(description="이미지 언디스토션 스크립트")
     parser.add_argument("-i", "--input_folder", help="입력 이미지 폴더 경로")
     parser.add_argument("-o", "--output", help="출력 폴더 경로 (기본: input_folder/undistorted)")
-    parser.add_argument("-c", "--camera-config", default="../config/cam3_config.json", help="카메라 설정 JSON 파일 경로 (calibration 포함)")
+    parser.add_argument("-c", "--camera-config", default="config/cam3_config.json", help="카메라 설정 JSON 파일 경로 (calibration 포함)")
     parser.add_argument("-n", "--no-optimal", action="store_true", help="최적 카메라 행렬 사용 안함 (이미지 크롭될 수 있음)")
     
     args = parser.parse_args()

@@ -13,7 +13,7 @@ from src.utils.sequence_loader import BaseLoader
 from src.visualization.display import resize_frame_to_screen, get_screen_resolution
 from .camera_manager import CameraManager
 from .camera_state import CameraStateManager
-from config import TrackingConfig
+# TrackingConfig removed - using dict from tracker_config files
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class TrackingManager:
         self,
         camera_manager: CameraManager,
         camera_state_manager: CameraStateManager,
-        tracking_config: TrackingConfig,
+        tracking_config: Optional[Dict[str, Any]] = None,
         use_area_scan: bool = False,
         visualize_stream: bool = True
     ):
@@ -35,14 +35,14 @@ class TrackingManager:
         Args:
             camera_manager: Camera manager instance
             camera_state_manager: Camera state manager instance
-            tracking_config: Tracking configuration
+            tracking_config: Tracking configuration dict (optional, cameras load from tracker_config files)
             use_area_scan: Whether to use area scan mode
             visualize_stream: Whether to visualize tracking stream
         """
         self.camera_manager = camera_manager
         self.camera_state_manager = camera_state_manager
-        self.tracking_config = tracking_config  # Default/global tracking config
-        self.camera_tracking_configs: Dict[int, TrackingConfig] = {}  # Camera-specific tracking configs
+        self.tracking_config = tracking_config  # Default/global tracking config (dict or None)
+        self.camera_tracking_configs: Dict[int, Dict[str, Any]] = {}  # Camera-specific tracking configs (dict)
         self.use_area_scan = use_area_scan
         self.visualize_stream = visualize_stream
         
@@ -70,17 +70,17 @@ class TrackingManager:
         """Set vision active state."""
         self.vision_active = active
     
-    def set_camera_tracking_config(self, camera_id: int, tracking_config: TrackingConfig):
+    def set_camera_tracking_config(self, camera_id: int, tracking_config: Dict[str, Any]):
         """Set camera-specific tracking config.
         
         Args:
             camera_id: Camera ID (1, 2, or 3)
-            tracking_config: Camera-specific TrackingConfig
+            tracking_config: Camera-specific tracking config dict (from tracker_config file)
         """
         self.camera_tracking_configs[camera_id] = tracking_config
         logger.info(f"Camera {camera_id}: Set camera-specific tracking config")
     
-    def get_camera_tracking_config(self, camera_id: int) -> TrackingConfig:
+    def get_camera_tracking_config(self, camera_id: int) -> Dict[str, Any]:
         """Get tracking config for a specific camera.
         
         Falls back to global tracking_config if no camera-specific config is set.
@@ -89,9 +89,9 @@ class TrackingManager:
             camera_id: Camera ID (1, 2, or 3)
         
         Returns:
-            TrackingConfig for the camera
+            Tracking config dict for the camera
         """
-        return self.camera_tracking_configs.get(camera_id, self.tracking_config)
+        return self.camera_tracking_configs.get(camera_id, self.tracking_config or {})
     
     def start_tracking(self, camera_id: int):
         """Start tracking thread for a camera."""
@@ -346,9 +346,9 @@ class TrackingManager:
         
         # Get camera-specific tracking config
         cam_tracking_config = self.get_camera_tracking_config(camera_id)
-        speed_near_zero_thresh = cam_tracking_config.speed_near_zero_threshold
-        speed_zero_frames_thresh = cam_tracking_config.speed_zero_frames_threshold
-        speed_thresh = cam_tracking_config.speed_threshold_pix_per_frame
+        speed_near_zero_thresh = cam_tracking_config.get('speed_near_zero_threshold', 3.0)
+        speed_zero_frames_thresh = cam_tracking_config.get('speed_zero_frames_threshold', 20)
+        speed_thresh = cam_tracking_config.get('speed_threshold_pix_per_frame', 5.0)
         
         if not tracking_results:
             return True
@@ -453,8 +453,8 @@ class TrackingManager:
         """Handle camera 2 specific tracking logic."""
         # Get camera-specific tracking config
         cam_tracking_config = self.get_camera_tracking_config(camera_id)
-        detection_loss_thresh = cam_tracking_config.detection_loss_threshold_frames
-        camera2_trajectory_max_frames = cam_tracking_config.camera2_trajectory_max_frames
+        detection_loss_thresh = cam_tracking_config.get('detection_loss_threshold_frames', 30)
+        camera2_trajectory_max_frames = cam_tracking_config.get('camera2_trajectory_max_frames', 300)
         
         if tracking_results:
             amr_tracker = self.camera_manager.amr_trackers.get(camera_id)
@@ -465,11 +465,12 @@ class TrackingManager:
             
             if tracker:
                 kf_state = tracker.kf.statePost.flatten()
-                pixel_size = self.camera_manager.get_pixel_size(camera_id)
+                # Use pixel_size_x and pixel_size_y separately (same as KalmanTracker)
+                pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
                 x_pix = kf_state[0]
                 y_pix = kf_state[1]
-                x_mm = x_pix * pixel_size
-                y_mm = y_pix * pixel_size
+                x_mm = x_pix * pixel_size_dict['x']
+                y_mm = y_pix * pixel_size_dict['y']
                 rz_deg = kf_state[2]
                 
                 trajectory_index = len(self.camera2_trajectory)

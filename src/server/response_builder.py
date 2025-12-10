@@ -59,9 +59,10 @@ class ResponseBuilder:
                 center = detection.get_center()
                 orientation = detection.get_orientation()
                 
-                pixel_size = self.camera_manager.get_pixel_size(camera_id)
-                x_mm = center[0] * pixel_size
-                y_mm = center[1] * pixel_size
+                # Use pixel_size_x and pixel_size_y separately
+                pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
+                x_mm = center[0] * pixel_size_dict['x']
+                y_mm = center[1] * pixel_size_dict['y']
                 rz_deg = orientation if orientation is not None else 0.0
                 
                 logger.debug(f"Camera {camera_id}: Returning DETECTION data: x={x_mm:.2f}, y={y_mm:.2f}, rz={rz_deg:.4f}deg")
@@ -80,9 +81,10 @@ class ResponseBuilder:
             tracker = amr_tracker.tracker
             state = tracker.kf.statePost.flatten()
             
-            pixel_size = self.camera_manager.get_pixel_size(camera_id)
-            x_mm = state[0] * pixel_size
-            y_mm = state[1] * pixel_size
+            # Use pixel_size_x and pixel_size_y separately (same as KalmanTracker)
+            pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
+            x_mm = state[0] * pixel_size_dict['x']
+            y_mm = state[1] * pixel_size_dict['y']
             rz_deg = state[2]
             
             logger.debug(f"Camera {camera_id}: Returning EnhancedAMRTracker data: x={x_mm:.2f}, y={y_mm:.2f}, rz={rz_deg:.4f}deg")
@@ -101,9 +103,10 @@ class ResponseBuilder:
         tracker = next(iter(trackers.values()))
         state = tracker.kf.statePost.flatten()
         
-        pixel_size = self.camera_manager.get_pixel_size(camera_id)
-        x_mm = state[0] * pixel_size
-        y_mm = state[1] * pixel_size
+        # Use pixel_size_x and pixel_size_y separately (same as KalmanTracker)
+        pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
+        x_mm = state[0] * pixel_size_dict['x']
+        y_mm = state[1] * pixel_size_dict['y']
         rz_deg = state[2]
         
         logger.debug(f"Camera {camera_id}: Returning TRACKER data: x={x_mm:.2f}, y={y_mm:.2f}, rz={rz_deg:.4f}deg")
@@ -142,13 +145,13 @@ class ResponseBuilder:
         x_mm = position.get("x_mm", 0.0)
         y_mm = position.get("y_mm", 0.0)
         
-        # If x_mm/y_mm not available, fallback to pixel position * pixel_size
+        # If x_mm/y_mm not available, fallback to pixel position * pixel_size (x, y separately)
         if x_mm == 0.0 and y_mm == 0.0:
-            pixel_size = self.camera_manager.get_pixel_size(camera_id)
+            pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
             x_pix = position.get("x", 0.0)
             y_pix = position.get("y", 0.0)
-            x_mm = x_pix * pixel_size
-            y_mm = y_pix * pixel_size
+            x_mm = x_pix * pixel_size_dict['x']
+            y_mm = y_pix * pixel_size_dict['y']
         
         # Get orientation from tracking result (Kalman filtered)
         rz = orientation.get("theta_normalized_deg", 0.0)

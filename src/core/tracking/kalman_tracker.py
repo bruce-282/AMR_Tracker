@@ -81,14 +81,13 @@ class KalmanTracker:
     Tracks position, velocity, and orientation using a Kalman filter.
     """
 
-    def __init__(self, fps=30, pixel_size=1.0, distance_map_data=None, track_id=0, max_frames_lost=None, boundary_margin_ratio=None):
+    def __init__(self, fps=30, pixel_size=None, distance_map_data=None, track_id=0, max_frames_lost=None, boundary_margin_ratio=None):
         """
         Initialize Kalman tracker
 
         Args:
             fps: Camera frame rate (initial value, can be updated from timestamps)
-            pixel_size: Pixel size in mm - float or dict with 'x', 'y' keys
-                       - float: 단일 값 (기존 형식)
+            pixel_size: Pixel size in mm - dict with 'x', 'y' keys (required)
                        - dict: {'x': float, 'y': float} 또는 {'x': float, 'y': float, 'average': float}
             distance_map_data: Distance map data dict from PixelDistanceMapper.load_distance_map() (optional)
             track_id: Unique ID for this tracker
@@ -101,15 +100,18 @@ class KalmanTracker:
         self.max_frames_lost = max_frames_lost if max_frames_lost is not None else MAX_FRAMES_LOST
         self.boundary_margin_ratio = boundary_margin_ratio if boundary_margin_ratio is not None else 0.1
         
-        # pixel_size 처리: dict 형태면 x, y 분리, 아니면 단일 값 사용
-        if isinstance(pixel_size, dict):
-            self.pixel_size_x = pixel_size.get('x', 1.0)
-            self.pixel_size_y = pixel_size.get('y', 1.0)
-            self.pixel_size = pixel_size.get('average', (self.pixel_size_x + self.pixel_size_y) / 2)
-        else:
-            self.pixel_size = pixel_size
-            self.pixel_size_x = pixel_size
-            self.pixel_size_y = pixel_size
+        # pixel_size는 반드시 dict 형태여야 함
+        if not isinstance(pixel_size, dict):
+            raise ValueError(f"pixel_size must be a dict with 'x' and 'y' keys, got {type(pixel_size)}")
+        
+        self.pixel_size_x = pixel_size.get('x', 1.0)
+        self.pixel_size_y = pixel_size.get('y', 1.0)
+        
+        if self.pixel_size_x <= 0 or self.pixel_size_y <= 0:
+            raise ValueError(f"pixel_size x and y must be positive, got x={self.pixel_size_x}, y={self.pixel_size_y}")
+        
+        # self.pixel_size는 backward compatibility를 위해 유지하지만 사용하지 않음
+        self.pixel_size = (self.pixel_size_x + self.pixel_size_y) / 2
         self.kf = self.init_kalman()
 
         # For angle continuity (handle angle wrap-around)
@@ -536,21 +538,38 @@ class KalmanTracker:
             #   - state[4] = vy (pixels/frame)
             #   - sqrt(vx^2 + vy^2) = velocity magnitude (pixels/frame)
             #   - * fps = convert from per-frame to per-second (pixels/sec)
+            # state[3] = vx (pixels/frame), state[4] = vy (pixels/frame)
+            vx_pix = state[3]
+            vy_pix = state[4]
             linear_speed_pix = (
-                np.sqrt(state[3] ** 2 + state[4] ** 2) * self.fps
+                np.sqrt(vx_pix ** 2 + vy_pix ** 2) * self.fps
             )  # pixels/sec
-            # Convert pixel speed to mm/s
+            
+            # Convert pixel speed to mm/s using pixel_size_x and pixel_size_y separately
             if self.distance_map_data:
-                # Use distance map: average pixel_size from distance map
-                # For speed calculation, use a representative pixel_size from the map
-                # (e.g., center of image or average)
-                distance_map = self.distance_map_data['distance_map']
-                h, w = distance_map.shape
-                # Use center pixel as reference
-                center_pix_size = distance_map[h//2, w//2] / np.sqrt((h//2)**2 + (w//2)**2) if (h//2)**2 + (w//2)**2 > 0 else self.pixel_size
-                linear_speed_mm = linear_speed_pix * center_pix_size  # mm/s
+                # Use distance map: convert vx and vy separately
+                dx_map = self.distance_map_data['dx_map']
+                dy_map = self.distance_map_data['dy_map']
+                h, w = dx_map.shape
+                x_pix, y_pix = int(state[0]), int(state[1])
+                if 0 <= y_pix < h and 0 <= x_pix < w:
+                    # Get pixel_size at current position from distance map
+                    # For speed, we need to convert vx and vy separately
+                    # Approximate: use local pixel_size from distance map
+                    # vx_mm = vx_pix * pixel_size_x, vy_mm = vy_pix * pixel_size_y
+                    # Then speed_mm = sqrt(vx_mm^2 + vy_mm^2) * fps
+                    # For simplicity, use average of local dx and dy maps
+                    local_pixel_size = (abs(dx_map[y_pix, x_pix]) + abs(dy_map[y_pix, x_pix])) / 2 if (dx_map[y_pix, x_pix] != 0 or dy_map[y_pix, x_pix] != 0) else ((self.pixel_size_x + self.pixel_size_y) / 2)
+                    linear_speed_mm = linear_speed_pix * local_pixel_size  # mm/s
+                else:
+                    # Out of bounds, use average of pixel_size_x and pixel_size_y
+                    linear_speed_mm = linear_speed_pix * ((self.pixel_size_x + self.pixel_size_y) / 2)  # mm/s
             else:
-                linear_speed_mm = linear_speed_pix * self.pixel_size  # mm/s
+                # Convert vx and vy separately, then calculate speed
+                # vx_mm = vx_pix * pixel_size_x, vy_mm = vy_pix * pixel_size_y
+                vx_mm = vx_pix * self.pixel_size_x  # mm/frame
+                vy_mm = vy_pix * self.pixel_size_y  # mm/frame
+                linear_speed_mm = np.sqrt(vx_mm ** 2 + vy_mm ** 2) * self.fps  # mm/s
 
             # Angular speed is already in deg/frame, convert to deg/sec
             angular_speed_deg = abs(state[5]) * self.fps  # deg/sec
