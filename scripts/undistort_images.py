@@ -7,17 +7,18 @@ import cv2
 import numpy as np
 import os
 import argparse
+import json
 from pathlib import Path
 
 
 # 기본 카메라 파라미터 (cam1)
 
-DEFAULT_INTRINSIC = np.array([
-    [3629.20, 0, 2069.28],
-    [0, 3622.66, 996.82],
-    [0, 0, 1]
-], dtype=np.float64)
-DEFAULT_DISTORTION = np.array([-0.090631, 0.079203, 0.001397, 0.001820], dtype=np.float64)
+# DEFAULT_INTRINSIC = np.array([
+#     [3629.20, 0, 2069.28],
+#     [0, 3622.66, 996.82],
+#     [0, 0, 1]
+# ], dtype=np.float64)
+# DEFAULT_DISTORTION = np.array([-0.090631, 0.079203, 0.001397, 0.001820], dtype=np.float64)
 
 
 def load_intrinsic(filepath: str) -> np.ndarray:
@@ -48,6 +49,37 @@ def load_distortion(filepath: str) -> np.ndarray:
         values.append(0.0)
     
     return np.array(values, dtype=np.float64)
+
+
+def load_calibration_from_json(json_path: str) -> tuple:
+    """
+    JSON 카메라 설정 파일에서 calibration 파라미터 로드
+    
+    Args:
+        json_path: cam1_config.json 같은 카메라 설정 파일 경로
+    
+    Returns:
+        (camera_matrix, dist_coeffs) 튜플
+    """
+    with open(json_path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+    
+    if 'calibration' not in config:
+        raise ValueError(f"calibration 섹션이 없습니다: {json_path}")
+    
+    calib = config['calibration']
+    
+    # Camera Matrix 로드
+    if 'CameraMatrix' not in calib:
+        raise ValueError(f"CameraMatrix가 없습니다: {json_path}")
+    camera_matrix = np.array(calib['CameraMatrix'], dtype=np.float64)
+    
+    # Distortion Coefficients 로드
+    if 'DistortionCoefficients' not in calib:
+        raise ValueError(f"DistortionCoefficients가 없습니다: {json_path}")
+    dist_coeffs = np.array(calib['DistortionCoefficients'], dtype=np.float64).flatten()
+    
+    return camera_matrix, dist_coeffs
 
 
 def undistort_image(image: np.ndarray, 
@@ -82,8 +114,7 @@ def undistort_image(image: np.ndarray,
 
 def process_folder(input_folder: str, 
                    output_folder: str = None,
-                   intrinsic_file: str = None,
-                   distortion_file: str = None,
+                   camera_config: str = None,
                    use_optimal_matrix: bool = True):
     """
     폴더 내 모든 이미지 언디스토션 처리
@@ -91,8 +122,7 @@ def process_folder(input_folder: str,
     Args:
         input_folder: 입력 이미지 폴더
         output_folder: 출력 폴더 (None이면 input_folder/undistorted)
-        intrinsic_file: Intrinsic 파라미터 파일 경로
-        distortion_file: Distortion 파라미터 파일 경로
+        camera_config: 카메라 설정 JSON 파일 (cam1_config.json 등)
         use_optimal_matrix: 최적 카메라 행렬 사용 여부
     """
     input_path = Path(input_folder)
@@ -110,19 +140,16 @@ def process_folder(input_folder: str,
     output_path.mkdir(parents=True, exist_ok=True)
     
     # 카메라 파라미터 로드
-    if intrinsic_file and os.path.exists(intrinsic_file):
-        camera_matrix = load_intrinsic(intrinsic_file)
-        print(f"[INFO] Intrinsic 파라미터 로드: {intrinsic_file}")
-    else:
-        camera_matrix = DEFAULT_INTRINSIC
-        print("[INFO] 기본 Intrinsic 파라미터 사용")
+    camera_matrix = None
+    dist_coeffs = None
     
-    if distortion_file and os.path.exists(distortion_file):
-        dist_coeffs = load_distortion(distortion_file)
-        print(f"[INFO] Distortion 파라미터 로드: {distortion_file}")
-    else:
-        dist_coeffs = DEFAULT_DISTORTION
-        print("[INFO] 기본 Distortion 파라미터 사용")
+    # 1. JSON 카메라 설정 파일 우선
+    if camera_config and os.path.exists(camera_config):
+        try:
+            camera_matrix, dist_coeffs = load_calibration_from_json(camera_config)
+            print(f"[INFO] 카메라 설정 로드: {camera_config}")
+        except Exception as e:
+            print(f"[ERROR] JSON 로드 실패: {e}")
     
     print(f"\n[INFO] Camera Matrix:\n{camera_matrix}")
     print(f"[INFO] Distortion Coefficients: {dist_coeffs}")
@@ -178,24 +205,17 @@ def process_folder(input_folder: str,
 
 def main():
     parser = argparse.ArgumentParser(description="이미지 언디스토션 스크립트")
-    parser.add_argument("--input_folder", help="입력 이미지 폴더 경로")
+    parser.add_argument("-i", "--input_folder", help="입력 이미지 폴더 경로")
     parser.add_argument("-o", "--output", help="출력 폴더 경로 (기본: input_folder/undistorted)")
-    parser.add_argument("-i", "--intrinsic", 
-                        default=r"C:\Users\user\Documents\cmes_repo\AMR_Tracker\data\251205_cam2_calib\cam2Intrinsic.txt",
-                        help="Intrinsic 파라미터 파일 경로")
-    parser.add_argument("-d", "--distortion",
-                        default=r"C:\Users\user\Documents\cmes_repo\AMR_Tracker\data\251205_cam2_calib\cam2Distortion.txt", 
-                        help="Distortion 파라미터 파일 경로")
-    parser.add_argument("--no-optimal", action="store_true",
-                        help="최적 카메라 행렬 사용 안함 (이미지 크롭될 수 있음)")
+    parser.add_argument("-c", "--camera-config", default="../config/cam3_config.json", help="카메라 설정 JSON 파일 경로 (calibration 포함)")
+    parser.add_argument("-n", "--no-optimal", action="store_true", help="최적 카메라 행렬 사용 안함 (이미지 크롭될 수 있음)")
     
     args = parser.parse_args()
     
     process_folder(
         input_folder=args.input_folder,
         output_folder=args.output,
-        intrinsic_file=args.intrinsic,
-        distortion_file=args.distortion,
+        camera_config=args.camera_config,
         use_optimal_matrix=not args.no_optimal
     )
 

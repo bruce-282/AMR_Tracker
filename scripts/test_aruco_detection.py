@@ -7,12 +7,32 @@ from scripts.pixel_distance_mapper import detect_aruco_board_center
 
 # Argument parser
 parser = argparse.ArgumentParser(description="ArUco 마커 검출 및 보정")
-parser.add_argument("--image", type=str, default="scripts/novitec_manual_1765263482.png", help="입력 이미지 경로")
-parser.add_argument("--camera-config", type=str, default="config/cam1_config.json", help="카메라 설정 파일 경로")
-parser.add_argument("--marker-size", type=float, help="ArUco 마커의 실제 크기 (mm) - 전체 마커의 한 변 길이")
-parser.add_argument("--cell-size", type=float, help="ArUco 마커 셀의 실제 크기 (mm) - 한 셀의 크기")
-parser.add_argument("--marker-type", type=str, default="4x4", choices=["4x4", "5x5", "6x6", "7x7"], help="마커 타입 (기본: 4x4)")
+parser.add_argument("--image", type=str, default="data/aruco/cam3/undistorted/cam3_undistorted.png", help="입력 이미지 경로")
+parser.add_argument("--camera-config", type=str, default="config/cam3_config.json", help="카메라 설정 파일 경로")
+parser.add_argument("--marker-size", type=float, default=None, help="ArUco 마커의 실제 크기 (mm) - 전체 마커의 한 변 길이 (셀 크기로 자동 계산 가능)")
+parser.add_argument("--cell-size", type=float, default="28.0", help="ArUco 마커 셀의 실제 크기 (mm) - 한 셀의 크기 (입력 시 마커 크기 자동 계산)")
+parser.add_argument("--marker-type", type=str, default="4x4", choices=["4x4", "5x5", "6x6", "7x7"], help="마커 타입 (기본: 4x4, 셀 크기 계산 시 사용)")
+parser.add_argument("--undistort", action="store_true", help="언디스토션 사용 여부")
 args = parser.parse_args()
+
+# 셀 크기로부터 전체 마커 크기 자동 계산
+# ArUco 마커 구조: n×n 내부 그리드 + 외곽 테두리 = (n+2)×(n+2) 셀
+if args.marker_size is None and args.cell_size is not None:
+    marker_type_to_grid = {
+        "4x4": 4,  # 4×4 내부 → 6×6 전체 셀
+        "5x5": 5,  # 5×5 내부 → 7×7 전체 셀
+        "6x6": 6,  # 6×6 내부 → 8×8 전체 셀
+        "7x7": 7   # 7×7 내부 → 9×9 전체 셀
+    }
+    grid_size = marker_type_to_grid.get(args.marker_type, 4)
+    total_cells = grid_size + 2  # 내부 그리드 + 외곽 테두리
+    args.marker_size = args.cell_size * total_cells
+    print(f"[INFO] 셀 크기로부터 전체 마커 크기 자동 계산:")
+    print(f"  셀 크기: {args.cell_size:.2f} mm")
+    print(f"  마커 타입: {args.marker_type} (내부 {grid_size}×{grid_size}, 전체 {total_cells}×{total_cells} 셀)")
+    print(f"  계산된 전체 마커 크기: {args.marker_size:.2f} mm")
+elif args.marker_size is None and args.cell_size is None:
+    print("[WARNING] --marker-size 또는 --cell-size 중 하나는 입력해야 합니다.")
 
 # 이미지 경로
 image_path = args.image
@@ -29,30 +49,31 @@ if image is None:
 print(f"이미지 크기: {image.shape[1]}x{image.shape[0]}")
 
 # 카메라 설정 로드
-try:
-    with open(camera_config_path, 'r', encoding='utf-8') as f:
-        camera_config = json.load(f)
-    
-    calibration = camera_config.get("calibration", {})
-    camera_matrix = np.array(calibration.get("CameraMatrix", []), dtype=np.float64)
-    dist_coeffs_list = calibration.get("DistortionCoefficients", [])
-    
-    if dist_coeffs_list and isinstance(dist_coeffs_list[0], list):
-        dist_coeffs = np.array(dist_coeffs_list[0], dtype=np.float64)
-    else:
-        dist_coeffs = np.array(dist_coeffs_list, dtype=np.float64)
-    
-    print(f"\n카메라 설정 로드: {camera_config_path}")
-    print(f"  Camera Matrix shape: {camera_matrix.shape}")
-    print(f"  Distortion Coefficients shape: {dist_coeffs.shape}")
-    
-except Exception as e:
-    print(f"카메라 설정 로드 실패: {e}")
-    print("기본값 사용...")
-    # 기본값 (임시)
-    h, w = image.shape[:2]
-    camera_matrix = np.array([[w, 0, w/2], [0, w, h/2], [0, 0, 1]], dtype=np.float64)
-    dist_coeffs = np.array([0, 0, 0, 0, 0], dtype=np.float64)
+if args.undistort:
+    try:
+        with open(camera_config_path, 'r', encoding='utf-8') as f:
+            camera_config = json.load(f)
+        
+        calibration = camera_config.get("calibration", {})
+        camera_matrix = np.array(calibration.get("CameraMatrix", []), dtype=np.float64)
+        dist_coeffs_list = calibration.get("DistortionCoefficients", [])
+        
+        if dist_coeffs_list and isinstance(dist_coeffs_list[0], list):
+            dist_coeffs = np.array(dist_coeffs_list[0], dtype=np.float64)
+        else:
+            dist_coeffs = np.array(dist_coeffs_list, dtype=np.float64)
+        
+        print(f"\n카메라 설정 로드: {camera_config_path}")
+        print(f"  Camera Matrix shape: {camera_matrix.shape}")
+        print(f"  Distortion Coefficients shape: {dist_coeffs.shape}")
+        
+    except Exception as e:
+        print(f"카메라 설정 로드 실패: {e}")
+        print("기본값 사용...")
+        # 기본값 (임시)
+        h, w = image.shape[:2]
+        camera_matrix = np.array([[w, 0, w/2], [0, w, h/2], [0, 0, 1]], dtype=np.float64)
+        dist_coeffs = np.array([0, 0, 0, 0, 0], dtype=np.float64)
 
 # 여러 ArUco 딕셔너리 시도
 aruco_dicts = [
@@ -60,12 +81,12 @@ aruco_dicts = [
     ("DICT_4X4_100", cv2.aruco.DICT_4X4_100),
     ("DICT_4X4_250", cv2.aruco.DICT_4X4_250),
     ("DICT_4X4_1000", cv2.aruco.DICT_4X4_1000),
-    ("DICT_5X5_50", cv2.aruco.DICT_5X5_50),
-    ("DICT_5X5_100", cv2.aruco.DICT_5X5_100),
-    ("DICT_6X6_50", cv2.aruco.DICT_6X6_50),
-    ("DICT_6X6_100", cv2.aruco.DICT_6X6_100),
-    ("DICT_7X7_50", cv2.aruco.DICT_7X7_50),
-    ("DICT_7X7_100", cv2.aruco.DICT_7X7_100),
+    # ("DICT_5X5_50", cv2.aruco.DICT_5X5_50),
+    # ("DICT_5X5_100", cv2.aruco.DICT_5X5_100),
+    # ("DICT_6X6_50", cv2.aruco.DICT_6X6_50),
+    # ("DICT_6X6_100", cv2.aruco.DICT_6X6_100),
+    # ("DICT_7X7_50", cv2.aruco.DICT_7X7_50),
+    # ("DICT_7X7_100", cv2.aruco.DICT_7X7_100),
 ]
 
 print("\n=== ArUco 마커 검출 시도 ===")
@@ -94,18 +115,24 @@ for dict_name, dict_id in aruco_dicts:
             corners, ids, rejected = cv2.aruco.detectMarkers(gray_original, aruco_dict, parameters=aruco_params)
     
     # Undistortion
-    undistorted = cv2.undistort(image, camera_matrix, dist_coeffs)
+    if args.undistort:
+        undistorted = cv2.undistort(image, camera_matrix, dist_coeffs)
+        if ids is not None and len(ids) > 0:
+            corners_undistorted = []
+            for corner in corners:
+                # corner는 (1, 4, 2) 형태
+                corner_pts = corner[0].reshape(-1, 1, 2).astype(np.float32)  # (4, 1, 2)
+                # Undistort points
+                corner_undist = cv2.undistortPoints(corner_pts, camera_matrix, dist_coeffs, P=camera_matrix)
+                corners_undistorted.append(corner_undist.reshape(1, 4, 2))
+            corners = corners_undistorted
+    else:
+        undistorted = image
+        print("언디스토션 사용 안함")
     
     # 코너 좌표를 undistortion 변환
-    if ids is not None and len(ids) > 0:
-        corners_undistorted = []
-        for corner in corners:
-            # corner는 (1, 4, 2) 형태
-            corner_pts = corner[0].reshape(-1, 1, 2).astype(np.float32)  # (4, 1, 2)
-            # Undistort points
-            corner_undist = cv2.undistortPoints(corner_pts, camera_matrix, dist_coeffs, P=camera_matrix)
-            corners_undistorted.append(corner_undist.reshape(1, 4, 2))
-        corners = corners_undistorted
+
+
     
     if ids is not None and len(ids) > 0:
         print(f"  ✓ {len(ids)}개 마커 검출됨!")
@@ -139,25 +166,6 @@ for dict_name, dict_id in aruco_dicts:
                 pixel_size = args.marker_size / avg_side_pixels  # mm/pixel
                 print(f"    실제 마커 크기: {args.marker_size:.2f} mm")
                 print(f"    계산된 Pixel Size: {pixel_size:.6f} mm/pixel")
-            elif args.cell_size is not None:
-                # 셀 크기로부터 전체 마커 크기 계산
-                if args.marker_type == "4x4":
-                    num_cells = 4
-                elif args.marker_type == "5x5":
-                    num_cells = 5
-                elif args.marker_type == "6x6":
-                    num_cells = 6
-                elif args.marker_type == "7x7":
-                    num_cells = 7
-                else:
-                    num_cells = 4
-                
-                actual_marker_size = args.cell_size * num_cells
-                pixel_size = actual_marker_size / avg_side_pixels  # mm/pixel
-                print(f"    셀 크기: {args.cell_size:.2f} mm")
-                print(f"    마커 타입: {args.marker_type} ({num_cells}x{num_cells})")
-                print(f"    계산된 전체 마커 크기: {actual_marker_size:.2f} mm")
-                print(f"    계산된 Pixel Size: {pixel_size:.6f} mm/pixel")
             else:
                 print(f"    ⚠ 실제 크기 정보 없음 (--marker-size 또는 --cell-size 입력 필요)")
             
@@ -168,7 +176,7 @@ for dict_name, dict_id in aruco_dicts:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
             
             # 마커 크기 정보 표시
-            if args.marker_size is not None or args.cell_size is not None:
+            if args.marker_size is not None:
                 info_text = f"{avg_side_pixels:.1f}px"
                 cv2.putText(result_image, info_text,
                            (int(center[0])+15, int(center[1])+25),
