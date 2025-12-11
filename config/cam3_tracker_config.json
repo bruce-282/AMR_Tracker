@@ -27,7 +27,7 @@
     "_desc_speed_threshold": "AGV가 다시 움직이기 시작했다고 판단하는 속도 (pix/frame). 응답 전송 후 이 속도 초과 시 Camera 1으로 전환",
     "speed_near_zero_threshold": 3.0,
     "_desc_speed_near_zero": "AGV가 '정지'했다고 판단하는 속도 임계값 (pix/frame). 이 값 이하면 정지 상태",
-    "speed_zero_frames_threshold": 12,
+    "speed_zero_frames_threshold": 8,
     "_desc_speed_zero_frames": "정지 판정에 필요한 연속 프레임 수. 이 프레임 동안 정지 상태 유지 시 응답 전송",
     "detection_loss_threshold_frames": 30,
     "_desc_detection_loss": "객체 검출 실패 허용 프레임 수. 이 프레임 이상 검출 실패 시 객체 lost 처리",

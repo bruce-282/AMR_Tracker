@@ -5,12 +5,12 @@
   "FocusOffset": 32,
   "Iris": 25,
   "Zoom": 0,
-  "ExposureTime": 20000,
+  "ExposureTime": 32000,
   "Gain": 3.6,
-  "ExposureAuto": "Continuous",
+  "ExposureAuto": "Off",
   "ExposureLevel": 224,
-  "GainAuto": "Continuous",
-  "WhiteBalanceAuto": "Continuous",
+  "GainAuto": "Off",
+  "WhiteBalanceAuto": "Off",
   "calibration": {
     "CameraMatrix": [
       [
