@@ -7,9 +7,10 @@
   "Zoom": 0,
   "ExposureTime": 20000,
   "Gain": 3.6,
-  "ExposureAuto": "Off",
-  "GainAuto": "Off",
-  "WhiteBalanceAuto": "Off",
+  "ExposureAuto": "Continuous",
+  "ExposureLevel": 224,
+  "GainAuto": "Continuous",
+  "WhiteBalanceAuto": "Continuous",
   "calibration": {
     "CameraMatrix": [
       [
