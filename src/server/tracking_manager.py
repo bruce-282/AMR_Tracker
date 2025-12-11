@@ -363,8 +363,23 @@ class TrackingManager:
         if not tracker:
             return True
         
+        # Get position for debug log
+        kf_state = tracker.kf.statePost.flatten()
+        pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
+        x_pix = kf_state[0]
+        y_pix = kf_state[1]
+        x_mm = x_pix * pixel_size_dict['x']
+        y_mm = y_pix * pixel_size_dict['y']
+        rz_deg = kf_state[2]
+        
         speed_pix_per_frame = self._calculate_speed_pix_per_frame(tracker)
         cam_state.update_speed(speed_pix_per_frame)
+        
+        logger.debug(
+            f"Camera {camera_id}: Tracking - "
+            f"x={x_mm:.3f}mm, y={y_mm:.3f}mm, yaw={rz_deg:.3f}deg, "
+            f"x_pix={x_pix:.1f}, y_pix={y_pix:.1f}"
+        )
         
         logger.info(
             f"Camera {camera_id}: Speed near zero check - "
@@ -472,6 +487,12 @@ class TrackingManager:
                 x_mm = x_pix * pixel_size_dict['x']
                 y_mm = y_pix * pixel_size_dict['y']
                 rz_deg = kf_state[2]
+                
+                logger.debug(
+                    f"Camera {camera_id}: Tracking - "
+                    f"x={x_mm:.3f}mm, y={y_mm:.3f}mm, yaw={rz_deg:.3f}deg, "
+                    f"x_pix={x_pix:.1f}, y_pix={y_pix:.1f}"
+                )
                 
                 trajectory_index = len(self.camera2_trajectory)
                 self.camera2_trajectory.append({

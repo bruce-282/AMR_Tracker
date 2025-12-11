@@ -643,6 +643,12 @@ class VisionServer:
                 y_mm = y_pix * pixel_size_dict['y']
                 rz_deg = kf_state[2]
 
+                self.logger.debug(
+                    f"Camera {camera_id}: Tracking - "
+                    f"x={x_mm:.3f}mm, y={y_mm:.3f}mm, yaw={rz_deg:.3f}deg, "
+                    f"x_pix={x_pix:.1f}, y_pix={y_pix:.1f}"
+                )
+
                 trajectory_index = len(self.camera2_trajectory)
                 self.camera2_trajectory.append({
                     "track_idx": trajectory_index,
