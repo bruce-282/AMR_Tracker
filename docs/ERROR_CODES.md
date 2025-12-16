@@ -217,7 +217,7 @@ Camera 2 궤적: cam_2_x_0, cam_2_y_0, cam_2_rz_0 ~ cam_2_x_N, cam_2_y_N, cam_2_
 **확인 순서:**
 1. `config/model_config.json` 파일 존재 및 형식 확인
 2. `selected_model`에 해당하는 설정 파일 확인 (예: `config/zoom1.json`)
-3. YOLO 모델 가중치 파일 확인 (예: `weights/zoom1/best.pt`)
+3. Detection 학습 모델 파일 확인 (예: `weights/zoom1/best.pt`)
 
 ### 4.2 카메라 연결 실패
 
@@ -246,7 +246,7 @@ Camera 2 궤적: cam_2_x_0, cam_2_y_0, cam_2_rz_0 ~ cam_2_x_N, cam_2_y_N, cam_2_
    - `speed_threshold_pix_per_frame`: 양수
    - `boundary_margin_ratio`: 0.0 ~ 0.5
 
-2. YOLO 모델과 입력 이미지 호환성:
+2. Detection 모델과 입력 이미지 호환성:
    - `imgsz` 설정 확인
    - 모델이 학습된 클래스 확인 (`target_classes`)
 
@@ -319,7 +319,7 @@ AMR_Tracker/
 │   └── camera*_config.json        # 카메라 캘리브레이션 데이터
 ├── weights/
 │   └── zoom1/
-│       └── best.pt                # YOLO 모델 가중치
+│       └── best.pt                # Detection 모델 가중치
 └── src/
     └── server/
         ├── vision_server.py       # 메인 서버 로직
