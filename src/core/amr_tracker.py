@@ -171,6 +171,12 @@ class EnhancedAMRTracker:
             # Get boundary_margin_ratio from tracker_config
             boundary_margin_ratio = self.tracker_config.get("boundary_margin_ratio", 0.1)
             
+            # Get Kalman filter noise parameters from tracker_config (for trajectory smoothness)
+            kalman_measurement_noise_position = self.tracker_config.get("kalman_measurement_noise_position")
+            kalman_measurement_noise_angle = self.tracker_config.get("kalman_measurement_noise_angle")
+            kalman_process_noise_position = self.tracker_config.get("kalman_process_noise_position")
+            kalman_process_noise_velocity = self.tracker_config.get("kalman_process_noise_velocity")
+            
             self.tracker = KalmanTracker(
                 fps=self.fps,
                 pixel_size=self.pixel_size,
@@ -178,6 +184,10 @@ class EnhancedAMRTracker:
                 track_id=0,
                 max_frames_lost=self.max_frames_lost,
                 boundary_margin_ratio=boundary_margin_ratio,
+                kalman_measurement_noise_position=kalman_measurement_noise_position,
+                kalman_measurement_noise_angle=kalman_measurement_noise_angle,
+                kalman_process_noise_position=kalman_process_noise_position,
+                kalman_process_noise_velocity=kalman_process_noise_velocity,
             )
             if self.distance_map_data:
                 logger.info(f"Kalman filter tracker initialized (fps={self.fps}, using distance map, boundary_margin={boundary_margin_ratio})")
@@ -395,7 +405,8 @@ class EnhancedAMRTracker:
 
     def visualize_results(
         self, frame: np.ndarray, detections: List[Detection], tracking_results: List[Dict],
-        draw_oriented_box: bool = False
+        draw_oriented_box: bool = False,
+        draw_trajectory: bool = True
     ) -> np.ndarray:
         """Visualize results using appropriate visualizer"""
         # Use multi-object AMR tracker visualization
@@ -403,7 +414,9 @@ class EnhancedAMRTracker:
             # Use enhanced visualizer if available
             detection_objects = detections
             vis_frame = self.visualizer.draw_single_object(
-                frame, detection_objects, tracking_results, draw_oriented_box=draw_oriented_box
+                frame, detection_objects, tracking_results, 
+                draw_oriented_box=draw_oriented_box,
+                draw_trajectory=draw_trajectory
             )
         else:
             # Use basic AMR tracker visualization

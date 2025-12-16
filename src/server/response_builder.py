@@ -285,6 +285,7 @@ class ResponseBuilder:
                     frame = warp_frame_with_homography(frame, homography)
                     
                     # Transform detections (bbox, masks, oriented_box_info)
+                    # Note: Edge refinement should be done before calling save_result_image
                     if detections:
                         detections = [
                             transform_detection_with_homography(
@@ -307,8 +308,11 @@ class ResponseBuilder:
             
             # Visualize and save
             # draw_oriented_box=True only when saving image (not for real-time window)
+            # draw_trajectory=True only for Camera 2 (trajectory tracking)
             vis_frame = self.visualize_results(
-                camera_id, frame, detections, tracking_results, draw_oriented_box=True
+                camera_id, frame, detections, tracking_results, 
+                draw_trajectory=(camera_id == 2),
+                draw_oriented_box=True
             )
             # Ensure directory exists
             image_path.parent.mkdir(parents=True, exist_ok=True)
@@ -350,7 +354,11 @@ class ResponseBuilder:
         # Try to use EnhancedAMRTracker's visualizer first
         amr_tracker = self.camera_manager.amr_trackers.get(camera_id)
         if amr_tracker and amr_tracker.visualizer and amr_tracker.size_measurement:
-            return amr_tracker.visualize_results(frame, detections, tracking_results, draw_oriented_box=draw_oriented_box)
+            return amr_tracker.visualize_results(
+                frame, detections, tracking_results, 
+                draw_oriented_box=draw_oriented_box,
+                draw_trajectory=draw_trajectory
+            )
         
         # Fallback: filter uninitialized trackers
         filtered_tracking_results = []
@@ -381,11 +389,19 @@ class ResponseBuilder:
                     result_copy = result.copy()
                     result_copy["track_id"] = 0
                     camera2_trackings.append(result_copy)
-                return visualizer.draw_single_object(frame, detections, camera2_trackings, draw_oriented_box=draw_oriented_box)
+                return visualizer.draw_single_object(
+                    frame, detections, camera2_trackings, 
+                    draw_oriented_box=draw_oriented_box,
+                    draw_trajectory=draw_trajectory
+                )
             else:
                 # Camera 1, 3: create empty tracking dicts for each detection (to draw detections only)
                 empty_trackings = [{"track_id": 0, "trajectory": []} for _ in detections]
-                return visualizer.draw_single_object(frame, detections, empty_trackings, draw_oriented_box=draw_oriented_box)
+                return visualizer.draw_single_object(
+                    frame, detections, empty_trackings, 
+                    draw_oriented_box=draw_oriented_box,
+                    draw_trajectory=False  # Camera 1, 3: no trajectory
+                )
         
         # Final fallback: return frame as-is
         return frame.copy()

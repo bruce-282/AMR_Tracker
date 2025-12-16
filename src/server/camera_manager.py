@@ -49,6 +49,7 @@ class CameraManager:
         self.camera_pixel_sizes: Dict[int, float] = {}
         self.camera_distance_map_paths: Dict[int, Optional[str]] = {}
         self.camera_homographies: Dict[int, Optional[Any]] = {}  # 호모그래피 행렬
+        self.camera_edge_refinement_config: Dict[int, Dict] = {}  # Edge refinement 설정
         self.frame_numbers: Dict[int, int] = {}
         self.camera_status: Dict[int, bool] = {1: False, 2: False, 3: False}
         
@@ -222,6 +223,19 @@ class CameraManager:
     def get_homography(self, camera_id: int) -> Optional[Any]:
         """Get homography matrix for a camera."""
         return self.camera_homographies.get(camera_id)
+    
+    def get_edge_refinement_config(self, camera_id: int) -> Dict:
+        """
+        Get edge refinement configuration for a camera.
+        
+        Returns:
+            Dict with 'enable' (bool) and 'search_range_px' (int) keys.
+            Defaults to enable=True, search_range_px=10 if not configured.
+        """
+        return self.camera_edge_refinement_config.get(camera_id, {
+            "enable": True,
+            "search_range_px": 10
+        })
     
     def warp_frame(self, camera_id: int, frame) -> Any:
         """Apply homography transformation to frame if available."""
@@ -424,6 +438,15 @@ class CameraManager:
             calibration_config=calibration_config_for_tracker,
             fps=fps,
         )
+        
+        # Store edge refinement config from tracker_config
+        self.camera_edge_refinement_config[camera_id] = {
+            "enable": (tracker_config or {}).get("enable_edge_refinement", True),
+            "search_range_px": (tracker_config or {}).get("edge_search_range_px", 10)
+        }
+        logger.debug(f"Camera {camera_id} edge refinement config: "
+                    f"enable={self.camera_edge_refinement_config[camera_id]['enable']}, "
+                    f"search_range={self.camera_edge_refinement_config[camera_id]['search_range_px']}px")
         
         logger.info(f"Camera {camera_id} initialized with EnhancedAMRTracker")
     

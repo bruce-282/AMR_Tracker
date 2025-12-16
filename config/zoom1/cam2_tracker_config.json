@@ -18,7 +18,7 @@
     "_desc_wh_ratio": "너비/높이 비율 허용 범위. 비율이 1.0 ± 이 값을 벗어나면 필터링",
     "mask_area_ratio": 0.7,
     "_desc_mask_ratio": "마스크 영역 대 bbox 영역 비율. 이 비율 미만이면 세그멘테이션 불량으로 필터링",
-     "boundary_margin_ratio": 0.25,
+     "boundary_margin_ratio": 0.29,
     "_desc_boundary_margin": "이미지 경계 마진 비율 (0.1 = 10%). 예측 위치가 이 마진 밖으로 나가면 트래커 리셋"
   },
   "tracker": {
@@ -35,8 +35,20 @@
     "_desc_max_frames_lost": "트래커 유지 최대 프레임 수",
     "camera2_trajectory_max_frames": 500,
     "_desc_trajectory_max": "수집할 최대 trajectory 포인트 수. 이 개수 도달 시 trajectory 전송 후 종료",
-    "boundary_margin_ratio": 0.22,
-    "_desc_boundary_margin": "이미지 경계 마진 비율 (0.1 = 10%). 예측 위치가 이 마진 밖으로 나가면 트래커 리셋"
+    "boundary_margin_ratio": 0.3,
+    "_desc_boundary_margin": "이미지 경계 마진 비율 (0.1 = 10%). 예측 위치가 이 마진 밖으로 나가면 트래커 리셋",
+    "kalman_measurement_noise_position": 5.0,
+    "_desc_kalman_measurement_noise_position": "칼만 필터 위치 측정 노이즈. 값이 클수록 측정값을 덜 신뢰하고 스무스해짐 (기본: 0.5, 권장: 1.0~10.0)",
+    "kalman_measurement_noise_angle": 10.0,
+    "_desc_kalman_measurement_noise_angle": "칼만 필터 각도 측정 노이즈. 값이 클수록 각도 측정을 덜 신뢰 (기본: 5.0)",
+    "kalman_process_noise_position": 0.05,
+    "_desc_kalman_process_noise_position": "칼만 필터 위치 프로세스 노이즈. 값이 작을수록 모델 예측을 신뢰 (기본: 0.1)",
+    "kalman_process_noise_velocity": 0.005,
+    "_desc_kalman_process_noise_velocity": "칼만 필터 속도 프로세스 노이즈. 값이 작을수록 속도 변화 적음 (기본: 0.01)",
+    "enable_edge_refinement": false,
+    "_desc_enable_edge_refinement": "Edge 기반 박스 정밀화 활성화 여부. Camera 2는 trajectory 추적용이므로 비활성화",
+    "edge_search_range_px": 8,
+    "_desc_edge_search_range": "Edge 탐색 범위 (±픽셀). 각 side에서 이 범위 내에서 가장 강한 edge를 찾아 보정"
   },
   "measurement": {
     "_comment": "Camera 2 measurement parameters (pixel to mm conversion)",

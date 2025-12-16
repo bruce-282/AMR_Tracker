@@ -825,12 +825,17 @@ class VisionServer:
             # Pass transformed image size and frame so oriented_box_info can be re-extracted and refined
             # Also pass debug_base_path for refinement debug images
             debug_base_path = getattr(self.response_builder, 'debug_base_path', None)
+            
+            # Get edge refinement config from camera_manager
+            edge_config = self.camera_manager.get_edge_refinement_config(camera_id)
             detection = transform_detection_with_homography(
                 detection, homography, 
                 transformed_image_size=(transformed_w, transformed_h),
                 frame=frame,
                 debug_base_path=debug_base_path,
-                camera_id=camera_id
+                camera_id=camera_id,
+                enable_edge_refinement=edge_config["enable"],
+                edge_search_range_px=edge_config["search_range_px"]
             )
             
             # Transform tracking result (position, trajectory, bbox)
@@ -1351,10 +1356,46 @@ class VisionServer:
             # Handle response based on use_area_scan
             if self.use_area_scan:
                 # use_area_scan is true: client will send requests periodically
-                # Just respond to this request
+                # Get detection and frame, apply transform + refine before saving
+                detection = self.latest_detections.get(camera_id)
+                
+                # Read frame from camera loader
+                frame = None
+                loader = self.camera_loaders.get(camera_id)
+                if loader is not None:
+                    ret, frame = loader.read()
+                    if not ret:
+                        frame = None
+                
+                # Apply homography transformation + edge refinement
+                homography = self.camera_manager.get_homography(camera_id)
+                if detection is not None and homography is not None and frame is not None:
+                    frame = warp_frame_with_homography(frame, homography)
+                    transformed_h, transformed_w = frame.shape[:2]
+                    
+                    # Get edge refinement config from camera_manager
+                    edge_config = self.camera_manager.get_edge_refinement_config(camera_id)
+                    detection = transform_detection_with_homography(
+                        detection, homography,
+                        transformed_image_size=(transformed_w, transformed_h),
+                        frame=frame,
+                        debug_base_path=self.response_builder.debug_base_path,
+                        camera_id=camera_id,
+                        enable_edge_refinement=edge_config["enable"],
+                        edge_search_range_px=edge_config["search_range_px"]
+                    )
+                
+                # Get tracking data for response
                 data = self.response_builder.get_tracking_data(camera_id, self.use_area_scan)
+                
+                # Save result image with already refined detection
                 result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
-                self.response_builder.save_result_image(camera_id, result_image_path)
+                self.response_builder.save_result_image(
+                    camera_id, result_image_path,
+                    frame=frame,
+                    detections=[detection] if detection else None,
+                    apply_homography=False  # Already transformed + refined
+                )
                 
                 response_data = {
                     "x": data["x"],

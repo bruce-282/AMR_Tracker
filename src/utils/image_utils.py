@@ -9,6 +9,7 @@ from pathlib import Path
 from src.core.detection import Detection
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 def draw_trajectory_on_frame(
@@ -413,7 +414,9 @@ def transform_detection_with_homography(
     transformed_image_size: Optional[Tuple[int, int]] = None,
     frame: Optional[np.ndarray] = None,
     debug_base_path: Optional[Path] = None,
-    camera_id: Optional[int] = None
+    camera_id: Optional[int] = None,
+    enable_edge_refinement: bool = True,
+    edge_search_range_px: int = 10
 ) -> Detection:
     """
     Transform detection coordinates with homography.
@@ -423,6 +426,11 @@ def transform_detection_with_homography(
         homography: 3x3 homography matrix
         transformed_image_size: Optional image size (width, height) of transformed frame.
                                 If None, will be estimated from transformed mask bounds.
+        frame: Optional frame for edge refinement
+        debug_base_path: Optional path for debug images
+        camera_id: Optional camera ID for debug logging
+        enable_edge_refinement: Whether to apply edge-based box refinement (default: True)
+        edge_search_range_px: Search range in pixels for edge detection (default: 10)
     
     Returns:
         New Detection object with transformed coordinates
@@ -446,10 +454,12 @@ def transform_detection_with_homography(
         masks=new_masks
     )
     
-    # Re-extract oriented_box_info from transformed mask if available
+    # Re-extract oriented_box_info from transformed mask or OBB box_points
     # This ensures accurate box_points, center, width, height, and angle after homography transformation
-    print(f"[DEBUG] transform_detection: new_masks is {'not None' if new_masks is not None else 'None'}, frame is {'not None' if frame is not None else 'None'}")
+    new_oriented_box_info = None
+    
     if new_masks is not None:
+        # Case 1: Mask available - extract oriented_box_info from transformed mask
         # Determine image size for mask extraction
         if transformed_image_size is None:
             # Estimate image size from transformed mask bounds
@@ -468,32 +478,74 @@ def transform_detection_with_homography(
         
         # Extract oriented_box_info from transformed mask
         new_oriented_box_info = Detection.extract_box_from_mask(new_masks, image_size)
-        print(f"[DEBUG] transform_detection: new_oriented_box_info is {'not None' if new_oriented_box_info else 'None'}, has_rect={'rect' in new_oriented_box_info if new_oriented_box_info else False}")
-        if new_oriented_box_info:
-            # Apply edge-based refinement if rect is available
-            if "rect" in new_oriented_box_info and frame is not None:
-                # Prepare debug image path if requested
-                debug_image_path = None
-                if debug_base_path is not None and camera_id is not None:
-                    debug_image_path = str(debug_base_path / f"cam_{camera_id}_refinement_debug.png")
-                    logger.debug(f"Creating refinement debug image at {debug_image_path}")
-                else:
-                    logger.debug(f"Debug image not created: debug_base_path={debug_base_path}, camera_id={camera_id}")
-                
-                refined_oriented_box_info = refine_box_with_edges(
-                    frame, new_oriented_box_info, search_range_px=10, debug_image_path=debug_image_path
-                )
-                if refined_oriented_box_info:
-                    new_oriented_box_info = refined_oriented_box_info
+        
+    elif detection.oriented_box_info is not None and "box_points" in detection.oriented_box_info:
+        # Case 2: OBB model - transform box_points with homography and recalculate rect
+        original_box_points = np.array(detection.oriented_box_info["box_points"], dtype=np.float32)
+        
+        # Transform box_points with homography
+        transformed_points = cv2.perspectiveTransform(
+            original_box_points.reshape(-1, 1, 2), homography
+        ).reshape(-1, 2)
+        
+        # Recalculate minAreaRect from transformed points
+        rect = cv2.minAreaRect(transformed_points)
+        center, (w, h), angle = rect
+        
+        # Normalize angle and determine long/short axis
+        if h > w:
+            normalized_angle = angle - 90
+            long_axis = h
+            short_axis = w
+        else:
+            normalized_angle = angle
+            long_axis = w
+            short_axis = h
+        
+        while normalized_angle > 90:
+            normalized_angle -= 180
+        while normalized_angle < -90:
+            normalized_angle += 180
+        
+        new_oriented_box_info = {
+            "center": tuple(center),
+            "width": long_axis,
+            "height": short_axis,
+            "angle": normalized_angle,
+            "angle_rad": np.deg2rad(normalized_angle),
+            "box_points": transformed_points,
+            "rect": rect
+        }
+    
+    # Apply edge-based refinement if oriented_box_info and frame are available
+    if new_oriented_box_info is not None:
+        if enable_edge_refinement and "rect" in new_oriented_box_info and frame is not None:
+            # Prepare debug image path if requested
+            debug_image_path = None
+            if debug_base_path is not None and camera_id is not None:
+                debug_image_path = str(debug_base_path / f"cam_{camera_id}_refinement_debug.png")
+                print(f"[DEBUG] Creating refinement debug image at {debug_image_path}")
             
-            new_detection.oriented_box_info = new_oriented_box_info
-            # Recalculate bbox from re-extracted oriented_box_info (same as Detection.__init__)
-            center = new_oriented_box_info["center"]
-            width = new_oriented_box_info["width"]
-            height = new_oriented_box_info["height"]
-            x = center[0] - width / 2
-            y = center[1] - height / 2
-            new_detection.bbox = [x, y, width, height]
+            print(f"[DEBUG] Calling refine_box_with_edges for camera {camera_id} (search_range={edge_search_range_px}px)...")
+            refined_oriented_box_info = refine_box_with_edges(
+                frame, new_oriented_box_info, search_range_px=edge_search_range_px, debug_image_path=debug_image_path
+            )
+            if refined_oriented_box_info:
+                new_oriented_box_info = refined_oriented_box_info
+                print(f"[DEBUG] Camera {camera_id}: Edge refinement applied successfully")
+            else:
+                print(f"[DEBUG] Camera {camera_id}: Edge refinement returned None")
+        elif not enable_edge_refinement:
+            print(f"[DEBUG] Camera {camera_id}: Edge refinement disabled by config")
+        
+        new_detection.oriented_box_info = new_oriented_box_info
+        # Recalculate bbox from oriented_box_info
+        center = new_oriented_box_info["center"]
+        width = new_oriented_box_info["width"]
+        height = new_oriented_box_info["height"]
+        x = center[0] - width / 2
+        y = center[1] - height / 2
+        new_detection.bbox = [x, y, width, height]
     
     return new_detection
 

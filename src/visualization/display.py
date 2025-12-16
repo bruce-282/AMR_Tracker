@@ -156,7 +156,8 @@ class Visualizer:
 
     def draw_single_object(
         self, frame: np.ndarray, detections: List[Dict], trackings: List[Dict],
-        draw_oriented_box: bool = False
+        draw_oriented_box: bool = False,
+        draw_trajectory: bool = True
     ) -> np.ndarray:
         """
         Draw detection results on frame.
@@ -201,22 +202,23 @@ class Visualizer:
             # Draw oriented bounding box from mask if available
             if hasattr(detection, "oriented_box_info") and detection.oriented_box_info is not None:
                 try:
-                    
                     center = detection.oriented_box_info["center"]
-                    cv2.circle(vis_frame, (int(center[0]), int(center[1])), 9, detection_color, -1)
-                    # Draw polygon mask if available
-                    if getattr(detection, "masks", None) is not None:
-                        poly = detection.masks
-                        poly = np.asarray(poly, dtype=np.float32)
-                        if poly.ndim == 2 and poly.shape[1] == 2 and poly.shape[0] >= 3:
-                            pts = poly.reshape((-1, 1, 2)).astype(np.int32)
-                            cv2.polylines(vis_frame, [pts], True, detection_color, 2)
                     
-                    # Draw oriented bounding box from extracted info (only when saving image)
                     if draw_oriented_box:
+                        # When saving image: draw only refined box and center (no mask polygon)
                         box_points = detection.oriented_box_info["box_points"]
                         box_i32 = box_points.reshape((-1, 1, 2)).astype(np.int32)
                         cv2.polylines(vis_frame, [box_i32], True, box_color, 2)
+                        cv2.circle(vis_frame, (int(center[0]), int(center[1])), 9, box_color, -1)
+                    else:
+                        # Real-time display: draw mask polygon and center
+                        cv2.circle(vis_frame, (int(center[0]), int(center[1])), 9, detection_color, -1)
+                        if getattr(detection, "masks", None) is not None:
+                            poly = detection.masks
+                            poly = np.asarray(poly, dtype=np.float32)
+                            if poly.ndim == 2 and poly.shape[1] == 2 and poly.shape[0] >= 3:
+                                pts = poly.reshape((-1, 1, 2)).astype(np.int32)
+                                cv2.polylines(vis_frame, [pts], True, detection_color, 2)
                     
                     # Save angle from oriented box (degrees)
                     self.latest_rect_angles[track_id] = float(detection.oriented_box_info["angle"])
@@ -239,18 +241,20 @@ class Visualizer:
 
 
             # Draw trajectory from tracker (trajectory is managed by KalmanTracker)
-            trajectory = tracking.get("trajectory", [])
-            if len(trajectory) >= 2:
-                # Limit trajectory to recent points for performance (max 500 points)
-                max_trajectory_points = 500
-                if len(trajectory) > max_trajectory_points:
-                    trajectory = trajectory[-max_trajectory_points:]
-                # Convert trajectory points to integer tuples for drawing
-                traj_pts = [(int(x), int(y)) for x, y in trajectory]
-                for i in range(1, len(traj_pts)):
-                    cv2.line(vis_frame, traj_pts[i - 1], traj_pts[i], box_color, 2)
-            # 중심점도 표시
-            cv2.circle(vis_frame, center, 5, box_color, -1)
+            # Only draw trajectory if draw_trajectory=True (Camera 2)
+            if draw_trajectory:
+                trajectory = tracking.get("trajectory", [])
+                if len(trajectory) >= 2:
+                    # Limit trajectory to recent points for performance (max 500 points)
+                    max_trajectory_points = 500
+                    if len(trajectory) > max_trajectory_points:
+                        trajectory = trajectory[-max_trajectory_points:]
+                    # Convert trajectory points to integer tuples for drawing
+                    traj_pts = [(int(x), int(y)) for x, y in trajectory]
+                    for i in range(1, len(traj_pts)):
+                        cv2.line(vis_frame, traj_pts[i - 1], traj_pts[i], box_color, 2)
+                # Kalman center는 trajectory 그릴 때만 표시 (Camera 2)
+                cv2.circle(vis_frame, center, 5, box_color, -1)
 
 
         # Bottom overlay: x, y, rotation only

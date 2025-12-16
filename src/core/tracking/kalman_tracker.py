@@ -81,7 +81,9 @@ class KalmanTracker:
     Tracks position, velocity, and orientation using a Kalman filter.
     """
 
-    def __init__(self, fps=30, pixel_size=None, distance_map_data=None, track_id=0, max_frames_lost=None, boundary_margin_ratio=None):
+    def __init__(self, fps=30, pixel_size=None, distance_map_data=None, track_id=0, max_frames_lost=None, boundary_margin_ratio=None,
+                 kalman_measurement_noise_position=None, kalman_measurement_noise_angle=None,
+                 kalman_process_noise_position=None, kalman_process_noise_velocity=None):
         """
         Initialize Kalman tracker
 
@@ -93,12 +95,22 @@ class KalmanTracker:
             track_id: Unique ID for this tracker
             max_frames_lost: Maximum frames without detection before track is lost (from config)
             boundary_margin_ratio: Image boundary margin ratio (0.1 = 10%). Reset tracker if prediction is outside (1-margin) area
+            kalman_measurement_noise_position: Measurement noise for position (higher = smoother, default: 0.5)
+            kalman_measurement_noise_angle: Measurement noise for angle (default: 5.0)
+            kalman_process_noise_position: Process noise for position (lower = smoother, default: 0.1)
+            kalman_process_noise_velocity: Process noise for velocity (default: 0.01)
         """
         self.fps = fps
         self.distance_map_data = distance_map_data
         self.track_id = track_id
         self.max_frames_lost = max_frames_lost if max_frames_lost is not None else MAX_FRAMES_LOST
         self.boundary_margin_ratio = boundary_margin_ratio if boundary_margin_ratio is not None else 0.1
+        
+        # Kalman filter noise parameters (configurable for trajectory smoothness)
+        self.kalman_measurement_noise_position = kalman_measurement_noise_position if kalman_measurement_noise_position is not None else 0.5
+        self.kalman_measurement_noise_angle = kalman_measurement_noise_angle if kalman_measurement_noise_angle is not None else 5.0
+        self.kalman_process_noise_position = kalman_process_noise_position if kalman_process_noise_position is not None else 0.1
+        self.kalman_process_noise_velocity = kalman_process_noise_velocity if kalman_process_noise_velocity is not None else 0.01
         
         # pixel_size는 반드시 dict 형태여야 함
         if not isinstance(pixel_size, dict):
@@ -193,14 +205,16 @@ class KalmanTracker:
         # 3 x 6 matrix
 
         # Process noise covariance (Q) - how much we trust the model
+        # Lower values = trust model more = smoother trajectory
         kf.processNoiseCov = np.eye(6, dtype=np.float32)
-        kf.processNoiseCov[0:3, 0:3] *= 0.1  # position/angle noise (low - model is reliable)
-        kf.processNoiseCov[3:6, 3:6] *= 0.01  # velocity noise (very low - velocity should be stable)
+        kf.processNoiseCov[0:3, 0:3] *= self.kalman_process_noise_position  # position/angle noise
+        kf.processNoiseCov[3:6, 3:6] *= self.kalman_process_noise_velocity  # velocity noise
 
         # Measurement noise covariance (R) - how much we trust the measurements
+        # Higher values = trust measurements less = smoother trajectory
         kf.measurementNoiseCov = np.eye(3, dtype=np.float32)
-        kf.measurementNoiseCov[0:2, 0:2] *= 0.5  # position noise (lower - trust measurements more)
-        kf.measurementNoiseCov[2, 2] *= 5.0  # angle noise (higher - angle is less reliable)
+        kf.measurementNoiseCov[0:2, 0:2] *= self.kalman_measurement_noise_position  # position noise
+        kf.measurementNoiseCov[2, 2] *= self.kalman_measurement_noise_angle  # angle noise
 
         # Error covariance (P) - initial uncertainty
         kf.errorCovPost = np.eye(6, dtype=np.float32) * 10  # Lower initial uncertainty
@@ -476,8 +490,12 @@ class KalmanTracker:
             #             self.kf.errorCovPost[3, 3] *= 0.9
             #             self.kf.errorCovPost[4, 4] *= 0.9
 
-            # Store trajectory point and bbox
-            self.trajectory.append((cx, cy))
+            # Store trajectory point (using Kalman filtered position, not raw detection)
+            # This makes the trajectory smoother
+            state_post = self.kf.statePost.flatten()
+            filtered_cx = state_post[0]
+            filtered_cy = state_post[1]
+            self.trajectory.append((filtered_cx, filtered_cy))
             self.last_bbox = bbox
         else:
             # No detection, increment frames since detection

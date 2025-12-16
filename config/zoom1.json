@@ -37,17 +37,17 @@
       "video_tracking": {
         "loader_mode": "video",
         "camera_1": {
-          "id": "data/251210_HD_AGV_Video/CAM1_1.mp4",
+          "id": "data/251210_HD_AGV_Video/CAM1_2.mp4",
           "config": "config/zoom1/cam1_config.json",
           "tracker_config": "config/zoom1/cam1_tracker_config.json"
         },
         "camera_2": {
-          "id": "data/251210_HD_AGV_Video/CAM2_1.mp4",
+          "id": "data/251210_HD_AGV_Video/CAM2_2.mp4",
           "config": "config/zoom1/cam2_config.json",
           "tracker_config": "config/zoom1/cam2_tracker_config.json"
         },
         "camera_3": {
-          "id": "data/251210_HD_AGV_Video/CAM3_1.mp4",
+          "id": "data/251210_HD_AGV_Video/CAM3_2.mp4",
           "config": "config/zoom1/cam3_config.json",
           "tracker_config": "config/zoom1/cam3_tracker_config.json"
         }
