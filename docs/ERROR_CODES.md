@@ -64,8 +64,8 @@
 | 예외 유형 | 발생 조건 | 에러 메시지 |
 |----------|----------|------------|
 | `ValueError` | `pixel_size`가 dict 형태가 아닌 경우 | `pixel_size must be a dict with 'x' and 'y' keys, got {type}` |
-| `ImportError` | ultralytics 모듈 미설치 | `ultralytics module is not installed.` |
-| `FileNotFoundError` | YOLO 모델 가중치 파일 없음 | `weights file not found: {model_path}` |
+| `ImportError` | Detection 모듈 미설치 | `Detection module is not installed.` |
+| `FileNotFoundError` | 학습 모델 파일 없음 | `weights file not found: {model_path}` |
 | `ValueError` | 지원되지 않는 detector 유형 | `Unsupported detector type: {type}. Supported types: 'yolo', 'binary'` |
 | `ValueError` | 지원되지 않는 tracker 유형 | `Unsupported tracker type: {type}. Only 'kalman' is supported.` |
 
