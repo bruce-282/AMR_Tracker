@@ -1490,7 +1490,8 @@ class VisionServer:
         Request format:
         {
             "cmd": 6,
-            "path_csv": "data/20251118-154122_zoom1_raw_data.csv"
+            "path_csv": "data/20251118-154122_zoom1_raw_data.csv",
+            "sampling_interval_mm": 20.0  (optional, default: 20.0)
         }
         
         Response format:
@@ -1507,62 +1508,232 @@ class VisionServer:
                 "analysis_image": string
             }
         }
+        
+        Error codes:
+        - MISSING_PARAM: path_csv 파라미터 누락
+        - INVALID_PATH: 파일 경로 형식 오류
+        - FILE_NOT_FOUND: CSV 파일을 찾을 수 없음
+        - INVALID_FORMAT: CSV 파일 형식 오류 (확장자, 인코딩 등)
+        - FILE_READ_ERROR: 파일 읽기 오류
+        - INVALID_CSV_STRUCTURE: CSV 구조 오류 (필수 컬럼 누락)
+        - INSUFFICIENT_DATA: 분석에 필요한 데이터 부족 (최소 2개 trial 필요)
+        - OUTPUT_DIR_ERROR: 출력 디렉토리 생성/쓰기 오류
+        - CALC_ERROR: 분석 계산 중 오류
         """
+        import pandas as pd
+        
         try:
-            # Get CSV path from request
+            # 1. 필수 파라미터 검증
             path_csv = request.get("path_csv")
             if not path_csv:
                 return self.protocol.create_response(
                     Command.CALC_RESULT,
                     success=False,
                     error_code="MISSING_PARAM",
-                    error_desc="path_csv parameter is required"
+                    error_desc="path_csv 파라미터가 필요합니다. 분석할 CSV 파일 경로를 지정해주세요."
                 )
             
-            # Validate CSV file exists
+            # 2. 경로 형식 검증
+            if not isinstance(path_csv, str) or len(path_csv.strip()) == 0:
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="INVALID_PATH",
+                    error_desc="path_csv는 유효한 문자열 경로여야 합니다."
+                )
+            
             csv_path = Path(path_csv)
+            
+            # 3. 파일 존재 여부 검증
             if not csv_path.exists():
                 return self.protocol.create_response(
                     Command.CALC_RESULT,
                     success=False,
                     error_code="FILE_NOT_FOUND",
-                    error_desc=f"CSV file not found: {path_csv}"
+                    error_desc=f"CSV 파일을 찾을 수 없습니다: {path_csv}"
                 )
             
-            # Get sampling interval from request (optional, default 20.0)
-            #sampling_interval_mm = request.get("sampling_interval_mm", 20.0)
+            # 4. 파일 형식 검증 (확장자)
+            if csv_path.suffix.lower() != '.csv':
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="INVALID_FORMAT",
+                    error_desc=f"CSV 파일만 지원됩니다. 제공된 파일: {csv_path.suffix} (확장자: {csv_path.name})"
+                )
             
-            # Use result_base_path as output directory
+            # 5. 파일 읽기 가능 여부 검증
+            try:
+                df = pd.read_csv(str(csv_path))
+            except pd.errors.EmptyDataError:
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="INVALID_FORMAT",
+                    error_desc=f"CSV 파일이 비어있습니다: {path_csv}"
+                )
+            except pd.errors.ParserError as e:
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="INVALID_FORMAT",
+                    error_desc=f"CSV 파일 파싱 오류: {str(e)}"
+                )
+            except UnicodeDecodeError as e:
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="INVALID_FORMAT",
+                    error_desc=f"CSV 파일 인코딩 오류 (UTF-8 권장): {str(e)}"
+                )
+            except PermissionError:
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="FILE_READ_ERROR",
+                    error_desc=f"CSV 파일 읽기 권한이 없습니다: {path_csv}"
+                )
+            except Exception as e:
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="FILE_READ_ERROR",
+                    error_desc=f"CSV 파일 읽기 오류: {str(e)}"
+                )
+            
+            # 6. CSV 구조 검증 (필수 컬럼 확인)
+            required_columns_cam1 = ['cam_1_x', 'cam_1_y', 'cam_1_rz']
+            required_columns_cam3 = ['cam_3_x', 'cam_3_y', 'cam_3_rz']
+            required_columns_cam2_base = ['cam_2_x_0', 'cam_2_y_0', 'cam_2_rz_0']
+            
+            missing_columns = []
+            
+            # Camera 1 컬럼 확인
+            for col in required_columns_cam1:
+                if col not in df.columns:
+                    missing_columns.append(col)
+            
+            # Camera 3 컬럼 확인
+            for col in required_columns_cam3:
+                if col not in df.columns:
+                    missing_columns.append(col)
+            
+            # Camera 2 기본 컬럼 확인 (최소 waypoint 0)
+            for col in required_columns_cam2_base:
+                if col not in df.columns:
+                    missing_columns.append(col)
+            
+            if missing_columns:
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="INVALID_CSV_STRUCTURE",
+                    error_desc=f"CSV 파일에 필수 컬럼이 누락되었습니다: {', '.join(missing_columns)}. "
+                              f"필요한 컬럼: cam_1_x/y/rz, cam_3_x/y/rz, cam_2_x/y/rz_0~N"
+                )
+            
+            # 7. 데이터 양 검증 (최소 2개 trial 필요)
+            n_trials = len(df)
+            if n_trials < 2:
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="INSUFFICIENT_DATA",
+                    error_desc=f"반복정밀도 분석에는 최소 2개 이상의 trial 데이터가 필요합니다. 현재: {n_trials}개"
+                )
+            
+            # 8. 출력 디렉토리 검증
             output_dir = str(self.summary_base_path)
+            try:
+                output_path = Path(output_dir)
+                output_path.mkdir(parents=True, exist_ok=True)
+                # 쓰기 권한 테스트
+                test_file = output_path / ".write_test"
+                test_file.touch()
+                test_file.unlink()
+            except PermissionError:
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="OUTPUT_DIR_ERROR",
+                    error_desc=f"출력 디렉토리에 쓰기 권한이 없습니다: {output_dir}"
+                )
+            except Exception as e:
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="OUTPUT_DIR_ERROR",
+                    error_desc=f"출력 디렉토리 접근 오류: {output_dir}, {str(e)}"
+                )
+            
+            # 9. 샘플링 간격 파라미터 검증 (optional)
+            sampling_interval_mm = request.get("sampling_interval_mm", 20.0)
+            try:
+                sampling_interval_mm = float(sampling_interval_mm)
+                if sampling_interval_mm <= 0:
+                    return self.protocol.create_response(
+                        Command.CALC_RESULT,
+                        success=False,
+                        error_code="INVALID_PARAM",
+                        error_desc=f"sampling_interval_mm은 양수여야 합니다. 현재 값: {sampling_interval_mm}"
+                    )
+            except (ValueError, TypeError):
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="INVALID_PARAM",
+                    error_desc=f"sampling_interval_mm은 숫자여야 합니다. 현재 값: {request.get('sampling_interval_mm')}"
+                )
             
             self.logger.info(f"Starting trajectory repeatability analysis: {path_csv}")
+            self.logger.info(f"  Trials: {n_trials}, Sampling interval: {sampling_interval_mm}mm")
             
-            # Initialize analyzer
-            analyzer = TrajectoryRepeatability(str(csv_path))
+            # 10. 분석 실행
+            try:
+                analyzer = TrajectoryRepeatability(str(csv_path))
+                analyzer.run_analysis(sampling_interval_mm=sampling_interval_mm)
+            except ValueError as e:
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="CALC_ERROR",
+                    error_desc=f"분석 데이터 오류: {str(e)}"
+                )
+            except Exception as e:
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="CALC_ERROR",
+                    error_desc=f"분석 실행 중 오류: {str(e)}"
+                )
             
-            # Run analysis
-            analyzer.run_analysis(sampling_interval_mm=20.0)
+            # 11. 결과 저장
+            try:
+                csv_paths = analyzer.save_results_to_csv(output_dir=output_dir)
+                analyzer.plot_results(output_dir=output_dir)
+            except Exception as e:
+                return self.protocol.create_response(
+                    Command.CALC_RESULT,
+                    success=False,
+                    error_code="OUTPUT_DIR_ERROR",
+                    error_desc=f"결과 저장 중 오류: {str(e)}"
+                )
             
-            # Save results to CSV
-            csv_paths = analyzer.save_results_to_csv(output_dir=output_dir)
+            self.logger.info(f"Trajectory repeatability analysis completed. Results saved to {output_dir}")
             
-            # Generate plot
-            analyzer.plot_results(output_dir=output_dir)
-            # analysis_image_path = str(Path(output_dir) / "repeatability_analysis.png")
-            
-            # self.logger.info(f"Trajectory repeatability analysis completed. Results saved to {output_dir}")
-            
-            # Prepare response data
+            # 12. 응답 데이터 준비
             response_data = {
                 "summary": None,
+                "output_dir": output_dir,
+                "n_trials": n_trials
             }
-            #response_data = {}
             
             return self.protocol.create_response(
                 Command.CALC_RESULT,
                 success=True,
                 data=response_data
             )
+            
         except Exception as e:
             self.logger.error(f"Error in trajectory repeatability analysis: {e}")
             import traceback
@@ -1570,8 +1741,8 @@ class VisionServer:
             return self.protocol.create_response(
                 Command.CALC_RESULT,
                 success=False,
-                error_code="CALC_ERROR",
-                error_desc=str(e)
+                error_code="INTERNAL_ERROR",
+                error_desc=f"예상치 못한 내부 오류: {str(e)}"
             )
     
     
