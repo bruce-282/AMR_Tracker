@@ -565,7 +565,7 @@ class TrajectoryRepeatability:
             )
         ax3.set_xlabel("2D Position Error (mm)")
         ax3.set_ylabel("Frequency")
-        ax3.set_title("Position Error Distribution")
+        ax3.set_title("Cam1 & Cam3 Position Error Distribution")
         ax3.legend()
         ax3.grid(True, alpha=0.3)
 
@@ -674,7 +674,7 @@ class TrajectoryRepeatability:
             )
         ax7.set_xlabel("Yaw Error (deg)")
         ax7.set_ylabel("Frequency")
-        ax7.set_title("Yaw Error Distribution")
+        ax7.set_title("Cam1 & Cam3 Yaw Error Distribution")
         ax7.legend()
         ax7.grid(True, alpha=0.3)
 
