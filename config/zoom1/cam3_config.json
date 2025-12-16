@@ -1,0 +1,39 @@
+{
+  "StreamAResolution": "4096x2160",
+  "StreamAEncodeMode": "MJPEG",
+  "Focus": "2m",
+  "FocusOffset": 32,
+  "Iris": 25,
+  "Zoom": 0,
+  "ExposureTime": 32000,
+  "Gain": 3.6,
+  "ExposureAuto": "Off",
+  "ExposureLevel": 224,
+  "GainAuto": "Off",
+  "WhiteBalanceAuto": "Off",
+  "calibration": {
+    "CameraMatrix": [
+      [
+        3609.535,
+        0.0,
+        1939.708
+      ],
+      [
+        0.0,
+        3610.380,
+        955.580
+      ],
+      [
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "DistortionCoefficients": [
+      [
+        -0.070256, 0.163879, -0.006555, -0.000548, 0.0
+      ]
+    ]
+  }
+}
+

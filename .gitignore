@@ -83,3 +83,6 @@ snapshot_*.jpg
 config.json
 calibration_data.json
 *.json.bak
+
+# Large model files (>100MB for GitHub)
+weights/zoom1/epoch99.pt

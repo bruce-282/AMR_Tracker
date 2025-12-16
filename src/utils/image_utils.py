@@ -161,6 +161,102 @@ def transform_polygon_with_homography(
     return polygon
 
 
+def _find_edge_offset_in_roi(
+    gray: np.ndarray,
+    p1: np.ndarray,
+    p2: np.ndarray,
+    search_range_px: int = 5
+) -> float:
+    """
+    ROI를 crop하고 수평으로 회전시켜 edge가 가장 강한 위치(offset)를 찾음.
+    
+    Args:
+        gray: Grayscale image
+        p1, p2: Side의 두 끝점
+        search_range_px: 탐색 범위 (±px)
+    
+    Returns:
+        best_offset: 원래 side 위치 기준 최적 offset (양수=바깥쪽)
+    """
+    # Side 벡터 및 수직 벡터 계산
+    side_vec = p2 - p1
+    side_length = np.linalg.norm(side_vec)
+    if side_length < 1:
+        return 0.0
+    
+    side_dir = side_vec / side_length
+    perp_dir = np.array([-side_dir[1], side_dir[0]])  # 90도 회전 (수직 방향)
+    
+    # Side 중심점
+    side_center = (p1 + p2) / 2
+    
+    # ROI 크기: side 길이 x (search_range * 2)
+    roi_width = int(side_length)
+    roi_height = search_range_px * 2
+    
+    if roi_width < 3 or roi_height < 3:
+        return 0.0
+    
+    # ROI의 4개 코너 계산 (side 중심 기준)
+    half_w = side_length / 2
+    half_h = search_range_px
+    
+    # ROI 코너 (side 방향으로 ±half_w, 수직 방향으로 ±half_h)
+    roi_corners = np.array([
+        side_center - half_w * side_dir - half_h * perp_dir,
+        side_center + half_w * side_dir - half_h * perp_dir,
+        side_center + half_w * side_dir + half_h * perp_dir,
+        side_center - half_w * side_dir + half_h * perp_dir,
+    ], dtype=np.float32)
+    
+    # Destination points (수평으로 정렬된 직사각형)
+    dst_corners = np.array([
+        [0, 0],
+        [roi_width - 1, 0],
+        [roi_width - 1, roi_height - 1],
+        [0, roi_height - 1],
+    ], dtype=np.float32)
+    
+    # Perspective transform으로 ROI 추출 (회전된 영역을 수평으로)
+    M = cv2.getPerspectiveTransform(roi_corners, dst_corners)
+    roi = cv2.warpPerspective(gray, M, (roi_width, roi_height))
+    
+    # Sobel Y (수직 방향 edge) - ROI가 수평이므로 수직 edge가 side에 해당
+    sobel_y = cv2.Sobel(roi, cv2.CV_64F, 0, 1, ksize=3)
+    sobel_abs = np.abs(sobel_y)
+    
+    # 각 행(y)별로 edge 강도 합산 → 가장 강한 행 찾기
+    row_sums = np.sum(sobel_abs, axis=1)
+    
+    if len(row_sums) == 0:
+        return 0.0
+    
+    best_row = np.argmax(row_sums)
+    
+    # best_row를 offset으로 변환 (ROI 중심이 offset=0)
+    best_offset = best_row - search_range_px
+    
+    return float(best_offset)
+
+
+def _line_intersection(p1: np.ndarray, d1: np.ndarray, p2: np.ndarray, d2: np.ndarray) -> Optional[np.ndarray]:
+    """
+    두 직선의 교점 계산.
+    직선1: p1 + t * d1
+    직선2: p2 + s * d2
+    """
+    # 2x2 행렬로 풀기: [d1, -d2] * [t, s]^T = p2 - p1
+    A = np.array([[d1[0], -d2[0]], [d1[1], -d2[1]]])
+    b = p2 - p1
+    
+    det = A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
+    if abs(det) < 1e-10:
+        return None  # 평행선
+    
+    t = (A[1, 1] * b[0] - A[0, 1] * b[1]) / det
+    return p1 + t * d1
+
+
 def refine_box_with_edges(
     frame: np.ndarray,
     oriented_box_info: Dict,
@@ -168,39 +264,31 @@ def refine_box_with_edges(
     debug_image_path: Optional[str] = None
 ) -> Optional[Dict]:
     """
-    Refine oriented box by searching for sharpest edges along each side.
+    각 side를 ROI로 crop하고 edge가 가장 강한 위치로 side를 갱신하여 박스를 정밀화.
     
     Args:
         frame: Input image (grayscale or BGR)
         oriented_box_info: Dictionary with rect, center, width, height, angle, box_points
-        search_range_px: Pixel range to search along each edge (±search_range_px)
-        debug_image_path: Optional path to save debug image showing before/after refinement
+        search_range_px: 탐색 범위 (±px)
+        debug_image_path: Optional path to save debug image
     
     Returns:
         Refined oriented_box_info dictionary, or None if refinement failed
     """
     try:
-        # Convert to grayscale if needed
+        # Grayscale 변환
         if len(frame.shape) == 3:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         else:
             gray = frame.copy()
         
-        # Get Canny edges for edge detection
-        edges = cv2.Canny(gray, 50, 150)
-        
-        # Get original rect
         rect = oriented_box_info.get("rect")
         if rect is None:
             return None
         
-        center, (w, h), angle = rect
-        angle_rad = np.deg2rad(angle)
-        
-        # Get box points for the 4 sides
         box_points = cv2.boxPoints(rect).astype(np.float32)
         
-        # Define the 4 sides (each side is a line segment)
+        # 4개 sides 정의
         sides = [
             (box_points[0], box_points[1]),  # Side 0
             (box_points[1], box_points[2]),  # Side 1
@@ -208,77 +296,53 @@ def refine_box_with_edges(
             (box_points[3], box_points[0]),  # Side 3
         ]
         
-        refined_points = []
-        for side_idx, (p1, p2) in enumerate(sides):
-            # Calculate perpendicular direction (normal to the edge, pointing outward)
-            dx = p2[0] - p1[0]
-            dy = p2[1] - p1[1]
-            length = np.sqrt(dx*dx + dy*dy)
-            if length < 1e-6:
-                refined_points.append(p1)
+        # 각 side에 대해 best offset 찾고 refined side 저장
+        refined_sides = []  # [(point_on_line, direction_vector), ...]
+        
+        for p1, p2 in sides:
+            p1 = np.array(p1, dtype=np.float64)
+            p2 = np.array(p2, dtype=np.float64)
+            
+            # Edge 기반 최적 offset 찾기
+            offset = _find_edge_offset_in_roi(gray, p1, p2, search_range_px)
+            
+            # Side 방향 및 수직 방향
+            side_vec = p2 - p1
+            side_length = np.linalg.norm(side_vec)
+            if side_length < 1:
+                refined_sides.append((p1, np.array([1.0, 0.0])))
                 continue
             
-            # Normalize direction vector
-            dx_norm = dx / length
-            dy_norm = dy / length
+            side_dir = side_vec / side_length
+            perp_dir = np.array([-side_dir[1], side_dir[0]])
             
-            # Perpendicular direction (rotate 90 degrees)
-            perp_x = -dy_norm
-            perp_y = dx_norm
-            
-            # Sample points along the edge
-            num_samples = max(int(length), 10)
-            best_offset = 0.0
-            max_edge_strength = 0.0
-            
-            # Search along perpendicular direction
-            for offset in np.arange(-search_range_px, search_range_px + 0.5, 0.5):
-                edge_strength = 0.0
-                valid_samples = 0
-                
-                for i in range(num_samples):
-                    t = i / max(num_samples - 1, 1)
-                    # Point along the edge
-                    px = p1[0] + t * dx
-                    py = p1[1] + t * dy
-                    
-                    # Move perpendicular to the edge
-                    search_x = int(px + offset * perp_x)
-                    search_y = int(py + offset * perp_y)
-                    
-                    # Check bounds
-                    if (0 <= search_y < edges.shape[0] and 
-                        0 <= search_x < edges.shape[1]):
-                        edge_strength += float(edges[search_y, search_x])
-                        valid_samples += 1
-                
-                if valid_samples > 0:
-                    avg_strength = edge_strength / valid_samples
-                    if avg_strength > max_edge_strength:
-                        max_edge_strength = avg_strength
-                        best_offset = offset
-            
-            # Apply best offset to both endpoints
-            refined_p1 = (
-                p1[0] + best_offset * perp_x,
-                p1[1] + best_offset * perp_y
-            )
-            refined_p2 = (
-                p2[0] + best_offset * perp_x,
-                p2[1] + best_offset * perp_y
-            )
-            
-            # Store refined points (each side contributes its second point)
-            if side_idx == 0:
-                refined_points.append(refined_p1)  # First point of first side
-            refined_points.append(refined_p2)  # Second point of each side
+            # Offset 적용하여 refined side 위치 계산
+            refined_p1 = p1 + offset * perp_dir
+            refined_sides.append((refined_p1, side_dir))
         
-        # Recalculate minAreaRect from refined points
-        refined_points_arr = np.array(refined_points, dtype=np.float32)
-        refined_rect = cv2.minAreaRect(refined_points_arr)
-        refined_center, (refined_w, refined_h), refined_angle = refined_rect
+        # 인접한 side들의 교점 계산 → refined box points
+        refined_box_points = []
+        for i in range(4):
+            line1 = refined_sides[i]
+            line2 = refined_sides[(i + 1) % 4]
+            
+            intersection = _line_intersection(line1[0], line1[1], line2[0], line2[1])
+            if intersection is None:
+                # 교점 계산 실패 시 원래 점 사용
+                refined_box_points.append(box_points[(i + 1) % 4])
+            else:
+                refined_box_points.append(intersection)
         
-        # Normalize angle (same logic as extract_box_from_mask)
+        refined_box_points = np.array(refined_box_points, dtype=np.float32)
+        
+        # 중심 계산
+        refined_center = np.mean(refined_box_points, axis=0)
+        
+        # minAreaRect로 angle, width, height 재계산
+        refined_rect = cv2.minAreaRect(refined_box_points)
+        _, (refined_w, refined_h), refined_angle = refined_rect
+        
+        # Normalize angle
         if refined_h > refined_w:
             normalized_angle = refined_angle - 90
             long_axis = refined_h
@@ -288,61 +352,47 @@ def refine_box_with_edges(
             long_axis = refined_w
             short_axis = refined_h
         
-        # Normalize angle to -90 ~ 90 range
         while normalized_angle > 90:
             normalized_angle -= 180
         while normalized_angle < -90:
             normalized_angle += 180
         
-        # Get refined box points
-        refined_box_points = cv2.boxPoints(refined_rect).astype(np.float32)
-        
-        # Create debug image if requested
+        # Debug image
         if debug_image_path:
             try:
-                logger.debug(f"Attempting to save refinement debug image to {debug_image_path}")
-                # Convert to BGR if grayscale
                 if len(frame.shape) == 2:
                     debug_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
                 else:
                     debug_frame = frame.copy()
                 
-                # Draw original box (blue)
-                original_box_points = oriented_box_info.get("box_points", box_points)
-                original_box_i32 = original_box_points.reshape((-1, 1, 2)).astype(np.int32)
-                cv2.polylines(debug_frame, [original_box_i32], True, (255, 0, 0), 2)  # Blue
+                # Original box (blue)
+                original_box_i32 = box_points.reshape((-1, 1, 2)).astype(np.int32)
+                cv2.polylines(debug_frame, [original_box_i32], True, (255, 0, 0), 2)
                 
-                # Draw refined box (green)
+                # Refined box (green)
                 refined_box_i32 = refined_box_points.reshape((-1, 1, 2)).astype(np.int32)
-                cv2.polylines(debug_frame, [refined_box_i32], True, (0, 255, 0), 2)  # Green
+                cv2.polylines(debug_frame, [refined_box_i32], True, (0, 255, 0), 2)
                 
-                # Draw original center (blue circle)
-                original_center = oriented_box_info.get("center", center)
+                # Centers
+                original_center = oriented_box_info.get("center", tuple(np.mean(box_points, axis=0)))
                 cv2.circle(debug_frame, (int(original_center[0]), int(original_center[1])), 5, (255, 0, 0), -1)
-                
-                # Draw refined center (green circle)
                 cv2.circle(debug_frame, (int(refined_center[0]), int(refined_center[1])), 5, (0, 255, 0), -1)
                 
-                # Add text labels
                 cv2.putText(debug_frame, "Original (Blue)", (10, 30), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
                 cv2.putText(debug_frame, "Refined (Green)", (10, 60), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 
-                # Save debug image
                 debug_path_obj = Path(debug_image_path)
                 debug_path_obj.parent.mkdir(parents=True, exist_ok=True)
-                success = cv2.imwrite(debug_image_path, debug_frame)
-                if success:
-                    logger.info(f"Refinement debug image saved: {debug_image_path}")
-                else:
-                    logger.warning(f"Failed to save refinement debug image (cv2.imwrite returned False): {debug_image_path}")
+                cv2.imwrite(debug_image_path, debug_frame)
+                logger.info(f"Refinement debug image saved: {debug_image_path}")
             except Exception as e:
-                logger.error(f"Failed to save refinement debug image: {e}", exc_info=True)
+                logger.error(f"Failed to save refinement debug image: {e}")
         
         # Create refined oriented_box_info
         refined_info = oriented_box_info.copy()
-        refined_info["center"] = refined_center
+        refined_info["center"] = tuple(refined_center)
         refined_info["width"] = long_axis
         refined_info["height"] = short_axis
         refined_info["angle"] = normalized_angle
@@ -398,6 +448,7 @@ def transform_detection_with_homography(
     
     # Re-extract oriented_box_info from transformed mask if available
     # This ensures accurate box_points, center, width, height, and angle after homography transformation
+    print(f"[DEBUG] transform_detection: new_masks is {'not None' if new_masks is not None else 'None'}, frame is {'not None' if frame is not None else 'None'}")
     if new_masks is not None:
         # Determine image size for mask extraction
         if transformed_image_size is None:
@@ -417,6 +468,7 @@ def transform_detection_with_homography(
         
         # Extract oriented_box_info from transformed mask
         new_oriented_box_info = Detection.extract_box_from_mask(new_masks, image_size)
+        print(f"[DEBUG] transform_detection: new_oriented_box_info is {'not None' if new_oriented_box_info else 'None'}, has_rect={'rect' in new_oriented_box_info if new_oriented_box_info else False}")
         if new_oriented_box_info:
             # Apply edge-based refinement if rect is available
             if "rect" in new_oriented_box_info and frame is not None:

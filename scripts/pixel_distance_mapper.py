@@ -1456,19 +1456,19 @@ def parse_arguments():
     parser.add_argument(
         "--image",
         type=str,
-        default="data/aruco/cam3/cam3.png",
+        default="../data/aruco/cam3.png",
         help="입력 이미지 경로 (원본 이미지 가능 - 내부에서 undistortion 수행)"
     )
     parser.add_argument(
         "--camera-config",
         type=str,
-        default="config/cam3_config.json",
+        default="../config/zoom1/cam3_config.json",
         help="카메라 설정 파일 경로"
     )
     parser.add_argument(
         "--world-coords",
         type=str,
-        default="data/cam3_world_coords.json",
+        default="../config/zoom1/cam3_world_coords.json",
         help="모든 점의 실제 world 좌표 JSON 파일 경로 (정확한 보정용). 형식: {\"points\": [[x1,y1], [x2,y2], ...]} (mm 단위)"
     )
     parser.add_argument(

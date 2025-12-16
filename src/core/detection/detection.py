@@ -234,6 +234,7 @@ class Detection:
                 "angle": normalized_angle,  # degrees (0 when long axis is horizontal)
                 "angle_rad": np.deg2rad(normalized_angle),  # radians
                 "box_points": box_points,  # 4 corner points
+                "rect": rect,  # Original minAreaRect result for refinement
             }
         except Exception as e:
             print(f"⚠ Failed to extract box from mask: {e}")
