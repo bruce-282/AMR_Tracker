@@ -76,7 +76,7 @@
 | `ValueError` | 유효하지 않은 모델 인덱스 | `Invalid model index: {index}. Available models: {model_list}` |
 | `ValueError` | 선택된 모델 없음 | `No model selected. Please provide model in request or set in config.` |
 | `FileNotFoundError` | 모델 파일 없음 | `Model file not found: {path}` |
-| `ValueError` | YOLO detector에 model_path 누락 | `model_path is required for YOLO detector` |
+| `ValueError` | detector에 model_path 누락 | `model_path is required for detector` |
 
 ---
 
