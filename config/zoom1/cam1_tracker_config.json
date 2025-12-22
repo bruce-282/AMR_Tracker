@@ -4,7 +4,7 @@
     "_comment": "YOLO detector parameters for Camera 1",
     "model_path": "weights/zoom1/epoch99.pt",
     "_desc_model_path": "YOLO 모델 가중치 파일 경로",
-    "confidence_threshold": 0.7,
+    "confidence_threshold": 0.8,
     "_desc_confidence": "최소 신뢰도 점수 (0-1). 이 값 이상만 검출로 인정",
     "imgsz": 1280,
     "_desc_imgsz": "YOLO 입력 이미지 크기. 클수록 정확하지만 느림",

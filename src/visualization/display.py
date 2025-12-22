@@ -76,14 +76,16 @@ class Visualizer:
     Provides real-time display of AGV tracking, measurements, and speeds.
     """
 
-    def __init__(self, homography: Optional[np.ndarray] = None):
+    def __init__(self, homography: Optional[np.ndarray] = None, draw_masks: bool = False):
         """
         Initialize visualizer.
-
+        
         Args:
             homography: Optional homography matrix for coordinate transformation
+            draw_masks: Whether to draw mask polygons when visualize_stream is true (default: False)
         """
         self.homography = homography
+        self.draw_masks = draw_masks
         self.colors = self._generate_colors(20)
         self.latest_rect_angles = {}  # Track ID to latest minAreaRect angle (deg)
 
@@ -211,17 +213,20 @@ class Visualizer:
                         cv2.polylines(vis_frame, [box_i32], True, tracking_color, 2)
                         cv2.circle(vis_frame, (int(center[0]), int(center[1])), 9, tracking_color, -1)
                     else:
+                        ## Oriented box 그리기 from masks -> approxPolyDP -> minAreaRect
                         box_points = detection.oriented_box_info["box_points"]
                         box_i32 = box_points.reshape((-1, 1, 2)).astype(np.int32)
                         cv2.polylines(vis_frame, [box_i32], True, tracking_color, 2)
                         # Real-time display: draw mask polygon and center
                         cv2.circle(vis_frame, (int(center[0]), int(center[1])), 9, detection_color, -1)
-                        # if getattr(detection, "masks", None) is not None:
-                        #     poly = detection.masks
-                        #     poly = np.asarray(poly, dtype=np.float32)
-                        #     if poly.ndim == 2 and poly.shape[1] == 2 and poly.shape[0] >= 3:
-                        #         pts = poly.reshape((-1, 1, 2)).astype(np.int32)
-                        #         cv2.polylines(vis_frame, [pts], True, detection_color, 2)
+
+                        ## Mask 그리기 (config에서 draw_masks가 true일 때만)
+                        if self.draw_masks and getattr(detection, "masks", None) is not None:
+                            poly = detection.masks
+                            poly = np.asarray(poly, dtype=np.float32)
+                            if poly.ndim == 2 and poly.shape[1] == 2 and poly.shape[0] >= 3:
+                                pts = poly.reshape((-1, 1, 2)).astype(np.int32)
+                                cv2.polylines(vis_frame, [pts], True, detection_color, 2)
                     
                     # Save angle from oriented box (degrees)
                     self.latest_rect_angles[track_id] = float(detection.oriented_box_info["angle"])

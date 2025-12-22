@@ -251,8 +251,9 @@ class EnhancedAMRTracker:
 
         # Initialize Visualizer
         try:
-            self.visualizer = Visualizer(homography=homography)
-            logger.info("Visualizer initialized with homography from calibration_config")
+            draw_masks = self.calibration_config.get("draw_masks", True) if self.calibration_config else True
+            self.visualizer = Visualizer(homography=homography, draw_masks=draw_masks)
+            logger.info(f"Visualizer initialized with homography from calibration_config (draw_masks={draw_masks})")
         except Exception as e:
             logger.warning(f"Error initializing Visualizer: {e}")
 

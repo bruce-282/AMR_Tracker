@@ -290,7 +290,8 @@ class CameraManager:
         detector_config: Optional[Dict] = None,
         tracker_config: Optional[Dict] = None,
         enable_undistortion: bool = False,
-        camera_config_path: Optional[str] = None
+        camera_config_path: Optional[str] = None,
+        draw_masks: bool = False
     ):
         """
         Initialize camera with loader and AMR tracker.
@@ -424,6 +425,7 @@ class CameraManager:
             # SizeMeasurement only uses homography for transformation, other params are unused
             calibration_config_for_tracker = {
                 "homography": homography.tolist() if hasattr(homography, 'tolist') else homography,
+                "draw_masks": draw_masks,  # Pass draw_masks from vision_server
             }
             logger.info(f"Camera {camera_id}: Using homography from camera_manager for Visualizer")
         

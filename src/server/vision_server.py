@@ -127,6 +127,13 @@ class VisionServer:
                     else:
                         self.visualize_stream = True  # Default
                     
+                    # Set draw_masks
+                    if "draw_masks" in execution_config:
+                        self.draw_masks = bool(execution_config["draw_masks"])
+                        self.logger.info(f"Draw masks: {self.draw_masks}")
+                    else:
+                        self.draw_masks = False  # Default
+                    
                     # Set result paths
                     if "result_base_path" in execution_config:
                         self.result_base_path = Path(execution_config["result_base_path"])
@@ -172,6 +179,7 @@ class VisionServer:
                 else:
                     # Default paths if execution config not found
                     self.visualize_stream = True  # Default
+                    self.draw_masks = False  # Default
                     self.result_base_path = Path("C:/CMES_AI/Result")
                     self.result_base_path.mkdir(parents=True, exist_ok=True)
                     self.summary_base_path = Path("C:/CMES_AI/Summary")
@@ -186,6 +194,7 @@ class VisionServer:
             else:
                 # Default paths if config file not found
                 self.visualize_stream = True  # Default
+                self.draw_masks = False  # Default
                 self.result_base_path = Path("C:/CMES_AI/Result")
                 self.result_base_path.mkdir(parents=True, exist_ok=True)
                 self.summary_base_path = Path("C:/CMES_AI/Summary")
@@ -202,6 +211,7 @@ class VisionServer:
         else:
             # Default paths if no model selected
             self.visualize_stream = True  # Default
+            self.draw_masks = False  # Default
             self.result_base_path = Path("C:/CMES_AI/Result")
             self.result_base_path.mkdir(parents=True, exist_ok=True)
             self.summary_base_path = Path("C:/CMES_AI/Summary")
@@ -1176,7 +1186,7 @@ class VisionServer:
                     pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
                     self.logger.info(f"Camera {camera_id}: Using pixel_size (x={pixel_size_dict['x']:.6f}, y={pixel_size_dict['y']:.6f}) (no distance_map_path)")
              
-            # Load visualize_stream from product model config (execution.visualize_stream)
+            # Load visualize_stream and draw_masks from product model config (execution section)
             product_model_config = load_product_model_config(product_model_name)
             if product_model_config and "execution" in product_model_config:
                 exec_config_from_product = product_model_config["execution"]
@@ -1187,8 +1197,14 @@ class VisionServer:
                     self.logger.info(f"visualize_stream set to {self.visualize_stream} from {product_model_name}.json")
                 else:
                     self.logger.debug(f"visualize_stream not found in {product_model_name}.json, using default: {self.visualize_stream}")
+                
+                if "draw_masks" in exec_config_from_product:
+                    self.draw_masks = exec_config_from_product["draw_masks"]
+                    self.logger.info(f"draw_masks set to {self.draw_masks} from {product_model_name}.json")
+                else:
+                    self.logger.debug(f"draw_masks not found in {product_model_name}.json, using default: {self.draw_masks}")
             else:
-                self.logger.debug(f"execution config not found in {product_model_name}.json, using default: {self.visualize_stream}")
+                self.logger.debug(f"execution config not found in {product_model_name}.json, using default: {self.visualize_stream}, draw_masks={self.draw_masks}")
             
             # Initialize all 3 cameras and initialize trackers (without starting tracking threads)
             failed_cameras = []
@@ -1530,7 +1546,8 @@ class VisionServer:
             detector_config=detector_config,
             tracker_config=tracker_config_dict,
             enable_undistortion=enable_undistortion,
-            camera_config_path=camera_config_path
+            camera_config_path=camera_config_path,
+            draw_masks=getattr(self, 'draw_masks', False)
         )
         
         self.logger.info(f"Camera {camera_id} initialized with EnhancedAMRTracker")

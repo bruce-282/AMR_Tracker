@@ -7,6 +7,8 @@
   },
   "execution": {
     "visualize_stream": true,
+    "draw_masks": true,
+    "_desc_draw_masks": "visualize_stream이 true일 때 mask polygon을 그릴지 여부 (기본: true)",
     "result_base_path": "C:/CMES_AI/Result",
     "summary_base_path": "C:/CMES_AI/Summary",
     "debug_base_path": "C:/CMES_AI/Debug",
@@ -18,7 +20,7 @@
 
       "camera_tracking": {
         "loader_mode": "camera",
-        "camera_1": {
+        "camera_1": {                                      
           "id": "I3ZEB19C",
           "config": "config/zoom1/cam1_config.json",
           "tracker_config": "config/zoom1/cam1_tracker_config.json"
@@ -37,17 +39,17 @@
       "video_tracking": {
         "loader_mode": "video",
         "camera_1": {
-          "id": "data/251210_HD_AGV_Video/CAM1_2.mp4",
+          "id": "data/251210_HD_AGV_Video/CAM1_3.mp4",
           "config": "config/zoom1/cam1_config.json",
           "tracker_config": "config/zoom1/cam1_tracker_config.json"
         },
         "camera_2": {
-          "id": "data/251210_HD_AGV_Video/CAM2_2.mp4",
+          "id": "data/251210_HD_AGV_Video/CAM2_3.mp4",
           "config": "config/zoom1/cam2_config.json",
           "tracker_config": "config/zoom1/cam2_tracker_config.json"
         },
         "camera_3": {
-          "id": "data/251210_HD_AGV_Video/CAM3_2.mp4",
+          "id": "data/251210_HD_AGV_Video/CAM3_3.mp4",
           "config": "config/zoom1/cam3_config.json",
           "tracker_config": "config/zoom1/cam3_tracker_config.json"
         }
