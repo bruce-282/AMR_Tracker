@@ -49,7 +49,7 @@
     "_desc_enable_edge_refinement": "Edge 기반 박스 정밀화 활성화 여부. Camera 2는 trajectory 추적용이므로 비활성화",
     "edge_search_range_px": 8,
     "_desc_edge_search_range": "Edge 탐색 범위 (±픽셀). 각 side에서 이 범위 내에서 가장 강한 edge를 찾아 보정",
-    "step_mode": true,
+    "step_mode": false,
     "_desc_step_mode": "스텝 모드 활성화. true면 스페이스바를 누를 때마다 다음 프레임으로 진행 (디버깅용)"
   },
   "measurement": {
