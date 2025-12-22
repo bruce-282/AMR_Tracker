@@ -127,25 +127,6 @@ class Detection:
             return None
     
     @staticmethod
-    def clean_mask(mask: np.ndarray, min_area: int = 200) -> np.ndarray:
-        """
-        Clean mask by removing small components.
-        
-        Args:
-            mask: Binary mask
-            min_area: Minimum area threshold
-            
-        Returns:
-            Cleaned mask
-        """
-        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        out = np.zeros_like(mask)
-        for cnt in cnts:
-            if cv2.contourArea(cnt) >= min_area:
-                cv2.fillPoly(out, [cnt], 255)
-        return out
-
-    @staticmethod
     def extract_box_from_mask(
         masks: List[List[float]], 
         image_size: Tuple[int, int], 
@@ -157,7 +138,7 @@ class Detection:
         Args:
             masks: Mask polygon points
             image_size: Image size (width, height)
-            min_area: Minimum area threshold for mask cleaning
+            min_area: Minimum area threshold for safety check (YOLO detector already filters by min_area)
         
         Returns:
             Dictionary with center, width, height, angle, and box_points, or None if failed
@@ -170,71 +151,75 @@ class Detection:
             if poly.ndim != 2 or poly.shape[1] != 2 or poly.shape[0] < 3:
                 return None
             
-            pts = poly.reshape((-1, 1, 2)).astype(np.int32)
+            # # Optional: filter by min_area as safety check (YOLO detector already filters)
+            # poly_area = cv2.contourArea(poly)
+            # if poly_area < min_area:
+            #     return None
             
-            # Build binary mask from polygon
-            h, w_img = image_size[1], image_size[0]
-            bin_mask = np.zeros((h, w_img), dtype=np.uint8)
-            cv2.fillPoly(bin_mask, [pts], 255)
+            # Approximate polygon to 4 points using approxPolyDP (can represent trapezoid)
+            # epsilon: approximation accuracy (percentage of perimeter)
+            epsilon = 0.01 * cv2.arcLength(poly, True)
+            approx = cv2.approxPolyDP(poly, epsilon, True)
             
-            # Clean mask
-            m = Detection.clean_mask(bin_mask, min_area=min_area)
-            if m.max() == 0:
-                return None
-            
-            # Erode to get core
-            erode_px = 3
-            core = cv2.erode(m, np.ones((erode_px, erode_px), np.uint8), 1)
-            if int(core.sum()) < 50:
-                core = m
-            
-            # Find contours
-            cnts, _ = cv2.findContours(core, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if not cnts:
-                return None
-            
-            # Get largest contour
-            cnt = max(cnts, key=cv2.contourArea)
-            
-            # Get minAreaRect
-            rect = cv2.minAreaRect(cnt)
-            center, (w, h), angle = rect
-            
-            # Normalize angle so that the LONG axis (major axis) is the reference
-            # When long axis is parallel to image horizontal (x-axis), angle should be 0
-            # OpenCV minAreaRect: angle is for the first edge (width side)
-            # Range: 0 to 90 degrees (OpenCV 4.5+)
-            
-            if h > w:
-                # Height is the long axis
-                # Rotate by 90 to make long axis the reference
-                normalized_angle = angle - 90
-                # Swap so that 'width' always refers to long axis
-                long_axis = h
-                short_axis = w
+            # Ensure we have 4 points (if not, use minAreaRect as fallback)
+            if len(approx) != 4:
+                # Fallback to minAreaRect if approximation doesn't give 4 points
+                rect = cv2.minAreaRect(poly)
+                center, (w, h), angle = rect
+                
+                # Normalize angle
+                if h > w:
+                    normalized_angle = angle - 90
+                    long_axis = h
+                    short_axis = w
+                else:
+                    normalized_angle = angle
+                    long_axis = w
+                    short_axis = h
+                
+                # Normalize angle to -90 ~ 90 range
+                while normalized_angle > 90:
+                    normalized_angle -= 180
+                while normalized_angle < -90:
+                    normalized_angle += 180
+                
+                box_points = cv2.boxPoints(rect).astype(np.float32)
             else:
-                # Width is the long axis (or equal)
-                normalized_angle = angle
-                long_axis = w
-                short_axis = h
-            
-            # Normalize angle to -90 ~ 90 range
-            while normalized_angle > 90:
-                normalized_angle -= 180
-            while normalized_angle < -90:
-                normalized_angle += 180
-            
-            # Get box points
-            box_points = cv2.boxPoints(rect).astype(np.float32)
+                # Use approximated 4 points (can be trapezoid)
+                box_points = approx.reshape(4, 2).astype(np.float32)
+                
+                # Calculate center as centroid of 4 points
+                center = np.mean(box_points, axis=0)
+                
+                # Calculate dimensions: use minAreaRect for width/height/angle
+                # (approxPolyDP gives points but not dimensions)
+                rect = cv2.minAreaRect(box_points)
+                _, (w, h), angle = rect
+                
+                # Normalize angle
+                if h > w:
+                    normalized_angle = angle - 90
+                    long_axis = h
+                    short_axis = w
+                else:
+                    normalized_angle = angle
+                    long_axis = w
+                    short_axis = h
+                
+                # Normalize angle to -90 ~ 90 range
+                while normalized_angle > 90:
+                    normalized_angle -= 180
+                while normalized_angle < -90:
+                    normalized_angle += 180
             
             return {
-                "center": center,  # (x, y)
+                "center": tuple(center),  # (x, y)
                 "width": long_axis,  # Long axis (major axis)
                 "height": short_axis,  # Short axis (minor axis)
                 "angle": normalized_angle,  # degrees (0 when long axis is horizontal)
                 "angle_rad": np.deg2rad(normalized_angle),  # radians
-                "box_points": box_points,  # 4 corner points
-                "rect": rect,  # Original minAreaRect result for refinement
+                "box_points": box_points,  # 4 corner points (can be trapezoid)
+                "rect": rect,  # minAreaRect result for refinement (from approximated points)
             }
         except Exception as e:
             print(f"⚠ Failed to extract box from mask: {e}")

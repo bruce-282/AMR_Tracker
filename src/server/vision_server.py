@@ -650,13 +650,13 @@ class VisionServer:
                 )
 
                 trajectory_index = len(self.camera2_trajectory)
+                # Store pixel coordinates only - mm values will be calculated after homography transformation
                 self.camera2_trajectory.append({
                     "track_idx": trajectory_index,
-                    "x": round(float(x_mm), 3),
-                    "y": round(float(y_mm), 3),
-                    "rz": round(float(rz_deg), 3),
-                    "x_pix": round(float(x_pix), 1),
-                    "y_pix": round(float(y_pix), 1)
+                    "x_pix": round(float(x_pix), 1),  # Store pixel coords for homography transformation
+                    "y_pix": round(float(y_pix), 1),  # Store pixel coords for homography transformation
+                    "rz": round(float(rz_deg), 3)
+                    # x, y (mm) will be calculated after homography transformation in _send_camera2_trajectory
                 })
 
         # Check if detection lost
@@ -767,9 +767,21 @@ class VisionServer:
                 self.logger.warning(f"Camera {camera_id}: No frame available for result image")
         except Exception as e:
             self.logger.error(f"Camera {camera_id}: Failed to save result image: {e}")
+        
+        # Remove x_pix, y_pix from response (only x, y in mm and rz are sent)
+        response_data = []
+        for point in trajectory_data:
+            response_point = {
+                "track_idx": point.get("track_idx", 0),
+                "x": point.get("x", 0),
+                "y": point.get("y", 0),
+                "rz": point.get("rz", 0)
+            }
+            response_data.append(response_point)
+        
         cmd = Command.START_CAM_2
-        if self._send_response_to_client(cmd, success=True, data=trajectory_data):
-            self.logger.info(f"Camera 2 trajectory data sent ({len(trajectory_data)} frames)")
+        if self._send_response_to_client(cmd, success=True, data=response_data):
+            self.logger.info(f"Camera 2 trajectory data sent ({len(response_data)} frames)")
         
         self.camera2_trajectory.clear()
         

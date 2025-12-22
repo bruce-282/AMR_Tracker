@@ -623,9 +623,10 @@ def transform_trajectory_data_with_homography(
         new_x_pix, new_y_pix = transform_point_with_homography((x_pix, y_pix), homography)
         
         transformed_point = point.copy()
+        # Store transformed pixel coordinates (for internal use, not sent in response)
         transformed_point["x_pix"] = round(new_x_pix, 1)
         transformed_point["y_pix"] = round(new_y_pix, 1)
-        # Use pixel_size_x and pixel_size_y separately
+        # Calculate mm values from transformed pixel coordinates
         transformed_point["x"] = round(new_x_pix * pixel_size_x, 3)
         transformed_point["y"] = round(new_y_pix * pixel_size_y, 3)
         transformed_trajectory.append(transformed_point)

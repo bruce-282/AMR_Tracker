@@ -172,8 +172,8 @@ class Visualizer:
             Frame with visualizations
         """
         vis_frame = frame.copy()
-        box_color = (0, 0, 255)
-        mask_color = tuple(c // 2 for c in box_color) # half of box color
+        tracking_color = (0, 0, 255)
+        mask_color = tuple(c // 2 for c in tracking_color) # half of box color
         detection_color = (0, 255, 0)
         
 
@@ -208,17 +208,20 @@ class Visualizer:
                         # When saving image: draw only refined box and center (no mask polygon)
                         box_points = detection.oriented_box_info["box_points"]
                         box_i32 = box_points.reshape((-1, 1, 2)).astype(np.int32)
-                        cv2.polylines(vis_frame, [box_i32], True, box_color, 2)
-                        cv2.circle(vis_frame, (int(center[0]), int(center[1])), 9, box_color, -1)
+                        cv2.polylines(vis_frame, [box_i32], True, tracking_color, 2)
+                        cv2.circle(vis_frame, (int(center[0]), int(center[1])), 9, tracking_color, -1)
                     else:
+                        box_points = detection.oriented_box_info["box_points"]
+                        box_i32 = box_points.reshape((-1, 1, 2)).astype(np.int32)
+                        cv2.polylines(vis_frame, [box_i32], True, tracking_color, 2)
                         # Real-time display: draw mask polygon and center
                         cv2.circle(vis_frame, (int(center[0]), int(center[1])), 9, detection_color, -1)
-                        if getattr(detection, "masks", None) is not None:
-                            poly = detection.masks
-                            poly = np.asarray(poly, dtype=np.float32)
-                            if poly.ndim == 2 and poly.shape[1] == 2 and poly.shape[0] >= 3:
-                                pts = poly.reshape((-1, 1, 2)).astype(np.int32)
-                                cv2.polylines(vis_frame, [pts], True, detection_color, 2)
+                        # if getattr(detection, "masks", None) is not None:
+                        #     poly = detection.masks
+                        #     poly = np.asarray(poly, dtype=np.float32)
+                        #     if poly.ndim == 2 and poly.shape[1] == 2 and poly.shape[0] >= 3:
+                        #         pts = poly.reshape((-1, 1, 2)).astype(np.int32)
+                        #         cv2.polylines(vis_frame, [pts], True, detection_color, 2)
                     
                     # Save angle from oriented box (degrees)
                     self.latest_rect_angles[track_id] = float(detection.oriented_box_info["angle"])
@@ -246,15 +249,15 @@ class Visualizer:
                 trajectory = tracking.get("trajectory", [])
                 if len(trajectory) >= 2:
                     # Limit trajectory to recent points for performance (max 500 points)
-                    max_trajectory_points = 500
+                    max_trajectory_points = 1000
                     if len(trajectory) > max_trajectory_points:
                         trajectory = trajectory[-max_trajectory_points:]
                     # Convert trajectory points to integer tuples for drawing
                     traj_pts = [(int(x), int(y)) for x, y in trajectory]
                     for i in range(1, len(traj_pts)):
-                        cv2.line(vis_frame, traj_pts[i - 1], traj_pts[i], box_color, 2)
+                        cv2.line(vis_frame, traj_pts[i - 1], traj_pts[i], tracking_color, 2)
                 # Kalman center는 trajectory 그릴 때만 표시 (Camera 2)
-                cv2.circle(vis_frame, center, 5, box_color, -1)
+                cv2.circle(vis_frame, center, 5, tracking_color, -1)
 
 
         # Bottom overlay: x, y, rotation only

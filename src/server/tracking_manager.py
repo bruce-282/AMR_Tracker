@@ -238,7 +238,19 @@ class TrackingManager:
                     
                     window_name = f"Camera {camera_id} - AMR Tracking"
                     cv2.imshow(window_name, vis_frame)
-                    cv2.waitKey(1)
+                    
+                    # Check step_mode for any camera (wait for spacebar to advance frame)
+                    cam_tracking_config = self.get_camera_tracking_config(camera_id)
+                    step_mode = cam_tracking_config.get("step_mode", False) if cam_tracking_config else False
+                    
+                    if step_mode:
+                        # Step mode: wait for spacebar (32) or 'q' (113) to quit
+                        key = cv2.waitKey(0) & 0xFF
+                        if key == ord('q') or key == 27:  # 'q' or ESC
+                            logger.info(f"Camera {camera_id}: Step mode - quit key pressed, stopping tracking")
+                            break
+                    else:
+                        cv2.waitKey(1)
                 
                 # Camera-specific logic
                 if not self.use_area_scan:
