@@ -2223,7 +2223,7 @@ class VisionServer:
                         "min": round(r["x_min"], 3),
                         "max": round(r["x_max"], 3),
                         "range": round(r["x_range"], 3),
-                        "repeatability_3sigma": round(r["x_repeatability"], 3)
+                        "repeatability": round(r["x_std"], 3)
                     },
                     "y": {
                         "mean": round(r["y_mean"], 3),
@@ -2231,7 +2231,7 @@ class VisionServer:
                         "min": round(r["y_min"], 3),
                         "max": round(r["y_max"], 3),
                         "range": round(r["y_range"], 3),
-                        "repeatability_3sigma": round(r["y_repeatability"], 3)
+                        "repeatability": round(r["y_std"], 3)
                     },
                     "rz": {
                         "mean": round(r["rz_mean"], 3),
@@ -2239,7 +2239,7 @@ class VisionServer:
                         "min": round(r["rz_min"], 3),
                         "max": round(r["rz_max"], 3),
                         "range": round(r["rz_range"], 3),
-                        "repeatability_3sigma": round(r["rz_repeatability"], 3)
+                        "repeatability": round(r["rz_std"], 3)
                     }
                 }
             }

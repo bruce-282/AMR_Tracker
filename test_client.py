@@ -342,7 +342,7 @@ def run_interactive_mode(client, logger):
                                             for axis in ['x', 'y', 'rz']:
                                                 s = stats.get(axis, {})
                                                 logger.info(f"    {axis}: mean={s.get('mean', 0):.3f}, std={s.get('std', 0):.3f}, "
-                                                          f"range={s.get('range', 0):.3f}, 3σ={s.get('repeatability_3sigma', 0):.3f}")
+                                                          f"range={s.get('range', 0):.3f}, σ={s.get('repeatability', s.get('std', 0)):.3f}")
                                     else:
                                         logger.error(f"  [FAIL] {response.get('error_code')}: {response.get('error_desc')}")
                                 else:
