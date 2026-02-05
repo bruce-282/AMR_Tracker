@@ -26,7 +26,7 @@ from src.core.detection import YOLODetector, Detection
 from src.core.tracking import KalmanTracker
 from src.core.amr_tracker import EnhancedAMRTracker
 from src.utils.sequence_loader import create_sequence_loader, BaseLoader
-from src.utils.trajectory_repeatability import TrajectoryRepeatability
+from src.utils.trajectory_repeatability import TrajectoryRepeatability, ManualRepeatability
 from src.utils.config_loader import (
     load_product_model_config,
     get_camera_config,
@@ -1002,6 +1002,10 @@ class VisionServer:
                 return self._handle_start_cam(3, request)
             elif cmd == Command.CALC_RESULT:
                 return self._handle_calc_result(request)
+            elif cmd == Command.START_CAM_1_MANUAL:
+                return self._handle_start_cam_manual(request)
+            elif cmd == Command.MANUAL_CALC_RESULT:
+                return self._handle_manual_calc_result(request)
             else:
                 return self.protocol.create_response(
                     cmd or 0,
@@ -1814,9 +1818,426 @@ class VisionServer:
                 error_code="INTERNAL_ERROR",
                 error_desc=f"예상치 못한 내부 오류: {str(e)}"
             )
-    
-    
-    
+
+    def _handle_start_cam_manual(self, request: Dict[str, Any]) -> bytes:
+        """Handle START CAM 1 Manual command (cmd: 8).
+
+        Performs a single-shot detection on camera 1 using INDEPENDENT frame capture.
+        This command can be called at any time during the camera cycle without
+        interfering with the ongoing tracking process.
+
+        Request format:
+        {
+            "cmd": 8
+        }
+
+        Response format:
+        {
+            "cmd": 8,
+            "success": bool,
+            "error_code": string (optional),
+            "error_desc": string (optional),
+            "data": {
+                "x": float,    # X position in mm
+                "y": float,    # Y position in mm
+                "rz": float    # Rotation angle in degrees
+            }
+        }
+
+        Error codes:
+        - VISION_NOT_ACTIVE: Vision system not started
+        - CAM_NOT_INITIALIZED: Camera 1 not initialized
+        - FRAME_READ_ERROR: Failed to read frame from camera
+        - DETECTION_FAILED: No object detected in frame
+        - MANUAL_CAM_ERROR: General error during manual detection
+        """
+        camera_id = 1
+        manual_capture = None
+
+        try:
+            if not self.vision_active:
+                return self.protocol.create_response(
+                    Command.START_CAM_1_MANUAL,
+                    success=False,
+                    error_code="VISION_NOT_ACTIVE",
+                    error_desc="Vision system not started. Call START VISION first."
+                )
+
+            # Get camera configuration
+            product_model_name = self.model_config.get_selected_model()
+            try:
+                loader_mode, source, fps, config_path = self.camera_manager.get_camera_config(
+                    camera_id, product_model_name
+                )
+            except Exception as e:
+                return self.protocol.create_response(
+                    Command.START_CAM_1_MANUAL,
+                    success=False,
+                    error_code="CAM_NOT_INITIALIZED",
+                    error_desc=f"Failed to get camera 1 config: {e}"
+                )
+
+            # Create INDEPENDENT frame capture (separate from tracking)
+            self.logger.info(f"Camera 1 Manual: Opening independent capture from {source}")
+            manual_capture = cv2.VideoCapture(source)
+            if not manual_capture.isOpened():
+                return self.protocol.create_response(
+                    Command.START_CAM_1_MANUAL,
+                    success=False,
+                    error_code="FRAME_READ_ERROR",
+                    error_desc=f"Failed to open camera 1 source: {source}"
+                )
+
+            # Read a single frame from independent capture
+            ret, frame = manual_capture.read()
+            if not ret or frame is None:
+                return self.protocol.create_response(
+                    Command.START_CAM_1_MANUAL,
+                    success=False,
+                    error_code="FRAME_READ_ERROR",
+                    error_desc="Failed to read frame from camera 1"
+                )
+
+            # Release capture immediately after reading
+            manual_capture.release()
+            manual_capture = None
+
+            # Get detector from AMR tracker (detector is stateless, thread-safe)
+            amr_tracker = self.amr_trackers.get(camera_id)
+            if amr_tracker is None or amr_tracker.detector is None:
+                # Fallback: try to create detector from config
+                return self.protocol.create_response(
+                    Command.START_CAM_1_MANUAL,
+                    success=False,
+                    error_code="CAM_NOT_INITIALIZED",
+                    error_desc="Camera 1 detector not available"
+                )
+
+            # Detect object in frame (detector.detect is stateless)
+            detections = amr_tracker.detector.detect(frame)
+
+            if not detections:
+                # Save debug image even on failure
+                debug_image_path = self.result_base_path / "cam_1_result_manual_no_detection.png"
+                cv2.imwrite(str(debug_image_path), frame)
+                self.logger.warning(f"No detection - debug image saved to {debug_image_path}")
+
+                return self.protocol.create_response(
+                    Command.START_CAM_1_MANUAL,
+                    success=False,
+                    error_code="DETECTION_FAILED",
+                    error_desc="No object detected in camera 1 frame"
+                )
+
+            detection = detections[0]
+
+            # NOTE: We do NOT update the Kalman tracker here to keep manual measurement
+            # completely independent from the tracking process
+            tracking_result = None
+
+            # Apply homography transformation
+            homography = self.camera_manager.get_homography(camera_id)
+            if homography is not None:
+                frame = warp_frame_with_homography(frame, homography)
+                transformed_h, transformed_w = frame.shape[:2]
+
+                # Get edge refinement config
+                edge_config = self.camera_manager.get_edge_refinement_config(camera_id)
+                debug_base_path = getattr(self.response_builder, 'debug_base_path', None)
+
+                detection = transform_detection_with_homography(
+                    detection, homography,
+                    transformed_image_size=(transformed_w, transformed_h),
+                    frame=frame,
+                    debug_base_path=debug_base_path,
+                    camera_id=camera_id,
+                    enable_edge_refinement=edge_config["enable"],
+                    edge_search_range_px=edge_config["search_range_px"]
+                )
+
+            # Calculate response data
+            pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
+
+            # Get position from detection's oriented_box_info
+            if (hasattr(detection, 'oriented_box_info') and
+                detection.oriented_box_info is not None and
+                "center" in detection.oriented_box_info):
+                center = detection.oriented_box_info["center"]
+                x_pix, y_pix = center[0], center[1]
+            else:
+                center = detection.get_center()
+                x_pix, y_pix = center[0], center[1]
+
+            x_mm = x_pix * pixel_size_dict['x']
+            y_mm = y_pix * pixel_size_dict['y']
+
+            # Get orientation
+            if (hasattr(detection, 'oriented_box_info') and
+                detection.oriented_box_info is not None and
+                "angle" in detection.oriented_box_info):
+                rz = detection.oriented_box_info["angle"]
+            else:
+                rz = detection.get_orientation() or 0.0
+
+            # Create tracking_result for visualization (with mm coordinates)
+            tracking_result = {
+                "track_id": 0,
+                "position": {
+                    "x": x_pix,
+                    "y": y_pix,
+                    "x_mm": x_mm,
+                    "y_mm": y_mm
+                },
+                "orientation": {"theta_deg": rz},
+                "bbox": detection.bbox
+            }
+
+            # Save result image to cam_1_result_manual.png
+            result_image_path = self.result_base_path / "cam_1_result_manual.png"
+            self.response_builder.save_result_image(
+                camera_id, result_image_path,
+                frame=frame,
+                detections=[detection],
+                tracking_results=[tracking_result],
+                apply_homography=False  # Already transformed
+            )
+
+            self.logger.info(
+                f"Camera 1 Manual: Detection result - "
+                f"position: ({x_mm:.2f}, {y_mm:.2f}) mm, yaw: {rz:.2f} deg"
+            )
+
+            response_data = {
+                "x": round(float(x_mm), 3),
+                "y": round(float(y_mm), 3),
+                "rz": round(float(rz), 3)
+            }
+
+            return self.protocol.create_response(
+                Command.START_CAM_1_MANUAL,
+                success=True,
+                data=response_data
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error in manual camera 1 detection: {e}")
+            import traceback
+            traceback.print_exc()
+            return self.protocol.create_response(
+                Command.START_CAM_1_MANUAL,
+                success=False,
+                error_code="MANUAL_CAM_ERROR",
+                error_desc=str(e)
+            )
+        finally:
+            # Ensure manual capture is released even on error
+            if manual_capture is not None:
+                try:
+                    manual_capture.release()
+                except Exception:
+                    pass
+
+    def _handle_manual_calc_result(self, request: Dict[str, Any]) -> bytes:
+        """Handle MANUAL CALC RESULT command (cmd: 9).
+
+        Calculates performance metrics for manual measurements from CSV data.
+
+        Request format:
+        {
+            "cmd": 9,
+            "path_csv": "path/to/manual_measurements.csv"
+        }
+
+        Response format:
+        {
+            "cmd": 9,
+            "success": bool,
+            "error_code": string (optional),
+            "error_desc": string (optional),
+            "data": { ... }
+        }
+
+        Error codes:
+        - MISSING_PARAM: path_csv parameter missing
+        - INVALID_PATH: Invalid file path format
+        - FILE_NOT_FOUND: CSV file not found
+        - INVALID_FORMAT: CSV file format error
+        - FILE_READ_ERROR: File read error
+        - INVALID_CSV_STRUCTURE: CSV structure error (missing required columns)
+        - INSUFFICIENT_DATA: Insufficient data for analysis
+        - OUTPUT_DIR_ERROR: Output directory creation/write error
+        - CALC_ERROR: Calculation error
+        """
+        import pandas as pd
+
+        try:
+            # 1. Validate required parameter
+            path_csv = request.get("path_csv")
+            if not path_csv:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="MISSING_PARAM",
+                    error_desc="path_csv 파라미터가 필요합니다. 분석할 CSV 파일 경로를 지정해주세요."
+                )
+
+            # 2. Validate path format
+            if not isinstance(path_csv, str) or len(path_csv.strip()) == 0:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="INVALID_PATH",
+                    error_desc="path_csv는 유효한 문자열 경로여야 합니다."
+                )
+
+            csv_path = Path(path_csv)
+
+            # 3. Validate file existence
+            if not csv_path.exists():
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="FILE_NOT_FOUND",
+                    error_desc=f"CSV 파일을 찾을 수 없습니다: {path_csv}"
+                )
+
+            # 4. Validate file format (extension)
+            if csv_path.suffix.lower() != '.csv':
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="INVALID_FORMAT",
+                    error_desc=f"CSV 파일만 지원됩니다. 제공된 파일: {csv_path.suffix}"
+                )
+
+            # 5. Validate output directory
+            output_dir = str(self.summary_base_path)
+            try:
+                output_path = Path(output_dir)
+                output_path.mkdir(parents=True, exist_ok=True)
+                # Write permission test
+                test_file = output_path / ".write_test"
+                test_file.touch()
+                test_file.unlink()
+            except PermissionError:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="OUTPUT_DIR_ERROR",
+                    error_desc=f"출력 디렉토리에 쓰기 권한이 없습니다: {output_dir}"
+                )
+            except Exception as e:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="OUTPUT_DIR_ERROR",
+                    error_desc=f"출력 디렉토리 접근 오류: {output_dir}, {str(e)}"
+                )
+
+            # 6. 분석 실행 (TrajectoryRepeatability와 동일 패턴)
+            try:
+                analyzer = ManualRepeatability(str(csv_path))
+                analyzer.run_analysis()
+            except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError, PermissionError) as e:
+                code = "INVALID_FORMAT" if isinstance(e, (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError)) else "FILE_READ_ERROR"
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code=code,
+                    error_desc=f"CSV 파일 읽기/파싱 오류: {str(e)}"
+                )
+            except ValueError as e:
+                msg = str(e)
+                if "필수 컬럼" in msg or "컬럼" in msg:
+                    return self.protocol.create_response(
+                        Command.MANUAL_CALC_RESULT,
+                        success=False,
+                        error_code="INVALID_CSV_STRUCTURE",
+                        error_desc=msg
+                    )
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="INSUFFICIENT_DATA",
+                    error_desc=msg
+                )
+            except Exception as e:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="CALC_ERROR",
+                    error_desc=f"분석 실행 중 오류: {str(e)}"
+                )
+
+            self.logger.info(f"Starting manual measurement analysis: {path_csv}")
+            self.logger.info(f"  Measurements: {analyzer.results['n_measurements']}")
+
+            # 7. 결과 저장 (CSV + PNG, TrajectoryRepeatability와 동일)
+            try:
+                result_csv_path = analyzer.save_results_to_csv(output_dir=output_dir)
+                result_png_path = analyzer.plot_results(output_dir=output_dir)
+            except Exception as e:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="OUTPUT_DIR_ERROR",
+                    error_desc=f"결과 저장 중 오류: {str(e)}"
+                )
+
+            self.logger.info(f"Manual (Cam1) measurement analysis completed. Results saved to {output_dir}")
+
+            # 8. 응답 데이터 준비 (모두 summary_base_path = C:\CMES_AI\Summary 에 저장됨)
+            r = analyzer.results
+            response_data = {
+                "n_measurements": r["n_measurements"],
+                "output_dir": output_dir,
+                "output_csv": result_csv_path,
+                "output_png": result_png_path,
+                "statistics": {
+                    "x": {
+                        "mean": round(r["x_mean"], 3),
+                        "std": round(r["x_std"], 3),
+                        "min": round(r["x_min"], 3),
+                        "max": round(r["x_max"], 3),
+                        "range": round(r["x_range"], 3),
+                        "repeatability_3sigma": round(r["x_repeatability"], 3)
+                    },
+                    "y": {
+                        "mean": round(r["y_mean"], 3),
+                        "std": round(r["y_std"], 3),
+                        "min": round(r["y_min"], 3),
+                        "max": round(r["y_max"], 3),
+                        "range": round(r["y_range"], 3),
+                        "repeatability_3sigma": round(r["y_repeatability"], 3)
+                    },
+                    "rz": {
+                        "mean": round(r["rz_mean"], 3),
+                        "std": round(r["rz_std"], 3),
+                        "min": round(r["rz_min"], 3),
+                        "max": round(r["rz_max"], 3),
+                        "range": round(r["rz_range"], 3),
+                        "repeatability_3sigma": round(r["rz_repeatability"], 3)
+                    }
+                }
+            }
+
+            return self.protocol.create_response(
+                Command.MANUAL_CALC_RESULT,
+                success=True,
+                data=response_data
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error in manual calculation: {e}")
+            import traceback
+            traceback.print_exc()
+            return self.protocol.create_response(
+                Command.MANUAL_CALC_RESULT,
+                success=False,
+                error_code="INTERNAL_ERROR",
+                error_desc=f"예상치 못한 내부 오류: {str(e)}"
+            )
+
     def _stop_all_cameras(self):
         """Stop all camera tracking."""
         self.logger.info("Stopping all cameras and tracking threads...")
