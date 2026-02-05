@@ -1092,7 +1092,7 @@ class VisionServer:
                     break
             
             # Get detector type and model path from detector config
-            detector_type = detector_config.get("detector_type", "yolo")
+            detector_type = detector_config.get("detector_type", "aruco")
             if camera_specific_configs_found:
                 self.logger.info(f"Detector config (fallback, camera-specific configs will be used): {detector_config}")
             else:
@@ -1482,7 +1482,7 @@ class VisionServer:
         
         # Get model_path from camera-specific or global config
         model_path = None
-        detector_type = detector_config.get("detector_type", "yolo")
+        detector_type = detector_config.get("detector_type", "aruco")
         if detector_type == "yolo":
             model_path_str = detector_config.get("model_path")
             if model_path_str:

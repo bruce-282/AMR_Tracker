@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 # SystemConfig removed - all configs loaded directly json and tracker_config files
-from src.core.detection import Detection, YOLODetector, BinaryDetector
+from src.core.detection import Detection, YOLODetector, BinaryDetector, ArUcoMarkerDetector
 from src.core.measurement.size_measurement import SizeMeasurement
 from src.core.tracking import KalmanTracker, MAX_FRAMES_LOST
 from src.visualization import Visualizer
@@ -161,9 +161,24 @@ class EnhancedAMRTracker:
                 adaptive_c=self.detector_config.get("adaptive_c", 2.0),
             )
             logger.info("Binary detector initialized")
+        elif self.detector_type == "aruco":
+            self.detector = ArUcoMarkerDetector(
+                marker_id=self.detector_config.get("marker_id", 0),
+                marker_size=self.detector_config.get("marker_size", 0.1),
+                dictionary=self.detector_config.get("dictionary", "DICT_4X4_50"),
+                min_marker_perimeter=self.detector_config.get("min_marker_perimeter", 0.0),
+                max_marker_perimeter=self.detector_config.get("max_marker_perimeter", 0.0),
+                class_name=self.detector_config.get("class_name", "aruco"),
+            )
+            logger.info(
+                "ArUco marker detector initialized (marker_id=%s, marker_size=%s, dictionary=%s)",
+                self.detector_config.get("marker_id", 0),
+                self.detector_config.get("marker_size", 0.1),
+                self.detector_config.get("dictionary", "DICT_4X4_50"),
+            )
         else:
             raise ValueError(
-                f"Unsupported detector type: {self.detector_type}. Supported types: 'yolo', 'binary'"
+                f"Unsupported detector type: {self.detector_type}. Supported types: 'yolo', 'binary', 'aruco'"
             )
 
         # Initialize tracker

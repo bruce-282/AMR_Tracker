@@ -413,7 +413,7 @@ class CameraManager:
         model_path_str = str(model_path) if model_path else None
         
         # Get detector_type from detector_config, default to "yolo"
-        detector_type = (detector_config or {}).get("detector_type", "yolo")
+        detector_type = (detector_config or {}).get("detector_type", "aruco")
         
         # Prepare calibration_config with homography from camera_manager (loaded from tracker_config)
         # Note: camera_height, calibration_image_size, and pixel_size are not actually used in SizeMeasurement

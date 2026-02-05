@@ -21,8 +21,9 @@ AMR_Tracker/
 │   ├── core/                        # 핵심 추적 시스템
 │   │   ├── amr_tracker.py           # EnhancedAMRTracker (통합 추적 시스템)
 │   │   ├── detection/               # 객체 감지 모듈
-│   │   │   ├── yolo_detector.py    # YOLO 기반 감지
-│   │   │   ├── binary_detector.py  # 이진화 기반 감지
+│   │   │   ├── yolo_detector.py     # YOLO 기반 감지
+│   │   │   ├── binary_detector.py   # 이진화 기반 감지
+│   │   │   ├── aruco_marker_detector.py  # ArUco 마커 감지 (단일 ID)
 │   │   │   └── detection.py        # Detection 클래스
 │   │   ├── tracking/                # 객체 추적 모듈
 │   │   │   ├── kalman_tracker.py   # 칼만 필터 추적
@@ -76,6 +77,10 @@ AMR_Tracker/
 - **이진화 기반**: Adaptive threshold를 활용한 객체 감지 (BinaryDetector)
   - 어두운 객체/밝은 객체 모두 지원
   - 조명 불균일 환경에 적합
+- **ArUco 마커**: 단일 마커 ID 검출 (ArUcoMarkerDetector)
+  - 마커 ID, 크기(mm), 딕셔너리(4x4 등) 설정 가능
+  - 영상당 하나의 마커만 존재하는 환경에 적합
+
 
 ## 🚀 사용 방법
 
@@ -129,6 +134,15 @@ detector = BinaryDetector(
     inverse=True  # True: 어두운 객체, False: 밝은 객체
 )
 detections = detector.detect(frame, frame_number, timestamp)
+
+# ArUco 마커 감지 (단일 ID)
+from src.core.detection import ArUcoMarkerDetector
+detector = ArUcoMarkerDetector(
+    marker_id=4,
+    marker_size=0.3,  # 300mm (m 단위)
+    dictionary="DICT_4X4_50"
+)
+detections = detector.detect(frame, frame_number, timestamp)
 ```
 
 ### 2. 추적 단계 (Tracking)
@@ -137,10 +151,10 @@ detections = detector.detect(frame, frame_number, timestamp)
 from src.core.amr_tracker import EnhancedAMRTracker
 
 tracker = EnhancedAMRTracker(
-    detector_type="yolo",  # 또는 "binary"
+    detector_type="yolo",  # "yolo" | "binary" | "aruco"
     detector_config={...},
-    tracking_config={...},
-    pixel_size=0.1,
+    tracker_config={...},
+    pixel_size={"x": 0.91, "y": 0.91, "average": 0.91},  # mm/pixel (dict 필수)
     fps=30.0
 )
 
@@ -169,47 +183,55 @@ height_mm = pixel_height * pixels_per_mm
 ## ⚙️ 설정 파일
 
 ### 제품 모델 설정 (config/zoom1.json)
+프리셋별로 카메라 소스와 설정 경로를 지정합니다.
 ```json
 {
-  "detector": {
-    "detector_type": "binary",
-    "threshold": 100,
-    "min_area": 700,
-    "width_height_ratio_min": 0.8,
-    "width_height_ratio_max": 1.2,
-    "mask_area_ratio": 0.9,
-    "inverse": true,
-    "use_adaptive": true,
-    "adaptive_block_size": 11,
-    "adaptive_c": 20.0
-  },
-  "tracker": {
-    "speed_threshold_pix_per_frame": 5.0,
-    "max_frames_lost": 500
-  },
   "execution": {
-    "use_preset": "video_tracking",
-    "image_undistortion": true,
-    "result_base_path": "C:/CMES_AI/Result",
-    "summary_base_path": "C:/CMES_AI/Summary",
-    "debug_base_path": "C:/CMES_AI/Debug"
+    "use_preset": "video_tracking"
+  },
+  "presets": {
+    "video_tracking": {
+      "loader_mode": "video",
+      "camera_1": {
+        "id": "data/251210_Test_videos/CAM1_3.mp4",
+        "config": "config/zoom1_aruco/cam1_config.json",
+        "tracker_config": "config/zoom1_aruco/cam1_tracker_config.json"
+      },
+      "camera_2": { "id": "data/251210_Test_videos/CAM2_3.mp4", ... },
+      "camera_3": { "id": "data/251210_Test_videos/CAM3_3.mp4", ... }
+    }
   }
 }
 ```
 
-### 모델 설정 (config/model_config.json)
+### 카메라별 트래커/감지 설정 (config/zoom1_aruco/cam1_tracker_config.json)
+각 카메라별 **detector**·**tracker**·**measurement** 설정. 감지기 타입에 따라 detector 블록이 달라집니다.
+- **YOLO**: `detector_type`, `model_path`, `confidence_threshold`, `imgsz`, `target_classes` 등
+- **Binary**: `detector_type`, `threshold`, `min_area`, `use_adaptive`, `adaptive_c` 등
+- **ArUco**: `detector_type`, `marker_id`, `marker_size`, `dictionary` 등
+
+ArUco 예시:
 ```json
 {
-  "model_list": ["zoom1", "zoom2"],
-  "selected_model": "zoom1"
+  "detector": {
+    "detector_type": "aruco",
+    "marker_id": 4,
+    "marker_size": 0.3,
+    "dictionary": "DICT_4X4_50",
+    "class_name": "aruco"
+  },
+  "tracker": { ... },
+  "measurement": { "PixelSize": {...}, "Homography": [...] }
 }
 ```
 
-### 카메라 설정 (config/camera1_config.json)
+### 카메라 보정 (config/zoom1_aruco/cam1_config.json)
 ```json
 {
-  "CameraMatrix": [[...], [...], [...]],
-  "DistortionCoefficients": [...]
+  "calibration": {
+    "CameraMatrix": [[...], [...], [...]],
+    "DistortionCoefficients": [...]
+  }
 }
 ```
 
@@ -294,23 +316,6 @@ uv pip install -e submodules/novitec_camera_module
 - **요약 데이터**: `C:/CMES_AI/Summary/`
 - **디버그 이미지**: `C:/CMES_AI/Debug/cam_{camera_id}_binary_debug.png` (BinaryDetector 사용 시)
 
-## 🎯 사용 사례
-
-### 1. 창고 자동화
-- AGV 위치 추적
-- 작업 효율성 분석
-- 충돌 방지 시스템
-
-### 2. 제조업
-- 로봇 팔 추적
-- 품질 검사 자동화
-- 생산 라인 모니터링
-
-### 3. 연구 개발
-- 로봇 동작 분석
-- 알고리즘 성능 평가
-- 데이터 수집
-
 ## 🛠️ 고급 설정
 
 ### 이진화 디텍터 튜닝
@@ -329,19 +334,36 @@ uv pip install -e submodules/novitec_camera_module
 ```
 
 ### 칼만 필터 튜닝
-칼만 필터 파라미터는 `config/zoom1.json`의 `tracker` 섹션에서 설정할 수 있습니다:
+칼만 필터 파라미터는 각 카메라의 **tracker_config** (예: `config/zoom1_aruco/cam1_tracker_config.json`)의 `tracker` 섹션에서 설정합니다.
 - `speed_threshold_pix_per_frame`: 속도 임계값
 - `max_frames_lost`: 최대 손실 프레임 수
 - `detection_loss_threshold_frames`: 감지 손실 임계값
 
-### 감지 임계값 조정
+### ArUco 마커 설정
 ```json
 {
   "detector": {
-    "min_area": 1000,              // 최소 객체 크기 (픽셀)
-    "width_height_ratio_min": 0.8,  // 최소 가로/세로 비율
-    "width_height_ratio_max": 1.2, // 최대 가로/세로 비율
-    "mask_area_ratio": 0.9         // 마스크/바운딩박스 비율
+    "detector_type": "aruco",
+    "marker_id": 4,
+    "marker_size": 0.3,
+    "dictionary": "DICT_4X4_50",
+    "min_marker_perimeter": 0.0,
+    "max_marker_perimeter": 0.0,
+    "class_name": "aruco"
+  }
+}
+```
+- **marker_size**: 물리 크기(m). 예: 300mm → 0.3
+- **min/max_marker_perimeter**: 픽셀 둘레 필터(0이면 미사용)
+
+### YOLO/이진화 감지 임계값
+```json
+{
+  "detector": {
+    "min_area": 1000,
+    "width_height_ratio_min": 0.8,
+    "width_height_ratio_max": 1.2,
+    "mask_area_ratio": 0.9
   }
 }
 ```
@@ -373,13 +395,6 @@ os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 이 프로젝트는 MIT 라이선스 하에 배포됩니다.
 
-## 🤝 기여하기
-
-버그 리포트, 기능 요청, 풀 리퀘스트를 환영합니다.
-
-## 📞 지원
-
-기술적 지원이나 질문이 있으시면 이슈를 생성해 주세요.
 
 ## 🔗 관련 문서
 

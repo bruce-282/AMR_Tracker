@@ -1,0 +1,76 @@
+{
+  "_comment": "Camera 1 specific detector, tracker, and measurement configuration",
+  "detector": {
+    "_comment": "ArUco marker detector parameters for Camera 1 (단일 마커 ID만 검출)",
+    "detector_type": "aruco",
+    "marker_id": 4,
+    "marker_size": 0.3,
+    "dictionary": "DICT_4X4_50",
+    "min_marker_perimeter": 0.0,
+    "max_marker_perimeter": 0.0,
+    "class_name": "aruco"
+  },
+  "tracker": {
+    "_comment": "Kalman tracker parameters for Camera 1 (정지 감지용)",
+    "speed_threshold_pix_per_frame": 5.0,
+    "_desc_speed_threshold": "AGV가 다시 움직이기 시작했다고 판단하는 속도 (pix/frame). 응답 전송 후 이 속도 초과 시 다음 카메라로 전환",
+    "speed_near_zero_threshold": 3.0,
+    "_desc_speed_near_zero": "AGV가 '정지'했다고 판단하는 속도 임계값 (pix/frame). 이 값 이하면 정지 상태",
+    "speed_zero_frames_threshold": 8,
+    "_desc_speed_zero_frames": "정지 판정에 필요한 연속 프레임 수. 이 프레임 동안 정지 상태 유지 시 응답 전송",
+    "detection_loss_threshold_frames": 30,
+    "_desc_detection_loss": "객체 검출 실패 허용 프레임 수. 이 프레임 이상 검출 실패 시 객체 lost 처리",
+    "max_frames_lost": 500,
+    "_desc_max_frames_lost": "트래커 유지 최대 프레임 수. 검출 없이 이 프레임 이상 경과 시 트래커 삭제",
+    "boundary_margin_ratio": 0.25,
+    "_desc_boundary_margin": "이미지 경계 마진 비율 (0.1 = 10%). 예측 위치가 이 마진 밖으로 나가면 트래커 리셋",
+    "kalman_measurement_noise_position": 1.0,
+    "_desc_kalman_measurement_noise_position": "칼만 필터 위치 측정 노이즈. 값이 클수록 측정값을 덜 신뢰하고 스무스해짐 (기본: 0.5, 정지용: 1.0~3.0)",
+    "kalman_measurement_noise_angle": 3.0,
+    "_desc_kalman_measurement_noise_angle": "칼만 필터 각도 측정 노이즈. 값이 클수록 각도 측정을 덜 신뢰 (기본: 5.0)",
+    "kalman_process_noise_position": 0.2,
+    "_desc_kalman_process_noise_position": "칼만 필터 위치 프로세스 노이즈. 값이 작을수록 모델 예측을 신뢰 (기본: 0.1)",
+    "kalman_process_noise_velocity": 0.02,
+    "_desc_kalman_process_noise_velocity": "칼만 필터 속도 프로세스 노이즈. 값이 작을수록 속도 변화 적음 (기본: 0.01)",
+    "enable_edge_refinement": true,
+    "_desc_enable_edge_refinement": "Edge 기반 박스 정밀화 활성화 여부. true면 검출된 박스를 edge 기반으로 보정",
+    "edge_search_range_px": 8,
+    "_desc_edge_search_range": "Edge 탐색 범위 (±픽셀). 각 side에서 이 범위 내에서 가장 강한 edge를 찾아 보정",
+    "step_mode": false,
+    "_desc_step_mode": "스텝 모드 활성화. true면 스페이스바를 누를 때마다 다음 프레임으로 진행 (디버깅용)"
+  },
+  "measurement": {
+    "_comment": "Camera 1 measurement parameters (pixel to mm conversion)",
+    "PixelSize": {
+      "x": 0.9151891503973449,
+      "y": 0.9119670867909506,
+      "average": 0.9135781185941478,
+      "unit": "mm/pixel"
+    },
+    "Homography": [
+      [
+        1.0258465625081181,
+        -0.027921839513738004,
+        -187.2260541985427
+      ],
+      [
+        0.06364779521066065,
+        0.9368432280435387,
+        -292.5437753879689
+      ],
+      [
+        4.509144301974005e-05,
+        1.1303759615830845e-06,
+        1.0
+      ]
+    ],
+    "WarpOffset": {
+      "x": 246.93431091308594,
+      "y": 292.54376220703125,
+      "margin": 0,
+      "unit": "pixel",
+      "_description": "호모그래피 warp 이미지 생성 시 적용된 오프셋. 첫 번째 점이 (0,0)이 아닌 적절한 위치에 오도록 조정"
+    }
+  }
+}
+
