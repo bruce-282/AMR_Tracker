@@ -14,6 +14,8 @@ class Command(IntEnum):
     START_CAM_3 = 5
     CALC_RESULT = 6
     NOTIFY_CONNECTION = 7
+    START_CAM_1_MANUAL = 8
+    MANUAL_CALC_RESULT = 9
 
 
 class ProtocolHandler:

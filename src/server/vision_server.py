@@ -1002,6 +1002,10 @@ class VisionServer:
                 return self._handle_start_cam(3, request)
             elif cmd == Command.CALC_RESULT:
                 return self._handle_calc_result(request)
+            elif cmd == Command.START_CAM_1_MANUAL:
+                return self._handle_start_cam_manual(request)
+            elif cmd == Command.MANUAL_CALC_RESULT:
+                return self._handle_manual_calc_result(request)
             else:
                 return self.protocol.create_response(
                     cmd or 0,
@@ -1814,9 +1818,485 @@ class VisionServer:
                 error_code="INTERNAL_ERROR",
                 error_desc=f"예상치 못한 내부 오류: {str(e)}"
             )
-    
-    
-    
+
+    def _handle_start_cam_manual(self, request: Dict[str, Any]) -> bytes:
+        """Handle START CAM 1 Manual command (cmd: 8).
+
+        Performs a single-shot detection on camera 1 and returns the result.
+        This command can be called at any time during the camera cycle.
+
+        Request format:
+        {
+            "cmd": 8
+        }
+
+        Response format:
+        {
+            "cmd": 8,
+            "success": bool,
+            "error_code": string (optional),
+            "error_desc": string (optional),
+            "data": {
+                "x": float,    # X position in mm
+                "y": float,    # Y position in mm
+                "rz": float    # Rotation angle in degrees
+            }
+        }
+
+        Error codes:
+        - VISION_NOT_ACTIVE: Vision system not started
+        - CAM_NOT_INITIALIZED: Camera 1 not initialized
+        - FRAME_READ_ERROR: Failed to read frame from camera
+        - DETECTION_FAILED: No object detected in frame
+        - MANUAL_CAM_ERROR: General error during manual detection
+        """
+        camera_id = 1
+
+        try:
+            if not self.vision_active:
+                return self.protocol.create_response(
+                    Command.START_CAM_1_MANUAL,
+                    success=False,
+                    error_code="VISION_NOT_ACTIVE",
+                    error_desc="Vision system not started. Call START VISION first."
+                )
+
+            # Ensure camera 1 is initialized
+            product_model_name = self.model_config.get_selected_model()
+            if not self._ensure_camera_initialized(camera_id, product_model_name):
+                return self.protocol.create_response(
+                    Command.START_CAM_1_MANUAL,
+                    success=False,
+                    error_code="CAM_NOT_INITIALIZED",
+                    error_desc="Failed to initialize camera 1"
+                )
+
+            # Read a single frame from camera 1
+            loader = self.camera_loaders.get(camera_id)
+            if loader is None:
+                return self.protocol.create_response(
+                    Command.START_CAM_1_MANUAL,
+                    success=False,
+                    error_code="CAM_NOT_INITIALIZED",
+                    error_desc="Camera 1 loader not available"
+                )
+
+            ret, frame = loader.read()
+            if not ret or frame is None:
+                return self.protocol.create_response(
+                    Command.START_CAM_1_MANUAL,
+                    success=False,
+                    error_code="FRAME_READ_ERROR",
+                    error_desc="Failed to read frame from camera 1"
+                )
+
+            # Perform detection using AMR tracker
+            amr_tracker = self.amr_trackers.get(camera_id)
+            if amr_tracker is None:
+                return self.protocol.create_response(
+                    Command.START_CAM_1_MANUAL,
+                    success=False,
+                    error_code="CAM_NOT_INITIALIZED",
+                    error_desc="Camera 1 tracker not available"
+                )
+
+            # Detect object in frame
+            detections = amr_tracker.detector.detect(frame)
+
+            if not detections:
+                return self.protocol.create_response(
+                    Command.START_CAM_1_MANUAL,
+                    success=False,
+                    error_code="DETECTION_FAILED",
+                    error_desc="No object detected in camera 1 frame"
+                )
+
+            detection = detections[0]
+
+            # Get tracking result using Kalman filter
+            tracking_result = None
+            if amr_tracker.tracker is not None:
+                # Update tracker with detection
+                center = detection.get_center()
+                orientation = detection.get_orientation()
+                amr_tracker.tracker.update(center, orientation)
+
+                state = amr_tracker.tracker.kf.statePost.flatten()
+                tracking_result = {
+                    "track_id": amr_tracker.track_id or 0,
+                    "position": {"x": state[0], "y": state[1]},
+                    "orientation": {"theta_normalized_deg": state[2]},
+                    "bbox": detection.bbox
+                }
+
+            # Apply homography transformation
+            homography = self.camera_manager.get_homography(camera_id)
+            if homography is not None:
+                frame = warp_frame_with_homography(frame, homography)
+                transformed_h, transformed_w = frame.shape[:2]
+
+                # Get edge refinement config
+                edge_config = self.camera_manager.get_edge_refinement_config(camera_id)
+                debug_base_path = getattr(self.response_builder, 'debug_base_path', None)
+
+                detection = transform_detection_with_homography(
+                    detection, homography,
+                    transformed_image_size=(transformed_w, transformed_h),
+                    frame=frame,
+                    debug_base_path=debug_base_path,
+                    camera_id=camera_id,
+                    enable_edge_refinement=edge_config["enable"],
+                    edge_search_range_px=edge_config["search_range_px"]
+                )
+
+                if tracking_result:
+                    tracking_result = transform_tracking_result_with_homography(tracking_result, homography)
+
+            # Calculate response data
+            pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
+
+            # Get position from detection's oriented_box_info or tracking_result
+            if (hasattr(detection, 'oriented_box_info') and
+                detection.oriented_box_info is not None and
+                "center" in detection.oriented_box_info):
+                center = detection.oriented_box_info["center"]
+                x_pix, y_pix = center[0], center[1]
+            elif tracking_result:
+                position = tracking_result.get("position", {})
+                x_pix = position.get("x", 0.0)
+                y_pix = position.get("y", 0.0)
+            else:
+                center = detection.get_center()
+                x_pix, y_pix = center[0], center[1]
+
+            x_mm = x_pix * pixel_size_dict['x']
+            y_mm = y_pix * pixel_size_dict['y']
+
+            # Get orientation
+            if (hasattr(detection, 'oriented_box_info') and
+                detection.oriented_box_info is not None and
+                "angle" in detection.oriented_box_info):
+                rz = detection.oriented_box_info["angle"]
+            elif tracking_result:
+                orientation = tracking_result.get("orientation", {})
+                rz = orientation.get("theta_normalized_deg", 0.0)
+            else:
+                rz = detection.get_orientation() or 0.0
+
+            # Save result image to cam_1_result_manual.png
+            result_image_path = self.result_base_path / "cam_1_result_manual.png"
+            self.response_builder.save_result_image(
+                camera_id, result_image_path,
+                frame=frame,
+                detections=[detection],
+                tracking_results=[tracking_result] if tracking_result else None,
+                apply_homography=False  # Already transformed
+            )
+
+            self.logger.info(
+                f"Camera 1 Manual: Detection result - "
+                f"position: ({x_mm:.2f}, {y_mm:.2f}) mm, yaw: {rz:.2f} deg"
+            )
+
+            response_data = {
+                "x": round(float(x_mm), 3),
+                "y": round(float(y_mm), 3),
+                "rz": round(float(rz), 3)
+            }
+
+            return self.protocol.create_response(
+                Command.START_CAM_1_MANUAL,
+                success=True,
+                data=response_data
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error in manual camera 1 detection: {e}")
+            import traceback
+            traceback.print_exc()
+            return self.protocol.create_response(
+                Command.START_CAM_1_MANUAL,
+                success=False,
+                error_code="MANUAL_CAM_ERROR",
+                error_desc=str(e)
+            )
+
+    def _handle_manual_calc_result(self, request: Dict[str, Any]) -> bytes:
+        """Handle MANUAL CALC RESULT command (cmd: 9).
+
+        Calculates performance metrics for manual measurements from CSV data.
+
+        Request format:
+        {
+            "cmd": 9,
+            "path_csv": "path/to/manual_measurements.csv"
+        }
+
+        Response format:
+        {
+            "cmd": 9,
+            "success": bool,
+            "error_code": string (optional),
+            "error_desc": string (optional),
+            "data": { ... }
+        }
+
+        Error codes:
+        - MISSING_PARAM: path_csv parameter missing
+        - INVALID_PATH: Invalid file path format
+        - FILE_NOT_FOUND: CSV file not found
+        - INVALID_FORMAT: CSV file format error
+        - FILE_READ_ERROR: File read error
+        - INVALID_CSV_STRUCTURE: CSV structure error (missing required columns)
+        - INSUFFICIENT_DATA: Insufficient data for analysis
+        - OUTPUT_DIR_ERROR: Output directory creation/write error
+        - CALC_ERROR: Calculation error
+        """
+        import pandas as pd
+
+        try:
+            # 1. Validate required parameter
+            path_csv = request.get("path_csv")
+            if not path_csv:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="MISSING_PARAM",
+                    error_desc="path_csv 파라미터가 필요합니다. 분석할 CSV 파일 경로를 지정해주세요."
+                )
+
+            # 2. Validate path format
+            if not isinstance(path_csv, str) or len(path_csv.strip()) == 0:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="INVALID_PATH",
+                    error_desc="path_csv는 유효한 문자열 경로여야 합니다."
+                )
+
+            csv_path = Path(path_csv)
+
+            # 3. Validate file existence
+            if not csv_path.exists():
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="FILE_NOT_FOUND",
+                    error_desc=f"CSV 파일을 찾을 수 없습니다: {path_csv}"
+                )
+
+            # 4. Validate file format (extension)
+            if csv_path.suffix.lower() != '.csv':
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="INVALID_FORMAT",
+                    error_desc=f"CSV 파일만 지원됩니다. 제공된 파일: {csv_path.suffix}"
+                )
+
+            # 5. Validate file readability
+            try:
+                df = pd.read_csv(str(csv_path))
+            except pd.errors.EmptyDataError:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="INVALID_FORMAT",
+                    error_desc=f"CSV 파일이 비어있습니다: {path_csv}"
+                )
+            except pd.errors.ParserError as e:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="INVALID_FORMAT",
+                    error_desc=f"CSV 파일 파싱 오류: {str(e)}"
+                )
+            except UnicodeDecodeError as e:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="INVALID_FORMAT",
+                    error_desc=f"CSV 파일 인코딩 오류 (UTF-8 권장): {str(e)}"
+                )
+            except PermissionError:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="FILE_READ_ERROR",
+                    error_desc=f"CSV 파일 읽기 권한이 없습니다: {path_csv}"
+                )
+            except Exception as e:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="FILE_READ_ERROR",
+                    error_desc=f"CSV 파일 읽기 오류: {str(e)}"
+                )
+
+            # 6. Validate CSV structure for manual measurements
+            # Manual CSV should have: x, y, rz columns
+            required_columns = ['x', 'y', 'rz']
+            missing_columns = [col for col in required_columns if col not in df.columns]
+
+            if missing_columns:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="INVALID_CSV_STRUCTURE",
+                    error_desc=f"CSV 파일에 필수 컬럼이 누락되었습니다: {', '.join(missing_columns)}. "
+                              f"필요한 컬럼: x, y, rz"
+                )
+
+            # 7. Validate data count (minimum 2 measurements needed)
+            n_measurements = len(df)
+            if n_measurements < 2:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="INSUFFICIENT_DATA",
+                    error_desc=f"반복정밀도 분석에는 최소 2개 이상의 측정 데이터가 필요합니다. 현재: {n_measurements}개"
+                )
+
+            # 8. Validate output directory
+            output_dir = str(self.summary_base_path)
+            try:
+                output_path = Path(output_dir)
+                output_path.mkdir(parents=True, exist_ok=True)
+                # Write permission test
+                test_file = output_path / ".write_test"
+                test_file.touch()
+                test_file.unlink()
+            except PermissionError:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="OUTPUT_DIR_ERROR",
+                    error_desc=f"출력 디렉토리에 쓰기 권한이 없습니다: {output_dir}"
+                )
+            except Exception as e:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="OUTPUT_DIR_ERROR",
+                    error_desc=f"출력 디렉토리 접근 오류: {output_dir}, {str(e)}"
+                )
+
+            self.logger.info(f"Starting manual measurement analysis: {path_csv}")
+            self.logger.info(f"  Measurements: {n_measurements}")
+
+            # 9. Calculate statistics
+            try:
+                x_values = df['x'].values
+                y_values = df['y'].values
+                rz_values = df['rz'].values
+
+                # Calculate mean
+                x_mean = float(np.mean(x_values))
+                y_mean = float(np.mean(y_values))
+                rz_mean = float(np.mean(rz_values))
+
+                # Calculate standard deviation
+                x_std = float(np.std(x_values, ddof=1))
+                y_std = float(np.std(y_values, ddof=1))
+                rz_std = float(np.std(rz_values, ddof=1))
+
+                # Calculate min/max
+                x_min, x_max = float(np.min(x_values)), float(np.max(x_values))
+                y_min, y_max = float(np.min(y_values)), float(np.max(y_values))
+                rz_min, rz_max = float(np.min(rz_values)), float(np.max(rz_values))
+
+                # Calculate range
+                x_range = x_max - x_min
+                y_range = y_max - y_min
+                rz_range = rz_max - rz_min
+
+                # Calculate repeatability (3 * std)
+                x_repeatability = 3 * x_std
+                y_repeatability = 3 * y_std
+                rz_repeatability = 3 * rz_std
+
+            except Exception as e:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="CALC_ERROR",
+                    error_desc=f"통계 계산 중 오류: {str(e)}"
+                )
+
+            # 10. Save results to CSV
+            try:
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                result_csv_path = output_path / f"manual_analysis_{timestamp}.csv"
+
+                result_df = pd.DataFrame({
+                    'metric': ['mean', 'std', 'min', 'max', 'range', 'repeatability_3sigma'],
+                    'x': [x_mean, x_std, x_min, x_max, x_range, x_repeatability],
+                    'y': [y_mean, y_std, y_min, y_max, y_range, y_repeatability],
+                    'rz': [rz_mean, rz_std, rz_min, rz_max, rz_range, rz_repeatability]
+                })
+                result_df.to_csv(str(result_csv_path), index=False)
+
+                self.logger.info(f"Manual analysis results saved to: {result_csv_path}")
+            except Exception as e:
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="OUTPUT_DIR_ERROR",
+                    error_desc=f"결과 저장 중 오류: {str(e)}"
+                )
+
+            self.logger.info(f"Manual measurement analysis completed.")
+
+            # 11. Prepare response data
+            response_data = {
+                "n_measurements": n_measurements,
+                "output_csv": str(result_csv_path),
+                "statistics": {
+                    "x": {
+                        "mean": round(x_mean, 3),
+                        "std": round(x_std, 3),
+                        "min": round(x_min, 3),
+                        "max": round(x_max, 3),
+                        "range": round(x_range, 3),
+                        "repeatability_3sigma": round(x_repeatability, 3)
+                    },
+                    "y": {
+                        "mean": round(y_mean, 3),
+                        "std": round(y_std, 3),
+                        "min": round(y_min, 3),
+                        "max": round(y_max, 3),
+                        "range": round(y_range, 3),
+                        "repeatability_3sigma": round(y_repeatability, 3)
+                    },
+                    "rz": {
+                        "mean": round(rz_mean, 3),
+                        "std": round(rz_std, 3),
+                        "min": round(rz_min, 3),
+                        "max": round(rz_max, 3),
+                        "range": round(rz_range, 3),
+                        "repeatability_3sigma": round(rz_repeatability, 3)
+                    }
+                }
+            }
+
+            return self.protocol.create_response(
+                Command.MANUAL_CALC_RESULT,
+                success=True,
+                data=response_data
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error in manual calculation: {e}")
+            import traceback
+            traceback.print_exc()
+            return self.protocol.create_response(
+                Command.MANUAL_CALC_RESULT,
+                success=False,
+                error_code="INTERNAL_ERROR",
+                error_desc=f"예상치 못한 내부 오류: {str(e)}"
+            )
+
     def _stop_all_cameras(self):
         """Stop all camera tracking."""
         self.logger.info("Stopping all cameras and tracking threads...")
