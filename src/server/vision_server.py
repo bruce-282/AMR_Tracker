@@ -1679,35 +1679,30 @@ class VisionServer:
                     error_desc=f"CSV 파일 읽기 오류: {str(e)}"
                 )
             
-            # 6. CSV 구조 검증 (필수 컬럼 확인)
-            required_columns_cam1 = ['cam_1_x', 'cam_1_y', 'cam_1_rz']
-            required_columns_cam3 = ['cam_3_x', 'cam_3_y', 'cam_3_rz']
-            required_columns_cam2_base = ['cam_2_x_0', 'cam_2_y_0', 'cam_2_rz_0']
-            
+            # 6. CSV 구조 검증 (필수 컬럼 확인). cam_1_x 또는 cam_1_x(mm) 형식 모두 허용
+            aliases_cam1 = [['cam_1_x', 'cam_1_y', 'cam_1_rz'], ['cam_1_x(mm)', 'cam_1_y(mm)', 'cam_1_rz(deg)']]
+            aliases_cam3 = [['cam_3_x', 'cam_3_y', 'cam_3_rz'], ['cam_3_x(mm)', 'cam_3_y(mm)', 'cam_3_rz(deg)']]
+            aliases_cam2 = [['cam_2_x_0', 'cam_2_y_0', 'cam_2_rz_0']]  # cam_2는 인덱스만 붙는 형식만 사용
+
+            def _has_columns(aliases_list):
+                return any(all(c in df.columns for c in group) for group in aliases_list)
+
             missing_columns = []
-            
-            # Camera 1 컬럼 확인
-            for col in required_columns_cam1:
-                if col not in df.columns:
-                    missing_columns.append(col)
-            
-            # Camera 3 컬럼 확인
-            for col in required_columns_cam3:
-                if col not in df.columns:
-                    missing_columns.append(col)
-            
-            # Camera 2 기본 컬럼 확인 (최소 waypoint 0)
-            for col in required_columns_cam2_base:
-                if col not in df.columns:
-                    missing_columns.append(col)
-            
+            if not _has_columns(aliases_cam1):
+                missing_columns.extend(aliases_cam1[0])
+            if not _has_columns(aliases_cam3):
+                missing_columns.extend(aliases_cam3[0])
+            if not _has_columns(aliases_cam2):
+                missing_columns.extend(aliases_cam2[0])
+
             if missing_columns:
                 return self.protocol.create_response(
                     Command.CALC_RESULT,
                     success=False,
                     error_code="INVALID_CSV_STRUCTURE",
                     error_desc=f"CSV 파일에 필수 컬럼이 누락되었습니다: {', '.join(missing_columns)}. "
-                              f"필요한 컬럼: cam_1_x/y/rz, cam_3_x/y/rz, cam_2_x/y/rz_0~N"
+                              f"필요한 컬럼: cam_1_x/y/rz (또는 cam_1_x(mm), cam_1_y(mm), cam_1_rz(deg)), "
+                              f"cam_3 동일, cam_2_x/y/rz_0~N"
                 )
             
             # 7. 데이터 양 검증 (최소 2개 trial 필요)

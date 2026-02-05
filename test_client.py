@@ -502,13 +502,13 @@ def main():
                 else:
                     # use_area_scan=false: client does NOT send requests, only waits for periodic responses
                     logger.info("\n[INFO] use_area_scan=false: Waiting for responses from server...")
-                    logger.info("  [INFO] Server will send responses automatically (1→2→3→1→2→3...)")
-                    logger.info(f"  [INFO] Waiting for {args.cycles} cycles, then sending END_VISION")
+                    logger.info("  [INFO] 1 cycle = 1 camera response (cmd 3/4/5). Server sends 1→2→3→1→2→3...")
+                    logger.info(f"  [INFO] Waiting for {args.cycles} cycle(s), then sending END_VISION")
 
-                    # Wait for cycles: 1→2→3→1→2→3
+                    # 1 cycle = 1 camera response (any of cmd 3, 4, 5). --cycles N → exit after N responses.
                     cycles_to_complete = args.cycles
                     cycle_count = 0
-                    response_count = {3: 0, 4: 0, 5: 0}  # Track responses for cmd 3, 4, 5
+                    response_count = {3: 0, 4: 0, 5: 0}  # cam1, cam2, cam3
 
                     client.socket.settimeout(None)  # No timeout
                     buffer = b""
@@ -587,13 +587,9 @@ def main():
                                                 )
 
                                                 response_count[cmd] += 1
-
-                                                # Check if we completed a cycle (received 1, 2, 3 in sequence)
-                                                # A cycle is complete when we have equal counts for all cameras
-                                                min_count = min(response_count[3], response_count[4], response_count[5])
-                                                if min_count > cycle_count:
-                                                    cycle_count = min_count
-                                                    logger.info(f"\n[INFO] === Cycle {cycle_count}/{cycles_to_complete} completed ===")
+                                                # 1사이클 = 카메라 응답 1건 (cmd 3/4/5 중 하나). --cycles N → N건 수신 시 종료
+                                                #cycle_count = response_count[3] + response_count[4] + response_count[5]
+                                                logger.info(f"\n[INFO] === Cycle {cycle_count}/{cycles_to_complete} (cam1={response_count[3]}, cam2={response_count[4]}, cam3={response_count[5]}) ===")
 
                                                 # Remove processed JSON from buffer
                                                 buffer = text[json_end:].encode('utf-8')
@@ -603,6 +599,8 @@ def main():
 
                                             json_start = -1
                                             json_end = -1
+
+                                cycle_count+=1
 
                                 if cycle_count >= cycles_to_complete:
                                     break

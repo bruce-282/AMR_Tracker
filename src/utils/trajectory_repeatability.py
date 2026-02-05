@@ -896,16 +896,24 @@ class ManualRepeatability:
         self.results["theta_errors"] = theta_errors
 
     def save_results_to_csv(self, output_dir: str) -> str:
-        """cam1_measurements.csv와 동일 컬럼으로 저장: Trial, X(mm), Y(mm), Theta(deg), Position_Error(mm), Theta_Error(deg)."""
+        """cam1_measurements.csv와 동일 컬럼으로 저장. 전체 행 기록 유지, 무효 행은 Position_Error/Theta_Error만 NaN."""
         r = self.results
-        n = r["n_measurements"]
+        n_total = len(self.df)
+        valid = self._valid_mask_xy_rz()
+        # 유효 행만 계산된 에러 → 전체 길이 배열로 (무효 행은 NaN)
+        position_errors_full = np.full(n_total, np.nan, dtype=float)
+        position_errors_full[valid] = r["position_errors"]
+        theta_errors_full = np.full(n_total, np.nan, dtype=float)
+        theta_errors_full[valid] = r["theta_errors"]
+        # X, Y, Theta(deg): 원본 df 전체 (rz는 rad → deg 변환)
+        theta_deg_full = np.rad2deg(self.df["rz"].astype(float)) if "rz" in self.df.columns else np.full(n_total, np.nan)
         cam1_manual_measurements = pd.DataFrame({
-            "Trial": range(n),
-            "X(mm)": r["x_values"],
-            "Y(mm)": r["y_values"],
-            "Theta(deg)": r["theta_deg"],
-            "Position_Error(mm)": r["position_errors"],
-            "Theta_Error(deg)": r["theta_errors"],
+            "Trial": range(n_total),
+            "X(mm)": self.df["x"].values,
+            "Y(mm)": self.df["y"].values,
+            "Theta(deg)": theta_deg_full,
+            "Position_Error(mm)": position_errors_full,
+            "Theta_Error(deg)": theta_errors_full,
         })
         path = f"{output_dir}/cam1_manual_measurements.csv"
         cam1_manual_measurements.to_csv(path, index=False)
@@ -913,49 +921,75 @@ class ManualRepeatability:
         return path
 
     def plot_results(self, output_dir: str) -> str:
-        """반복정밀도 그래프 저장. 반환: 저장된 PNG 경로. (cam1_measurements / repeatability_analysis와 일관된 이름)"""
+        """반복정밀도 그래프 저장 (Position + Yaw 포함, Cam1/Cam3와 동일하게). 반환: 저장된 PNG 경로."""
         r = self.results
         n = r["n_measurements"]
         x_v, y_v = r["x_values"], r["y_values"]
+        theta_deg = r["theta_deg"]  # Yaw (deg)
         x_mean, y_mean = r["x_mean"], r["y_mean"]
         x_std, y_std = r["x_std"], r["y_std"]
-        x_rep, y_rep = r["x_repeatability"], r["y_repeatability"]
+        mean_theta_deg = _circular_mean_deg(theta_deg)
+        sigma_theta = np.std(_angular_diff_deg(theta_deg, mean_theta_deg), ddof=1)
+        # Cam1/Cam3와 동일하게 σ(표준편차)만 표시 (3σ 아님)
+        sigma_2d = np.std(np.sqrt((x_v - x_mean) ** 2 + (y_v - y_mean) ** 2), ddof=1)
 
-        fig = plt.figure(figsize=(14, 5))
+        fig = plt.figure(figsize=(14, 10))
 
-        ax1 = plt.subplot(1, 3, 1)
+        # 1) Position scatter (Cam1/Cam3와 동일: σ_2D)
+        ax1 = plt.subplot(2, 2, 1)
         ax1.scatter(x_v, y_v, alpha=0.6, s=50, c="blue")
         ax1.plot(x_mean, y_mean, "r*", markersize=15, label="Mean")
         ax1.axhline(y_mean, color="gray", linestyle="--", alpha=0.5)
         ax1.axvline(x_mean, color="gray", linestyle="--", alpha=0.5)
         ax1.set_xlabel("X (mm)")
         ax1.set_ylabel("Y (mm)")
-        ax1.set_title(f"Cam1 Manual Position\n(n={n}, 3σ_x={x_rep:.2f}, 3σ_y={y_rep:.2f} mm)")
+        ax1.set_title(f"Cam1 Manual Position\n(n={n}, σ_2D={sigma_2d:.4f} mm)")
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         ax1.axis("equal")
 
-        ax2 = plt.subplot(1, 3, 2)
+        # 2) X distribution (Cam1/Cam3 스타일: ±σ)
+        ax2 = plt.subplot(2, 2, 2)
         ax2.hist(x_v, bins=min(20, max(1, n // 2)), alpha=0.7, color="blue", edgecolor="black")
         ax2.axvline(x_mean, color="r", linestyle="--", linewidth=2, label=f"Mean={x_mean:.2f}")
-        ax2.axvline(x_mean - 3 * x_std, color="orange", linestyle=":", alpha=0.8)
-        ax2.axvline(x_mean + 3 * x_std, color="orange", linestyle=":", alpha=0.8, label=f"±3σ={x_rep:.2f} mm")
+        ax2.axvline(x_mean - x_std, color="orange", linestyle=":", alpha=0.8)
+        ax2.axvline(x_mean + x_std, color="orange", linestyle=":", alpha=0.8, label=f"±σ={x_std:.4f} mm")
         ax2.set_xlabel("X (mm)")
         ax2.set_ylabel("Frequency")
         ax2.set_title("X Distribution")
         ax2.legend()
         ax2.grid(True, alpha=0.3)
 
-        ax3 = plt.subplot(1, 3, 3)
+        # 3) Y distribution (±σ)
+        ax3 = plt.subplot(2, 2, 3)
         ax3.hist(y_v, bins=min(20, max(1, n // 2)), alpha=0.7, color="green", edgecolor="black")
         ax3.axvline(y_mean, color="r", linestyle="--", linewidth=2, label=f"Mean={y_mean:.2f}")
-        ax3.axvline(y_mean - 3 * y_std, color="orange", linestyle=":", alpha=0.8)
-        ax3.axvline(y_mean + 3 * y_std, color="orange", linestyle=":", alpha=0.8, label=f"±3σ={y_rep:.2f} mm")
+        ax3.axvline(y_mean - y_std, color="orange", linestyle=":", alpha=0.8)
+        ax3.axvline(y_mean + y_std, color="orange", linestyle=":", alpha=0.8, label=f"±σ={y_std:.4f} mm")
         ax3.set_xlabel("Y (mm)")
         ax3.set_ylabel("Frequency")
         ax3.set_title("Y Distribution")
         ax3.legend()
         ax3.grid(True, alpha=0.3)
+
+        # 4) Yaw (θ) 반복정밀도 - Cam1/Cam3와 동일 (σ_θ, ±σ)
+        ax4 = plt.subplot(2, 2, 4)
+        trials = np.arange(len(theta_deg))
+        ax4.scatter(trials, theta_deg, alpha=0.6, s=50, c="green")
+        ax4.axhline(mean_theta_deg, color="r", linestyle="--", linewidth=2, label=f"Mean={mean_theta_deg:.2f}°")
+        ax4.fill_between(
+            trials,
+            mean_theta_deg - sigma_theta,
+            mean_theta_deg + sigma_theta,
+            alpha=0.2,
+            color="red",
+            label=f"±σ={sigma_theta:.4f}°",
+        )
+        ax4.set_xlabel("Trial")
+        ax4.set_ylabel("Yaw (deg)")
+        ax4.set_title(f"Cam1 Manual Yaw Repeatability\nσ_θ={sigma_theta:.4f}°")
+        ax4.legend(loc="upper right", fontsize=8)
+        ax4.grid(True, alpha=0.3)
 
         plt.tight_layout()
         fig_path = f"{output_dir}/cam1_manual_repeatability_analysis.png"
