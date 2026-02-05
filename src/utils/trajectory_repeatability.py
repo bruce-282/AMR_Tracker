@@ -12,6 +12,12 @@ import argparse
 class TrajectoryRepeatability:
     """궤적 및 정지 위치 반복정밀도 분석"""
 
+    # Cam1/Cam3 위치·각도 컬럼 그룹 (이 중 NaN 또는 0.0인 행은 계산에서 제외)
+    _POSITION_COLUMN_GROUPS = [
+        ["cam_1_x(mm)", "cam_1_y(mm)", "cam_1_rz(deg)"],
+        ["cam_3_x(mm)", "cam_3_y(mm)", "cam_3_rz(deg)"],
+    ]
+
     def __init__(self, csv_path: str):
         """
         CSV 파일을 로드합니다.
@@ -22,6 +28,7 @@ class TrajectoryRepeatability:
         Note:
             CSV 파일의 일부 행이 헤더보다 많은 컬럼을 가질 수 있습니다.
             이 경우 헤더에 정의된 컬럼 수만큼만 읽습니다.
+            cam_1_x, cam_1_y, cam_1_rz(및 cam_3 동일) 값이 NaN 또는 0.0인 행은 계산에서 제외합니다.
         """
         # 먼저 헤더만 읽어서 컬럼 수 확인
         try:
@@ -45,6 +52,19 @@ class TrajectoryRepeatability:
             print(f"✓ {n_cols}개 컬럼만 로드 완료")
 
         self.results = {}
+
+    def _valid_mask_for_columns(self, cols: List[str]) -> np.ndarray:
+        """지정한 컬럼들에 대해 NaN·0.0이 아닌 행만 True. (행은 삭제하지 않고, 계산 시에만 사용.)"""
+        if not all(c in self.df.columns for c in cols):
+            return np.ones(len(self.df), dtype=bool)
+        mask = np.ones(len(self.df), dtype=bool)
+        for c in cols:
+            try:
+                vals = pd.to_numeric(self.df[c], errors="coerce")
+            except Exception:
+                vals = self.df[c]
+            mask &= pd.notna(vals) & (np.asarray(vals, dtype=float) != 0.0)
+        return mask
 
     def circular_mean(self, angles_deg: np.ndarray) -> float:
         """각도의 circular mean 계산 (degree 단위)"""
@@ -104,10 +124,11 @@ class TrajectoryRepeatability:
     def analyze_static_position(
         self, cam_name: str, x_col: str, y_col: str, theta_col: str
     ) -> Dict:
-        """정지 위치 반복정밀도 계산 (Cam1, Cam3)"""
-        x_data = self.df[x_col].values
-        y_data = self.df[y_col].values
-        theta_data = self.df[theta_col].values
+        """정지 위치 반복정밀도 계산 (Cam1, Cam3). NaN·0.0 행은 기록은 유지하고 평균/편차 계산에서만 제외."""
+        valid = self._valid_mask_for_columns([x_col, y_col, theta_col])
+        x_data = self.df.loc[valid, x_col].astype(float).values
+        y_data = self.df.loc[valid, y_col].astype(float).values
+        theta_data = self.df.loc[valid, theta_col].astype(float).values
 
         # 평균 위치
         x_mean = np.mean(x_data)
@@ -432,15 +453,25 @@ class TrajectoryRepeatability:
         cam2_detailed_df.to_csv(cam2_detailed_path, index=False)
         print(f"[Cam2 Detailed CSV 저장] {cam2_detailed_path}")
 
-        # 3. Cam1 & Cam3 개별 측정값 (선택사항)
+        # 3. Cam1 & Cam3 개별 측정값 (전체 행 기록 유지, 무효 행은 Position_Error/Theta_Error만 NaN)
+        valid_cam1 = self._valid_mask_for_columns(["cam_1_x(mm)", "cam_1_y(mm)", "cam_1_rz(deg)"])
+        valid_cam3 = self._valid_mask_for_columns(["cam_3_x(mm)", "cam_3_y(mm)", "cam_3_rz(deg)"])
+        pos_err_cam1 = np.full(len(self.df), np.nan, dtype=float)
+        pos_err_cam1[valid_cam1] = cam1["position_errors"]
+        theta_err_cam1 = np.full(len(self.df), np.nan, dtype=float)
+        theta_err_cam1[valid_cam1] = cam1["theta_errors"]
+        pos_err_cam3 = np.full(len(self.df), np.nan, dtype=float)
+        pos_err_cam3[valid_cam3] = cam3["position_errors"]
+        theta_err_cam3 = np.full(len(self.df), np.nan, dtype=float)
+        theta_err_cam3[valid_cam3] = cam3["theta_errors"]
         cam1_measurements = pd.DataFrame(
             {
                 "Trial": range(len(self.df)),
                 "X(mm)": self.df["cam_1_x(mm)"],
                 "Y(mm)": self.df["cam_1_y(mm)"],
                 "Theta(deg)": self.df["cam_1_rz(deg)"],
-                "Position_Error(mm)": cam1["position_errors"],
-                "Theta_Error(deg)": cam1["theta_errors"],
+                "Position_Error(mm)": pos_err_cam1,
+                "Theta_Error(deg)": theta_err_cam1,
             }
         )
         cam1_measurements_path = f"{output_dir}/cam1_measurements.csv"
@@ -453,8 +484,8 @@ class TrajectoryRepeatability:
                 "X(mm)": self.df["cam_3_x(mm)"],
                 "Y(mm)": self.df["cam_3_y(mm)"],
                 "Theta(deg)": self.df["cam_3_rz(deg)"],
-                "Position_Error(mm)": cam3["position_errors"],
-                "Theta_Error(deg)": cam3["theta_errors"],
+                "Position_Error(mm)": pos_err_cam3,
+                "Theta_Error(deg)": theta_err_cam3,
             }
         )
         cam3_measurements_path = f"{output_dir}/cam3_measurements.csv"
@@ -506,11 +537,13 @@ class TrajectoryRepeatability:
                 return 1
             return min(max_bins, max(1, len(data) // 5))
 
-        # Row 1: Position Repeatability
+        # Row 1: Position Repeatability (스캐터는 통계와 동일하게 유효 행만 표시)
+        valid_cam1 = self._valid_mask_for_columns(["cam_1_x(mm)", "cam_1_y(mm)", "cam_1_rz(deg)"])
+        valid_cam3 = self._valid_mask_for_columns(["cam_3_x(mm)", "cam_3_y(mm)", "cam_3_rz(deg)"])
         # Cam1 Position scatter plot
         ax1 = plt.subplot(2, 4, 1)
-        x_data = self.df["cam_1_x(mm)"].values
-        y_data = self.df["cam_1_y(mm)"].values
+        x_data = self.df.loc[valid_cam1, "cam_1_x(mm)"].astype(float).values
+        y_data = self.df.loc[valid_cam1, "cam_1_y(mm)"].astype(float).values
         ax1.scatter(x_data, y_data, alpha=0.6, s=50, c="blue")
         ax1.plot(
             cam1_data["mean_x"], cam1_data["mean_y"], "r*", markersize=15, label="Mean"
@@ -524,8 +557,8 @@ class TrajectoryRepeatability:
 
         # Cam3 Position scatter plot
         ax2 = plt.subplot(2, 4, 2)
-        x_data = self.df["cam_3_x(mm)"].values
-        y_data = self.df["cam_3_y(mm)"].values
+        x_data = self.df.loc[valid_cam3, "cam_3_x(mm)"].astype(float).values
+        y_data = self.df.loc[valid_cam3, "cam_3_y(mm)"].astype(float).values
         ax2.scatter(x_data, y_data, alpha=0.6, s=50, c="blue")
         ax2.plot(
             cam3_data["mean_x"], cam3_data["mean_y"], "r*", markersize=15, label="Mean"
@@ -596,7 +629,7 @@ class TrajectoryRepeatability:
         # Row 2: Yaw (θ) Repeatability
         # Cam1 Yaw scatter plot (Trial vs Theta)
         ax5 = plt.subplot(2, 4, 5)
-        theta_data_cam1 = self.df["cam_1_rz(deg)"].values
+        theta_data_cam1 = self.df.loc[valid_cam1, "cam_1_rz(deg)"].astype(float).values
         trials = np.arange(len(theta_data_cam1))
         ax5.scatter(trials, theta_data_cam1, alpha=0.6, s=50, c="green")
         ax5.axhline(
@@ -622,7 +655,7 @@ class TrajectoryRepeatability:
 
         # Cam3 Yaw scatter plot (Trial vs Theta)
         ax6 = plt.subplot(2, 4, 6)
-        theta_data_cam3 = self.df["cam_3_rz(deg)"].values
+        theta_data_cam3 = self.df.loc[valid_cam3, "cam_3_rz(deg)"].astype(float).values
         trials = np.arange(len(theta_data_cam3))
         ax6.scatter(trials, theta_data_cam3, alpha=0.6, s=50, c="green")
         ax6.axhline(
@@ -775,28 +808,57 @@ def _angular_diff_deg(angles_deg: np.ndarray, ref_deg: float) -> np.ndarray:
 class ManualRepeatability:
     """Cam1 수동 측정 반복정밀도 분석 (x, y, rz CSV). cam1_measurements.csv와 동일 형식으로 저장."""
 
+    # 수동 측정 raw CSV 형식 (cam_1_x(mm), cam_1_y(mm), cam_1_rz(deg)) → x, y, rz(rad) 매핑
+    COLUMN_ALIASES = [
+        (["x", "y", "rz"], None),  # rz 단위: rad
+        (["cam_1_x(mm)", "cam_1_y(mm)", "cam_1_rz(deg)"], "deg"),  # rz 단위: deg → rad 변환
+    ]
+
     def __init__(self, csv_path: str):
         """
-        CSV 파일을 로드합니다. 필수 컬럼: x, y, rz (rz 단위: rad).
+        CSV 파일을 로드합니다. 필수 컬럼: x, y, rz (rz 단위: rad)
+        또는 cam_1_x(mm), cam_1_y(mm), cam_1_rz(deg) (rz 단위: deg).
 
         Args:
             csv_path: CSV 파일 경로
         """
         self.df = pd.read_csv(csv_path)
         required = ["x", "y", "rz"]
+        if all(c in self.df.columns for c in required):
+            self.results = {}
+            return
+        # 대체 컬럼명 지원: cam_1_x(mm), cam_1_y(mm), cam_1_rz(deg) 등
+        for cols, rz_unit in self.COLUMN_ALIASES:
+            if cols == ["x", "y", "rz"]:
+                continue
+            if all(c in self.df.columns for c in cols):
+                self.df = self.df.rename(columns={cols[0]: "x", cols[1]: "y", cols[2]: "rz"})
+                if rz_unit == "deg":
+                    self.df["rz"] = np.deg2rad(self.df["rz"])
+                self._rz_unit = rz_unit or "rad"
+                self.results = {}
+                return
         missing = [c for c in required if c not in self.df.columns]
-        if missing:
-            raise ValueError(f"CSV에 필수 컬럼이 없습니다: {missing}")
-        self.results = {}
+        raise ValueError(f"CSV에 필수 컬럼이 없습니다: {missing}. 지원 형식: x,y,rz(rad) 또는 cam_1_x(mm),cam_1_y(mm),cam_1_rz(deg)")
+
+    def _valid_mask_xy_rz(self) -> np.ndarray:
+        """x, y, rz 중 NaN·0.0이 아닌 행만 True. (행은 삭제하지 않고, 평균/편차 계산 시에만 사용.)"""
+        valid = self.df["x"].notna() & self.df["y"].notna() & self.df["rz"].notna()
+        xv = pd.to_numeric(self.df["x"], errors="coerce")
+        yv = pd.to_numeric(self.df["y"], errors="coerce")
+        zv = pd.to_numeric(self.df["rz"], errors="coerce")
+        valid &= (xv != 0.0) & (yv != 0.0) & (zv != 0.0)
+        return valid.values
 
     def run_analysis(self) -> None:
-        """통계 계산 및 cam1_measurements 형식용 Position_Error, Theta_Error 계산."""
-        x = self.df["x"].values
-        y = self.df["y"].values
-        rz = self.df["rz"].values
+        """통계 계산 및 cam1_measurements 형식용 Position_Error, Theta_Error 계산. NaN·0.0 행은 기록은 유지하고 평균/편차 계산에서만 제외."""
+        valid = self._valid_mask_xy_rz()
+        x = self.df.loc[valid, "x"].astype(float).values
+        y = self.df.loc[valid, "y"].astype(float).values
+        rz = self.df.loc[valid, "rz"].astype(float).values
         n = len(x)
         if n < 2:
-            raise ValueError("최소 2개 이상의 측정값이 필요합니다.")
+            raise ValueError("최소 2개 이상의 측정값이 필요합니다. (NaN·0.0 제외 후 유효 행이 2개 미만입니다.)")
 
         x_mean = float(np.mean(x))
         y_mean = float(np.mean(y))

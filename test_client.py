@@ -251,12 +251,16 @@ class VisionClient:
         return response
 
 
+# 기본 CSV 경로: MANUAL CALC RESULT(c) 테스트 시 사용
+DEFAULT_MANUAL_CALC_CSV = "data/20260205-100429_zoom1_start_cam_1_manual_raw_data.csv"
+
+
 def run_interactive_mode(client, logger):
     """Run interactive mode with keyboard input for manual commands.
 
     Keyboard commands:
       m - START CAM 1 Manual (single-shot detection)
-      c - MANUAL CALC RESULT (calculate from CSV)
+      c - MANUAL CALC RESULT (calculate from CSV, path: DEFAULT_MANUAL_CALC_CSV)
       q - Quit interactive mode
     """
     import threading
@@ -392,27 +396,10 @@ def run_interactive_mode(client, logger):
                     logger.error(f"Error sending manual camera command: {e}")
 
             elif cmd_input == 'c':
-                # MANUAL CALC RESULT
-                with measurements_lock:
-                    measurement_count = len(manual_measurements)
-
-                if measurement_count == 0:
-                    logger.warning("No manual measurements stored. Use 'm' to collect measurements first.")
-                    csv_path = input("Or enter CSV path (empty to cancel): ").strip()
-                    if not csv_path:
-                        continue
-                else:
-                    # Save measurements to CSV
-                    import pandas as pd
-                    with measurements_lock:
-                        df = pd.DataFrame(manual_measurements)
-                    manual_csv_path.parent.mkdir(parents=True, exist_ok=True)
-                    df.to_csv(str(manual_csv_path), index=False)
-                    logger.info(f"[INFO] Saved {measurement_count} measurements to {manual_csv_path}")
-                    csv_path = str(manual_csv_path)
-
+                # MANUAL CALC RESULT (cmd: 9) - 테스트용 고정 CSV 경로 사용
+                csv_path = DEFAULT_MANUAL_CALC_CSV
                 # Send request, listener handles response
-                logger.info(f"[INPUT] Sending MANUAL CALC RESULT for: {csv_path}")
+                logger.info(f"[INPUT] Sending MANUAL CALC RESULT (cmd 9) for: {csv_path}")
                 try:
                     request = {"cmd": 9, "path_csv": csv_path}
                     request_json = json.dumps(request)

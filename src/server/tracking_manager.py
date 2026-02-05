@@ -506,15 +506,17 @@ class TrackingManager:
                     f"x_pix={x_pix:.1f}, y_pix={y_pix:.1f}"
                 )
                 
-                trajectory_index = len(self.camera2_trajectory)
-                self.camera2_trajectory.append({
-                    "track_idx": trajectory_index,
-                    "x": round(float(x_mm), 3),
-                    "y": round(float(y_mm), 3),
-                    "rz": round(float(rz_deg), 3),
-                    "x_pix": round(float(x_pix), 1),
-                    "y_pix": round(float(y_pix), 1)
-                })
+                # 미초기화/리셋 직후 (0,0) 위치는 trajectory에 넣지 않음
+                if x_pix != 0 or y_pix != 0:
+                    trajectory_index = len(self.camera2_trajectory)
+                    self.camera2_trajectory.append({
+                        "track_idx": trajectory_index,
+                        "x": round(float(x_mm), 3),
+                        "y": round(float(y_mm), 3),
+                        "rz": round(float(rz_deg), 3),
+                        "x_pix": round(float(x_pix), 1),
+                        "y_pix": round(float(y_pix), 1)
+                    })
         
         # Check if detection lost
         # Only increment detection loss after first detection has occurred

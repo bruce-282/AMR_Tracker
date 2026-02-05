@@ -143,15 +143,25 @@ class ArUcoMarkerDetector:
                 return []
 
             poly_xy = corner_pts.astype(np.float32).tolist()
-            rect = cv2.minAreaRect(corner_pts.astype(np.float32))
-            center, (rw, rh), angle = rect
-            box_points = cv2.boxPoints(rect).astype(np.float32)
-            if rh > rw:
-                normalized_angle = angle - 90
-                long_axis, short_axis = rh, rw
+            # ArUco corners are already 4 points (TL, TR, BR, BL); use them directly (no minAreaRect)
+            pts = corner_pts.astype(np.float32)
+            center = np.mean(pts, axis=0)
+            # Edge lengths: [0-1]=top, [1-2]=right, [2-3]=bottom, [3-0]=left
+            e01 = float(np.linalg.norm(pts[1] - pts[0]))
+            e12 = float(np.linalg.norm(pts[2] - pts[1]))
+            e23 = float(np.linalg.norm(pts[3] - pts[2]))
+            e30 = float(np.linalg.norm(pts[0] - pts[3]))
+            width_avg = (e01 + e23) * 0.5
+            height_avg = (e12 + e30) * 0.5
+            # Angle from top edge (pts[0] -> pts[1])
+            top_vec = pts[1] - pts[0]
+            angle_deg = float(np.degrees(np.arctan2(top_vec[1], top_vec[0])))
+            if height_avg > width_avg:
+                long_axis, short_axis = height_avg, width_avg
+                normalized_angle = angle_deg - 90
             else:
-                normalized_angle = angle
-                long_axis, short_axis = rw, rh
+                long_axis, short_axis = width_avg, height_avg
+                normalized_angle = angle_deg
             while normalized_angle > 90:
                 normalized_angle -= 180
             while normalized_angle < -90:
@@ -163,7 +173,7 @@ class ArUcoMarkerDetector:
                 "height": short_axis,
                 "angle": normalized_angle,
                 "angle_rad": np.deg2rad(normalized_angle),
-                "box_points": box_points,
+                "box_points": pts,
             }
 
             detection = Detection(

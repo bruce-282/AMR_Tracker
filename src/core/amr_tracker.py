@@ -279,7 +279,6 @@ class EnhancedAMRTracker:
         if timestamp is None:
             timestamp = time.time()
 
-        # YOLO detection using YOLODetector
         detections = self.detector.detect(
             image=frame, frame_number=frame_number, timestamp=timestamp
         )

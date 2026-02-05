@@ -355,25 +355,31 @@ class KalmanTracker:
             
             iou_score = iou((bbox[0], bbox[1], bbox[0]+bbox[2], bbox[1]+bbox[3]), (predicted_cx-bbox[2]/2, predicted_cy-bbox[3]/2, predicted_cx+bbox[2]/2, predicted_cy+bbox[3]/2))
 
-            logger.info(f"measured_cx: {measured_cx}, measured_cy: {measured_cy}, predicted_cx: {predicted_cx}, predicted_cy: {predicted_cy}")
-            # if iou_score > 0.5:
-            #     use_measurement = True
-            # else:
-            #     use_measurement = False
-            #     self.use_prediction_only = True
-            #     logger.warning(
-            #             f"Track {self.track_id}: IoU score too low "
-            #             f"({iou_score:.1f}), using prediction only"
-            #     )
-                
-                
+            logger.debug(
+                f"measured_cx: {measured_cx}, measured_cy: {measured_cy}, "
+                f"predicted_cx: {predicted_cx}, predicted_cy: {predicted_cy}, iou={iou_score:.3f}"
+            )
+
             use_measurement = True
             if self.last_center is not None:
-                # Check if measured center jumped too much from predicted position
-                if iou_score < 0.5:
+                if iou_score < 0.05:
+                    # IoU 거의 0: 예측과 측정이 완전히 어긋남(카메라 전환/트래크 이탈 등) → 측정으로 재초기화
+                    logger.info(
+                        f"Track {self.track_id}: IoU very low ({iou_score:.3f}), "
+                        f"re-initializing with measurement ({measured_cx:.1f}, {measured_cy:.1f})"
+                    )
+                    self.initialize_with_detection(
+                        center=(measured_cx, measured_cy),
+                        angle=theta if theta is not None else predicted_theta
+                    )
+                    cx = measured_cx
+                    cy = measured_cy
+                    theta_value = theta if theta is not None else predicted_theta
+                    self.use_prediction_only = False
+                elif iou_score < 0.4:
+                    # IoU 낮음: 노이즈나 일시 이탈로 간주 → 이 프레임만 예측 사용
                     logger.warning(
-                        f"Track {self.track_id}: IoU score too low "
-                        f"({iou_score:.1f}), using prediction only"
+                        f"Track {self.track_id}: IoU score low ({iou_score:.2f}), using prediction only"
                     )
                     use_measurement = False
                     cx = predicted_cx
@@ -382,23 +388,22 @@ class KalmanTracker:
                     self.use_prediction_only = True
                     self.frames_since_detection += 1
                     if self.is_lost(max_frames_lost=self.max_frames_lost):
-                        logger.info(f"Track {self.track_id} is lost (frames={self.frames_since_detection} >= {self.max_frames_lost}), resetting")
+                        logger.info(
+                            f"Track {self.track_id} is lost (frames={self.frames_since_detection} "
+                            f">= {self.max_frames_lost}), resetting"
+                        )
                         self.reset()
                 else:
-                    # Normal detection - measurement is valid, return to normal mode
                     cx = measured_cx
                     cy = measured_cy
                     theta_value = theta_value
                     self.last_center = (cx, cy)
-                    use_measurement = True
                     self.use_prediction_only = False
             else:
-                # First frame - always use measurement to initialize
                 cx = measured_cx
                 cy = measured_cy
                 theta_value = theta_value
                 self.last_center = (cx, cy)
-                use_measurement = True
                 self.use_prediction_only = False
             
             # # Use velocity-based corrected position if measurement is unreliable
@@ -537,7 +542,9 @@ class KalmanTracker:
                         "reset_required": True,
                     }
             
-            self.trajectory.append((pred_cx, pred_cy))
+            # 리셋 직후 Kalman 상태가 (0,0)이면 예측값이 (0,0)이 되므로 trajectory에 넣지 않음
+            if pred_cx != 0 or pred_cy != 0:
+                self.trajectory.append((pred_cx, pred_cy))
             
             logger.debug(
                 f"Track {self.track_id} prediction only: pos=({pred_cx:.1f}, {pred_cy:.1f})"

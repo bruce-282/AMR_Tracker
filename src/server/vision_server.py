@@ -87,6 +87,8 @@ class VisionServer:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
             self.logger.setLevel(logging.DEBUG)
+        # 중복 출력 방지: root로 전파되지 않도록 (main.py basicConfig와 이 로거가 둘 다 출력하던 문제)
+        self.logger.propagate = False
         
         # Log configuration will be set after config is loaded
         self.log_base_path = None
@@ -659,15 +661,17 @@ class VisionServer:
                     f"x_pix={x_pix:.1f}, y_pix={y_pix:.1f}"
                 )
 
-                trajectory_index = len(self.camera2_trajectory)
-                # Store pixel coordinates only - mm values will be calculated after homography transformation
-                self.camera2_trajectory.append({
-                    "track_idx": trajectory_index,
-                    "x_pix": round(float(x_pix), 1),  # Store pixel coords for homography transformation
-                    "y_pix": round(float(y_pix), 1),  # Store pixel coords for homography transformation
-                    "rz": round(float(rz_deg), 3)
-                    # x, y (mm) will be calculated after homography transformation in _send_camera2_trajectory
-                })
+                # 미초기화/리셋 직후 (0,0) 위치는 trajectory에 넣지 않음 (track_idx 0~3, 99 등 0으로 채워지는 현상 방지)
+                if x_pix != 0 or y_pix != 0:
+                    trajectory_index = len(self.camera2_trajectory)
+                    # Store pixel coordinates only - mm values will be calculated after homography transformation
+                    self.camera2_trajectory.append({
+                        "track_idx": trajectory_index,
+                        "x_pix": round(float(x_pix), 1),  # Store pixel coords for homography transformation
+                        "y_pix": round(float(y_pix), 1),  # Store pixel coords for homography transformation
+                        "rz": round(float(rz_deg), 3)
+                        # x, y (mm) will be calculated after homography transformation in _send_camera2_trajectory
+                    })
 
         # Check if detection lost
         if not has_detection:
@@ -1822,9 +1826,10 @@ class VisionServer:
     def _handle_start_cam_manual(self, request: Dict[str, Any]) -> bytes:
         """Handle START CAM 1 Manual command (cmd: 8).
 
-        Performs a single-shot detection on camera 1 using INDEPENDENT frame capture.
-        This command can be called at any time during the camera cycle without
-        interfering with the ongoing tracking process.
+        Performs a single-shot detection on camera 1. Uses the latest frame from the
+        CAM1 tracking loop (tracking_manager.last_frames[1]) when available, so manual
+        measurement is taken on the same frame stream as START CAM 1. Falls back to
+        an independent capture only if no frame has been stored yet.
 
         Request format:
         {
@@ -1863,44 +1868,44 @@ class VisionServer:
                     error_desc="Vision system not started. Call START VISION first."
                 )
 
-            # Get camera configuration
-            product_model_name = self.model_config.get_selected_model()
-            try:
-                loader_mode, source, fps, config_path = self.camera_manager.get_camera_config(
-                    camera_id, product_model_name
-                )
-            except Exception as e:
-                return self.protocol.create_response(
-                    Command.START_CAM_1_MANUAL,
-                    success=False,
-                    error_code="CAM_NOT_INITIALIZED",
-                    error_desc=f"Failed to get camera 1 config: {e}"
-                )
-
-            # Create INDEPENDENT frame capture (separate from tracking)
-            self.logger.info(f"Camera 1 Manual: Opening independent capture from {source}")
-            manual_capture = cv2.VideoCapture(source)
-            if not manual_capture.isOpened():
-                return self.protocol.create_response(
-                    Command.START_CAM_1_MANUAL,
-                    success=False,
-                    error_code="FRAME_READ_ERROR",
-                    error_desc=f"Failed to open camera 1 source: {source}"
-                )
-
-            # Read a single frame from independent capture
-            ret, frame = manual_capture.read()
-            if not ret or frame is None:
-                return self.protocol.create_response(
-                    Command.START_CAM_1_MANUAL,
-                    success=False,
-                    error_code="FRAME_READ_ERROR",
-                    error_desc="Failed to read frame from camera 1"
-                )
-
-            # Release capture immediately after reading
-            manual_capture.release()
-            manual_capture = None
+            # 우선 CAM1 트래킹 루프에서 갱신 중인 최신 프레임 사용 (별도 캡처 없음)
+            frame = self.tracking_manager.last_frames.get(camera_id)
+            if frame is not None:
+                frame = frame.copy()
+                self.logger.info("Camera 1 Manual: Using latest frame from tracking loop (CAM1 START)")
+            else:
+                # 트래킹이 아직 한 프레임도 안 돌았을 때만 별도 캡처
+                product_model_name = self.model_config.get_selected_model()
+                try:
+                    loader_mode, source, fps, config_path = self.camera_manager.get_camera_config(
+                        camera_id, product_model_name
+                    )
+                except Exception as e:
+                    return self.protocol.create_response(
+                        Command.START_CAM_1_MANUAL,
+                        success=False,
+                        error_code="CAM_NOT_INITIALIZED",
+                        error_desc=f"Failed to get camera 1 config: {e}"
+                    )
+                self.logger.info(f"Camera 1 Manual: No tracking frame yet, opening capture from {source}")
+                manual_capture = cv2.VideoCapture(source)
+                if not manual_capture.isOpened():
+                    return self.protocol.create_response(
+                        Command.START_CAM_1_MANUAL,
+                        success=False,
+                        error_code="FRAME_READ_ERROR",
+                        error_desc=f"Failed to open camera 1 source: {source}"
+                    )
+                ret, frame = manual_capture.read()
+                manual_capture.release()
+                manual_capture = None
+                if not ret or frame is None:
+                    return self.protocol.create_response(
+                        Command.START_CAM_1_MANUAL,
+                        success=False,
+                        error_code="FRAME_READ_ERROR",
+                        error_desc="Failed to read frame from camera 1"
+                    )
 
             # Get detector from AMR tracker (detector is stateless, thread-safe)
             amr_tracker = self.amr_trackers.get(camera_id)
