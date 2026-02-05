@@ -1979,13 +1979,26 @@ class VisionServer:
             else:
                 rz = detection.get_orientation() or 0.0
 
+            # Create tracking_result for visualization (with mm coordinates)
+            tracking_result = {
+                "track_id": 0,
+                "position": {
+                    "x": x_pix,
+                    "y": y_pix,
+                    "x_mm": x_mm,
+                    "y_mm": y_mm
+                },
+                "orientation": {"theta_deg": rz},
+                "bbox": detection.bbox
+            }
+
             # Save result image to cam_1_result_manual.png
             result_image_path = self.result_base_path / "cam_1_result_manual.png"
             self.response_builder.save_result_image(
                 camera_id, result_image_path,
                 frame=frame,
                 detections=[detection],
-                tracking_results=None,
+                tracking_results=[tracking_result],
                 apply_homography=False  # Already transformed
             )
 
