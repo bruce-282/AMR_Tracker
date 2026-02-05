@@ -259,8 +259,6 @@ def run_interactive_mode(client, logger):
       c - MANUAL CALC RESULT (calculate from CSV)
       q - Quit interactive mode
     """
-    import select
-    import sys
     import threading
 
     logger.info("\n" + "=" * 60)
@@ -270,15 +268,17 @@ def run_interactive_mode(client, logger):
     logger.info("  q : Quit interactive mode")
     logger.info("=" * 60)
 
-    # Storage for manual measurements
+    # Storage for manual measurements (shared with listener thread)
     manual_measurements = []
     manual_csv_path = Path("data/manual_measurements.csv")
+    measurements_lock = threading.Lock()
 
     # Flag to stop the response listener thread
     stop_listener = threading.Event()
 
     def response_listener():
-        """Background thread to receive and log server responses."""
+        """Background thread to receive and log ALL server responses."""
+        nonlocal manual_measurements
         buffer = b""
         client.socket.settimeout(0.5)  # Short timeout for checking stop flag
 
@@ -294,7 +294,9 @@ def run_interactive_mode(client, logger):
                 brace_count = 0
                 json_start = -1
 
-                for i, char in enumerate(text):
+                i = 0
+                while i < len(text):
+                    char = text[i]
                     if char == '{':
                         if brace_count == 0:
                             json_start = i
@@ -309,20 +311,48 @@ def run_interactive_mode(client, logger):
                                 cmd = response.get("cmd")
 
                                 if cmd == 7:  # NOTIFY_CONNECTION
-                                    logger.info(f"[NOTIFY_CONNECTION] {json.dumps(response, indent=2)}")
+                                    logger.info(f"\n[NOTIFY_CONNECTION] {json.dumps(response, indent=2)}")
                                 elif cmd in [3, 4, 5]:  # Camera responses
-                                    logger.info(f"[CAM {cmd-2}] {json.dumps(response, indent=2)}")
+                                    logger.info(f"\n[CAM {cmd-2}] {json.dumps(response, indent=2)}")
                                 elif cmd == 8:  # Manual camera response
-                                    logger.info(f"[MANUAL CAM 1] {json.dumps(response, indent=2)}")
+                                    logger.info(f"\n[MANUAL CAM 1] {json.dumps(response, indent=2)}")
+                                    if response.get("success"):
+                                        data = response.get("data", {})
+                                        x = data.get("x", 0)
+                                        y = data.get("y", 0)
+                                        rz = data.get("rz", 0)
+                                        logger.info(f"  [OK] Manual Detection: x={x:.3f}mm, y={y:.3f}mm, rz={rz:.3f}deg")
+                                        # Store measurement
+                                        with measurements_lock:
+                                            manual_measurements.append({"x": x, "y": y, "rz": rz})
+                                            logger.info(f"  [INFO] Stored measurement #{len(manual_measurements)}")
+                                    else:
+                                        logger.error(f"  [FAIL] {response.get('error_code')}: {response.get('error_desc')}")
                                 elif cmd == 9:  # Manual calc result
-                                    logger.info(f"[MANUAL CALC] {json.dumps(response, indent=2)}")
+                                    logger.info(f"\n[MANUAL CALC] {json.dumps(response, indent=2)}")
+                                    if response.get("success"):
+                                        data = response.get("data", {})
+                                        stats = data.get("statistics", {})
+                                        logger.info(f"  [OK] Analysis completed for {data.get('n_measurements')} measurements")
+                                        if stats:
+                                            for axis in ['x', 'y', 'rz']:
+                                                s = stats.get(axis, {})
+                                                logger.info(f"    {axis}: mean={s.get('mean', 0):.3f}, std={s.get('std', 0):.3f}, "
+                                                          f"range={s.get('range', 0):.3f}, 3σ={s.get('repeatability_3sigma', 0):.3f}")
+                                    else:
+                                        logger.error(f"  [FAIL] {response.get('error_code')}: {response.get('error_desc')}")
                                 else:
-                                    logger.info(f"[CMD {cmd}] {json.dumps(response, indent=2)}")
+                                    logger.info(f"\n[CMD {cmd}] {json.dumps(response, indent=2)}")
 
-                                buffer = text[json_end:].encode('utf-8')
+                                # Remove processed JSON from buffer and reset
+                                text = text[json_end:]
+                                buffer = text.encode('utf-8')
+                                i = -1  # Reset index for new text
+                                json_start = -1
                             except json.JSONDecodeError:
                                 pass
                             json_start = -1
+                    i += 1
 
             except socket.timeout:
                 continue
@@ -335,10 +365,13 @@ def run_interactive_mode(client, logger):
     listener_thread = threading.Thread(target=response_listener, daemon=True)
     listener_thread.start()
 
+    logger.info("\n[INFO] Listener started. Server responses will be displayed automatically.")
+    logger.info("[INFO] You can send commands at any time.\n")
+
     try:
         while True:
             try:
-                cmd_input = input("\nEnter command (m/c/q): ").strip().lower()
+                cmd_input = input("Enter command (m/c/q): ").strip().lower()
             except EOFError:
                 break
 
@@ -347,61 +380,23 @@ def run_interactive_mode(client, logger):
                 break
 
             elif cmd_input == 'm':
-                # START CAM 1 Manual
-                logger.info("\n[INPUT] Sending START CAM 1 Manual...")
+                # START CAM 1 Manual - just send request, listener handles response
+                logger.info("[INPUT] Sending START CAM 1 Manual...")
                 try:
-                    # Send request directly (bypass send_request to avoid blocking)
                     request = {"cmd": 8}
                     request_json = json.dumps(request)
                     client.socket.sendall(request_json.encode('utf-8'))
                     logger.info(f"Request sent: {request_json}")
-
-                    # Wait briefly for response
-                    time.sleep(0.5)
-
-                    # Try to read response
-                    client.socket.settimeout(5.0)
-                    try:
-                        response_data = b""
-                        while True:
-                            chunk = client.socket.recv(4096)
-                            if not chunk:
-                                break
-                            response_data += chunk
-                            # Try to parse
-                            try:
-                                text = response_data.decode('utf-8')
-                                # Find cmd:8 response
-                                if '"cmd": 8' in text or '"cmd":8' in text:
-                                    response = json.loads(text)
-                                    if response.get("cmd") == 8:
-                                        logger.info(f"Response: {json.dumps(response, indent=2)}")
-                                        if response.get("success"):
-                                            data = response.get("data", {})
-                                            x = data.get("x", 0)
-                                            y = data.get("y", 0)
-                                            rz = data.get("rz", 0)
-                                            logger.info(f"  [OK] Manual Detection: x={x:.3f}mm, y={y:.3f}mm, rz={rz:.3f}deg")
-
-                                            # Store measurement
-                                            manual_measurements.append({"x": x, "y": y, "rz": rz})
-                                            logger.info(f"  [INFO] Stored measurement #{len(manual_measurements)}")
-                                        else:
-                                            logger.error(f"  [FAIL] {response.get('error_code')}: {response.get('error_desc')}")
-                                        break
-                            except json.JSONDecodeError:
-                                continue
-                    except socket.timeout:
-                        logger.warning("Timeout waiting for manual camera response")
-                    finally:
-                        client.socket.settimeout(0.5)
-
+                    logger.info("[INFO] Waiting for response from listener...")
                 except Exception as e:
                     logger.error(f"Error sending manual camera command: {e}")
 
             elif cmd_input == 'c':
                 # MANUAL CALC RESULT
-                if not manual_measurements:
+                with measurements_lock:
+                    measurement_count = len(manual_measurements)
+
+                if measurement_count == 0:
                     logger.warning("No manual measurements stored. Use 'm' to collect measurements first.")
                     csv_path = input("Or enter CSV path (empty to cancel): ").strip()
                     if not csv_path:
@@ -409,56 +404,27 @@ def run_interactive_mode(client, logger):
                 else:
                     # Save measurements to CSV
                     import pandas as pd
-                    df = pd.DataFrame(manual_measurements)
+                    with measurements_lock:
+                        df = pd.DataFrame(manual_measurements)
                     manual_csv_path.parent.mkdir(parents=True, exist_ok=True)
                     df.to_csv(str(manual_csv_path), index=False)
-                    logger.info(f"  [INFO] Saved {len(manual_measurements)} measurements to {manual_csv_path}")
+                    logger.info(f"[INFO] Saved {measurement_count} measurements to {manual_csv_path}")
                     csv_path = str(manual_csv_path)
 
-                logger.info(f"\n[INPUT] Sending MANUAL CALC RESULT for: {csv_path}")
+                # Send request, listener handles response
+                logger.info(f"[INPUT] Sending MANUAL CALC RESULT for: {csv_path}")
                 try:
                     request = {"cmd": 9, "path_csv": csv_path}
                     request_json = json.dumps(request)
                     client.socket.sendall(request_json.encode('utf-8'))
                     logger.info(f"Request sent: {request_json}")
-
-                    # Wait for response
-                    time.sleep(0.5)
-                    client.socket.settimeout(5.0)
-                    try:
-                        response_data = b""
-                        while True:
-                            chunk = client.socket.recv(4096)
-                            if not chunk:
-                                break
-                            response_data += chunk
-                            try:
-                                text = response_data.decode('utf-8')
-                                if '"cmd": 9' in text or '"cmd":9' in text:
-                                    response = json.loads(text)
-                                    if response.get("cmd") == 9:
-                                        logger.info(f"Response: {json.dumps(response, indent=2)}")
-                                        if response.get("success"):
-                                            data = response.get("data", {})
-                                            stats = data.get("statistics", {})
-                                            logger.info(f"  [OK] Analysis completed for {data.get('n_measurements')} measurements")
-                                            if stats:
-                                                for axis in ['x', 'y', 'rz']:
-                                                    s = stats.get(axis, {})
-                                                    logger.info(f"    {axis}: mean={s.get('mean', 0):.3f}, std={s.get('std', 0):.3f}, "
-                                                              f"range={s.get('range', 0):.3f}, 3σ={s.get('repeatability_3sigma', 0):.3f}")
-                                        else:
-                                            logger.error(f"  [FAIL] {response.get('error_code')}: {response.get('error_desc')}")
-                                        break
-                            except json.JSONDecodeError:
-                                continue
-                    except socket.timeout:
-                        logger.warning("Timeout waiting for calc result response")
-                    finally:
-                        client.socket.settimeout(0.5)
-
+                    logger.info("[INFO] Waiting for response from listener...")
                 except Exception as e:
                     logger.error(f"Error sending calc result command: {e}")
+
+            elif cmd_input == '':
+                # Empty input, just continue
+                continue
 
             else:
                 logger.warning(f"Unknown command: '{cmd_input}'. Use m/c/q")
