@@ -1822,8 +1822,9 @@ class VisionServer:
     def _handle_start_cam_manual(self, request: Dict[str, Any]) -> bytes:
         """Handle START CAM 1 Manual command (cmd: 8).
 
-        Performs a single-shot detection on camera 1 and returns the result.
-        This command can be called at any time during the camera cycle.
+        Performs a single-shot detection on camera 1 using INDEPENDENT frame capture.
+        This command can be called at any time during the camera cycle without
+        interfering with the ongoing tracking process.
 
         Request format:
         {
@@ -1851,6 +1852,7 @@ class VisionServer:
         - MANUAL_CAM_ERROR: General error during manual detection
         """
         camera_id = 1
+        manual_capture = None
 
         try:
             if not self.vision_active:
@@ -1861,27 +1863,33 @@ class VisionServer:
                     error_desc="Vision system not started. Call START VISION first."
                 )
 
-            # Ensure camera 1 is initialized
+            # Get camera configuration
             product_model_name = self.model_config.get_selected_model()
-            if not self._ensure_camera_initialized(camera_id, product_model_name):
+            try:
+                loader_mode, source, fps, config_path = self.camera_manager.get_camera_config(
+                    camera_id, product_model_name
+                )
+            except Exception as e:
                 return self.protocol.create_response(
                     Command.START_CAM_1_MANUAL,
                     success=False,
                     error_code="CAM_NOT_INITIALIZED",
-                    error_desc="Failed to initialize camera 1"
+                    error_desc=f"Failed to get camera 1 config: {e}"
                 )
 
-            # Read a single frame from camera 1
-            loader = self.camera_loaders.get(camera_id)
-            if loader is None:
+            # Create INDEPENDENT frame capture (separate from tracking)
+            self.logger.info(f"Camera 1 Manual: Opening independent capture from {source}")
+            manual_capture = cv2.VideoCapture(source)
+            if not manual_capture.isOpened():
                 return self.protocol.create_response(
                     Command.START_CAM_1_MANUAL,
                     success=False,
-                    error_code="CAM_NOT_INITIALIZED",
-                    error_desc="Camera 1 loader not available"
+                    error_code="FRAME_READ_ERROR",
+                    error_desc=f"Failed to open camera 1 source: {source}"
                 )
 
-            ret, frame = loader.read()
+            # Read a single frame from independent capture
+            ret, frame = manual_capture.read()
             if not ret or frame is None:
                 return self.protocol.create_response(
                     Command.START_CAM_1_MANUAL,
@@ -1890,20 +1898,30 @@ class VisionServer:
                     error_desc="Failed to read frame from camera 1"
                 )
 
-            # Perform detection using AMR tracker
+            # Release capture immediately after reading
+            manual_capture.release()
+            manual_capture = None
+
+            # Get detector from AMR tracker (detector is stateless, thread-safe)
             amr_tracker = self.amr_trackers.get(camera_id)
-            if amr_tracker is None:
+            if amr_tracker is None or amr_tracker.detector is None:
+                # Fallback: try to create detector from config
                 return self.protocol.create_response(
                     Command.START_CAM_1_MANUAL,
                     success=False,
                     error_code="CAM_NOT_INITIALIZED",
-                    error_desc="Camera 1 tracker not available"
+                    error_desc="Camera 1 detector not available"
                 )
 
-            # Detect object in frame
+            # Detect object in frame (detector.detect is stateless)
             detections = amr_tracker.detector.detect(frame)
 
             if not detections:
+                # Save debug image even on failure
+                debug_image_path = self.result_base_path / "cam_1_result_manual_no_detection.png"
+                cv2.imwrite(str(debug_image_path), frame)
+                self.logger.warning(f"No detection - debug image saved to {debug_image_path}")
+
                 return self.protocol.create_response(
                     Command.START_CAM_1_MANUAL,
                     success=False,
@@ -1913,21 +1931,9 @@ class VisionServer:
 
             detection = detections[0]
 
-            # Get tracking result using Kalman filter
+            # NOTE: We do NOT update the Kalman tracker here to keep manual measurement
+            # completely independent from the tracking process
             tracking_result = None
-            if amr_tracker.tracker is not None:
-                # Update tracker with detection
-                center = detection.get_center()
-                orientation = detection.get_orientation()
-                amr_tracker.tracker.update(center, orientation)
-
-                state = amr_tracker.tracker.kf.statePost.flatten()
-                tracking_result = {
-                    "track_id": amr_tracker.track_id or 0,
-                    "position": {"x": state[0], "y": state[1]},
-                    "orientation": {"theta_normalized_deg": state[2]},
-                    "bbox": detection.bbox
-                }
 
             # Apply homography transformation
             homography = self.camera_manager.get_homography(camera_id)
@@ -1949,22 +1955,15 @@ class VisionServer:
                     edge_search_range_px=edge_config["search_range_px"]
                 )
 
-                if tracking_result:
-                    tracking_result = transform_tracking_result_with_homography(tracking_result, homography)
-
             # Calculate response data
             pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
 
-            # Get position from detection's oriented_box_info or tracking_result
+            # Get position from detection's oriented_box_info
             if (hasattr(detection, 'oriented_box_info') and
                 detection.oriented_box_info is not None and
                 "center" in detection.oriented_box_info):
                 center = detection.oriented_box_info["center"]
                 x_pix, y_pix = center[0], center[1]
-            elif tracking_result:
-                position = tracking_result.get("position", {})
-                x_pix = position.get("x", 0.0)
-                y_pix = position.get("y", 0.0)
             else:
                 center = detection.get_center()
                 x_pix, y_pix = center[0], center[1]
@@ -1977,9 +1976,6 @@ class VisionServer:
                 detection.oriented_box_info is not None and
                 "angle" in detection.oriented_box_info):
                 rz = detection.oriented_box_info["angle"]
-            elif tracking_result:
-                orientation = tracking_result.get("orientation", {})
-                rz = orientation.get("theta_normalized_deg", 0.0)
             else:
                 rz = detection.get_orientation() or 0.0
 
@@ -1989,7 +1985,7 @@ class VisionServer:
                 camera_id, result_image_path,
                 frame=frame,
                 detections=[detection],
-                tracking_results=[tracking_result] if tracking_result else None,
+                tracking_results=None,
                 apply_homography=False  # Already transformed
             )
 
@@ -2020,6 +2016,13 @@ class VisionServer:
                 error_code="MANUAL_CAM_ERROR",
                 error_desc=str(e)
             )
+        finally:
+            # Ensure manual capture is released even on error
+            if manual_capture is not None:
+                try:
+                    manual_capture.release()
+                except Exception:
+                    pass
 
     def _handle_manual_calc_result(self, request: Dict[str, Any]) -> bytes:
         """Handle MANUAL CALC RESULT command (cmd: 9).
