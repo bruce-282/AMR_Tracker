@@ -26,7 +26,7 @@ from src.core.detection import YOLODetector, Detection
 from src.core.tracking import KalmanTracker
 from src.core.amr_tracker import EnhancedAMRTracker
 from src.utils.sequence_loader import create_sequence_loader, BaseLoader
-from src.utils.trajectory_repeatability import TrajectoryRepeatability
+from src.utils.trajectory_repeatability import TrajectoryRepeatability, ManualRepeatability
 from src.utils.config_loader import (
     load_product_model_config,
     get_camera_config,
@@ -2110,70 +2110,7 @@ class VisionServer:
                     error_desc=f"CSV 파일만 지원됩니다. 제공된 파일: {csv_path.suffix}"
                 )
 
-            # 5. Validate file readability
-            try:
-                df = pd.read_csv(str(csv_path))
-            except pd.errors.EmptyDataError:
-                return self.protocol.create_response(
-                    Command.MANUAL_CALC_RESULT,
-                    success=False,
-                    error_code="INVALID_FORMAT",
-                    error_desc=f"CSV 파일이 비어있습니다: {path_csv}"
-                )
-            except pd.errors.ParserError as e:
-                return self.protocol.create_response(
-                    Command.MANUAL_CALC_RESULT,
-                    success=False,
-                    error_code="INVALID_FORMAT",
-                    error_desc=f"CSV 파일 파싱 오류: {str(e)}"
-                )
-            except UnicodeDecodeError as e:
-                return self.protocol.create_response(
-                    Command.MANUAL_CALC_RESULT,
-                    success=False,
-                    error_code="INVALID_FORMAT",
-                    error_desc=f"CSV 파일 인코딩 오류 (UTF-8 권장): {str(e)}"
-                )
-            except PermissionError:
-                return self.protocol.create_response(
-                    Command.MANUAL_CALC_RESULT,
-                    success=False,
-                    error_code="FILE_READ_ERROR",
-                    error_desc=f"CSV 파일 읽기 권한이 없습니다: {path_csv}"
-                )
-            except Exception as e:
-                return self.protocol.create_response(
-                    Command.MANUAL_CALC_RESULT,
-                    success=False,
-                    error_code="FILE_READ_ERROR",
-                    error_desc=f"CSV 파일 읽기 오류: {str(e)}"
-                )
-
-            # 6. Validate CSV structure for manual measurements
-            # Manual CSV should have: x, y, rz columns
-            required_columns = ['x', 'y', 'rz']
-            missing_columns = [col for col in required_columns if col not in df.columns]
-
-            if missing_columns:
-                return self.protocol.create_response(
-                    Command.MANUAL_CALC_RESULT,
-                    success=False,
-                    error_code="INVALID_CSV_STRUCTURE",
-                    error_desc=f"CSV 파일에 필수 컬럼이 누락되었습니다: {', '.join(missing_columns)}. "
-                              f"필요한 컬럼: x, y, rz"
-                )
-
-            # 7. Validate data count (minimum 2 measurements needed)
-            n_measurements = len(df)
-            if n_measurements < 2:
-                return self.protocol.create_response(
-                    Command.MANUAL_CALC_RESULT,
-                    success=False,
-                    error_code="INSUFFICIENT_DATA",
-                    error_desc=f"반복정밀도 분석에는 최소 2개 이상의 측정 데이터가 필요합니다. 현재: {n_measurements}개"
-                )
-
-            # 8. Validate output directory
+            # 5. Validate output directory
             output_dir = str(self.summary_base_path)
             try:
                 output_path = Path(output_dir)
@@ -2197,63 +2134,48 @@ class VisionServer:
                     error_desc=f"출력 디렉토리 접근 오류: {output_dir}, {str(e)}"
                 )
 
-            self.logger.info(f"Starting manual measurement analysis: {path_csv}")
-            self.logger.info(f"  Measurements: {n_measurements}")
-
-            # 9. Calculate statistics
+            # 6. 분석 실행 (TrajectoryRepeatability와 동일 패턴)
             try:
-                x_values = df['x'].values
-                y_values = df['y'].values
-                rz_values = df['rz'].values
-
-                # Calculate mean
-                x_mean = float(np.mean(x_values))
-                y_mean = float(np.mean(y_values))
-                rz_mean = float(np.mean(rz_values))
-
-                # Calculate standard deviation
-                x_std = float(np.std(x_values, ddof=1))
-                y_std = float(np.std(y_values, ddof=1))
-                rz_std = float(np.std(rz_values, ddof=1))
-
-                # Calculate min/max
-                x_min, x_max = float(np.min(x_values)), float(np.max(x_values))
-                y_min, y_max = float(np.min(y_values)), float(np.max(y_values))
-                rz_min, rz_max = float(np.min(rz_values)), float(np.max(rz_values))
-
-                # Calculate range
-                x_range = x_max - x_min
-                y_range = y_max - y_min
-                rz_range = rz_max - rz_min
-
-                # Calculate repeatability (3 * std)
-                x_repeatability = 3 * x_std
-                y_repeatability = 3 * y_std
-                rz_repeatability = 3 * rz_std
-
+                analyzer = ManualRepeatability(str(csv_path))
+                analyzer.run_analysis()
+            except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError, PermissionError) as e:
+                code = "INVALID_FORMAT" if isinstance(e, (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError)) else "FILE_READ_ERROR"
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code=code,
+                    error_desc=f"CSV 파일 읽기/파싱 오류: {str(e)}"
+                )
+            except ValueError as e:
+                msg = str(e)
+                if "필수 컬럼" in msg or "컬럼" in msg:
+                    return self.protocol.create_response(
+                        Command.MANUAL_CALC_RESULT,
+                        success=False,
+                        error_code="INVALID_CSV_STRUCTURE",
+                        error_desc=msg
+                    )
+                return self.protocol.create_response(
+                    Command.MANUAL_CALC_RESULT,
+                    success=False,
+                    error_code="INSUFFICIENT_DATA",
+                    error_desc=msg
+                )
             except Exception as e:
                 return self.protocol.create_response(
                     Command.MANUAL_CALC_RESULT,
                     success=False,
                     error_code="CALC_ERROR",
-                    error_desc=f"통계 계산 중 오류: {str(e)}"
+                    error_desc=f"분석 실행 중 오류: {str(e)}"
                 )
 
-            # 10. Save results to CSV
+            self.logger.info(f"Starting manual measurement analysis: {path_csv}")
+            self.logger.info(f"  Measurements: {analyzer.results['n_measurements']}")
+
+            # 7. 결과 저장 (CSV + PNG, TrajectoryRepeatability와 동일)
             try:
-                from datetime import datetime
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                result_csv_path = output_path / f"manual_analysis_{timestamp}.csv"
-
-                result_df = pd.DataFrame({
-                    'metric': ['mean', 'std', 'min', 'max', 'range', 'repeatability_3sigma'],
-                    'x': [x_mean, x_std, x_min, x_max, x_range, x_repeatability],
-                    'y': [y_mean, y_std, y_min, y_max, y_range, y_repeatability],
-                    'rz': [rz_mean, rz_std, rz_min, rz_max, rz_range, rz_repeatability]
-                })
-                result_df.to_csv(str(result_csv_path), index=False)
-
-                self.logger.info(f"Manual analysis results saved to: {result_csv_path}")
+                result_csv_path = analyzer.save_results_to_csv(output_dir=output_dir)
+                result_png_path = analyzer.plot_results(output_dir=output_dir)
             except Exception as e:
                 return self.protocol.create_response(
                     Command.MANUAL_CALC_RESULT,
@@ -2262,36 +2184,39 @@ class VisionServer:
                     error_desc=f"결과 저장 중 오류: {str(e)}"
                 )
 
-            self.logger.info(f"Manual measurement analysis completed.")
+            self.logger.info(f"Manual (Cam1) measurement analysis completed. Results saved to {output_dir}")
 
-            # 11. Prepare response data
+            # 8. 응답 데이터 준비 (모두 summary_base_path = C:\CMES_AI\Summary 에 저장됨)
+            r = analyzer.results
             response_data = {
-                "n_measurements": n_measurements,
-                "output_csv": str(result_csv_path),
+                "n_measurements": r["n_measurements"],
+                "output_dir": output_dir,
+                "output_csv": result_csv_path,
+                "output_png": result_png_path,
                 "statistics": {
                     "x": {
-                        "mean": round(x_mean, 3),
-                        "std": round(x_std, 3),
-                        "min": round(x_min, 3),
-                        "max": round(x_max, 3),
-                        "range": round(x_range, 3),
-                        "repeatability_3sigma": round(x_repeatability, 3)
+                        "mean": round(r["x_mean"], 3),
+                        "std": round(r["x_std"], 3),
+                        "min": round(r["x_min"], 3),
+                        "max": round(r["x_max"], 3),
+                        "range": round(r["x_range"], 3),
+                        "repeatability_3sigma": round(r["x_repeatability"], 3)
                     },
                     "y": {
-                        "mean": round(y_mean, 3),
-                        "std": round(y_std, 3),
-                        "min": round(y_min, 3),
-                        "max": round(y_max, 3),
-                        "range": round(y_range, 3),
-                        "repeatability_3sigma": round(y_repeatability, 3)
+                        "mean": round(r["y_mean"], 3),
+                        "std": round(r["y_std"], 3),
+                        "min": round(r["y_min"], 3),
+                        "max": round(r["y_max"], 3),
+                        "range": round(r["y_range"], 3),
+                        "repeatability_3sigma": round(r["y_repeatability"], 3)
                     },
                     "rz": {
-                        "mean": round(rz_mean, 3),
-                        "std": round(rz_std, 3),
-                        "min": round(rz_min, 3),
-                        "max": round(rz_max, 3),
-                        "range": round(rz_range, 3),
-                        "repeatability_3sigma": round(rz_repeatability, 3)
+                        "mean": round(r["rz_mean"], 3),
+                        "std": round(r["rz_std"], 3),
+                        "min": round(r["rz_min"], 3),
+                        "max": round(r["rz_max"], 3),
+                        "range": round(r["rz_range"], 3),
+                        "repeatability_3sigma": round(r["rz_repeatability"], 3)
                     }
                 }
             }

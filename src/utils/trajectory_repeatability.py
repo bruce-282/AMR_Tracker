@@ -760,6 +760,149 @@ class TrajectoryRepeatability:
         return fig1, fig2
 
 
+def _circular_mean_deg(angles_deg: np.ndarray) -> float:
+    """각도의 circular mean (degree)."""
+    angles_rad = np.deg2rad(angles_deg)
+    return np.rad2deg(np.arctan2(np.mean(np.sin(angles_rad)), np.mean(np.cos(angles_rad))))
+
+
+def _angular_diff_deg(angles_deg: np.ndarray, ref_deg: float) -> np.ndarray:
+    """각도와 기준 각도의 shortest angular distance (degree)."""
+    diff = angles_deg - ref_deg
+    return (diff + 180) % 360 - 180
+
+
+class ManualRepeatability:
+    """Cam1 수동 측정 반복정밀도 분석 (x, y, rz CSV). cam1_measurements.csv와 동일 형식으로 저장."""
+
+    def __init__(self, csv_path: str):
+        """
+        CSV 파일을 로드합니다. 필수 컬럼: x, y, rz (rz 단위: rad).
+
+        Args:
+            csv_path: CSV 파일 경로
+        """
+        self.df = pd.read_csv(csv_path)
+        required = ["x", "y", "rz"]
+        missing = [c for c in required if c not in self.df.columns]
+        if missing:
+            raise ValueError(f"CSV에 필수 컬럼이 없습니다: {missing}")
+        self.results = {}
+
+    def run_analysis(self) -> None:
+        """통계 계산 및 cam1_measurements 형식용 Position_Error, Theta_Error 계산."""
+        x = self.df["x"].values
+        y = self.df["y"].values
+        rz = self.df["rz"].values
+        n = len(x)
+        if n < 2:
+            raise ValueError("최소 2개 이상의 측정값이 필요합니다.")
+
+        x_mean = float(np.mean(x))
+        y_mean = float(np.mean(y))
+        theta_deg = np.rad2deg(rz)
+        mean_theta_deg = _circular_mean_deg(theta_deg)
+        position_errors = np.sqrt((x - x_mean) ** 2 + (y - y_mean) ** 2)
+        theta_errors = _angular_diff_deg(theta_deg, mean_theta_deg)
+
+        self.results = {
+            "n_measurements": n,
+            "x_mean": x_mean,
+            "x_std": float(np.std(x, ddof=1)),
+            "x_min": float(np.min(x)),
+            "x_max": float(np.max(x)),
+            "y_mean": y_mean,
+            "y_std": float(np.std(y, ddof=1)),
+            "y_min": float(np.min(y)),
+            "y_max": float(np.max(y)),
+            "rz_mean": float(np.mean(rz)),
+            "rz_std": float(np.std(rz, ddof=1)),
+            "rz_min": float(np.min(rz)),
+            "rz_max": float(np.max(rz)),
+        }
+        self.results["x_range"] = self.results["x_max"] - self.results["x_min"]
+        self.results["y_range"] = self.results["y_max"] - self.results["y_min"]
+        self.results["rz_range"] = self.results["rz_max"] - self.results["rz_min"]
+        self.results["x_repeatability"] = 3 * self.results["x_std"]
+        self.results["y_repeatability"] = 3 * self.results["y_std"]
+        self.results["rz_repeatability"] = 3 * self.results["rz_std"]
+        self.results["x_values"] = x
+        self.results["y_values"] = y
+        self.results["rz_values"] = rz
+        self.results["theta_deg"] = theta_deg
+        self.results["position_errors"] = position_errors
+        self.results["theta_errors"] = theta_errors
+
+    def save_results_to_csv(self, output_dir: str) -> str:
+        """cam1_measurements.csv와 동일 컬럼으로 저장: Trial, X(mm), Y(mm), Theta(deg), Position_Error(mm), Theta_Error(deg)."""
+        r = self.results
+        n = r["n_measurements"]
+        cam1_manual_measurements = pd.DataFrame({
+            "Trial": range(n),
+            "X(mm)": r["x_values"],
+            "Y(mm)": r["y_values"],
+            "Theta(deg)": r["theta_deg"],
+            "Position_Error(mm)": r["position_errors"],
+            "Theta_Error(deg)": r["theta_errors"],
+        })
+        path = f"{output_dir}/cam1_manual_measurements.csv"
+        cam1_manual_measurements.to_csv(path, index=False)
+        print(f"[Cam1] Manual measurements CSV 저장: {path}")
+        return path
+
+    def plot_results(self, output_dir: str) -> str:
+        """반복정밀도 그래프 저장. 반환: 저장된 PNG 경로. (cam1_measurements / repeatability_analysis와 일관된 이름)"""
+        r = self.results
+        n = r["n_measurements"]
+        x_v, y_v = r["x_values"], r["y_values"]
+        x_mean, y_mean = r["x_mean"], r["y_mean"]
+        x_std, y_std = r["x_std"], r["y_std"]
+        x_rep, y_rep = r["x_repeatability"], r["y_repeatability"]
+
+        fig = plt.figure(figsize=(14, 5))
+
+        ax1 = plt.subplot(1, 3, 1)
+        ax1.scatter(x_v, y_v, alpha=0.6, s=50, c="blue")
+        ax1.plot(x_mean, y_mean, "r*", markersize=15, label="Mean")
+        ax1.axhline(y_mean, color="gray", linestyle="--", alpha=0.5)
+        ax1.axvline(x_mean, color="gray", linestyle="--", alpha=0.5)
+        ax1.set_xlabel("X (mm)")
+        ax1.set_ylabel("Y (mm)")
+        ax1.set_title(f"Cam1 Manual Position\n(n={n}, 3σ_x={x_rep:.2f}, 3σ_y={y_rep:.2f} mm)")
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        ax1.axis("equal")
+
+        ax2 = plt.subplot(1, 3, 2)
+        ax2.hist(x_v, bins=min(20, max(1, n // 2)), alpha=0.7, color="blue", edgecolor="black")
+        ax2.axvline(x_mean, color="r", linestyle="--", linewidth=2, label=f"Mean={x_mean:.2f}")
+        ax2.axvline(x_mean - 3 * x_std, color="orange", linestyle=":", alpha=0.8)
+        ax2.axvline(x_mean + 3 * x_std, color="orange", linestyle=":", alpha=0.8, label=f"±3σ={x_rep:.2f} mm")
+        ax2.set_xlabel("X (mm)")
+        ax2.set_ylabel("Frequency")
+        ax2.set_title("X Distribution")
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+
+        ax3 = plt.subplot(1, 3, 3)
+        ax3.hist(y_v, bins=min(20, max(1, n // 2)), alpha=0.7, color="green", edgecolor="black")
+        ax3.axvline(y_mean, color="r", linestyle="--", linewidth=2, label=f"Mean={y_mean:.2f}")
+        ax3.axvline(y_mean - 3 * y_std, color="orange", linestyle=":", alpha=0.8)
+        ax3.axvline(y_mean + 3 * y_std, color="orange", linestyle=":", alpha=0.8, label=f"±3σ={y_rep:.2f} mm")
+        ax3.set_xlabel("Y (mm)")
+        ax3.set_ylabel("Frequency")
+        ax3.set_title("Y Distribution")
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        fig_path = f"{output_dir}/cam1_manual_repeatability_analysis.png"
+        plt.savefig(fig_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        print(f"[Cam1] Manual repeatability analysis PNG 저장: {fig_path}")
+        return fig_path
+
+
 if __name__ == "__main__":
     # 분석 실행
     parser = argparse.ArgumentParser(description="Trajectory Repeatability Analysis")
