@@ -67,12 +67,19 @@ class ProtocolHandler:
             "success": success
         }
         
-        if error_code:
-            response["error_code"] = error_code
-        if error_desc:
-            response["error_desc"] = error_desc
-        if data:
-            response["data"] = data
+        # Only include error_code and error_desc if success is False
+        if not success:
+            if error_code:
+                response["error_code"] = error_code
+            if error_desc:
+                response["error_desc"] = error_desc
+            # Don't include data when success is False (silently ignore if provided)
+        else:
+            # success is True
+            # Ignore error_code/error_desc if provided when success=True
+            # Only include data when success is True
+            if data:
+                response["data"] = data
         
         return json.dumps(response).encode('utf-8')
     

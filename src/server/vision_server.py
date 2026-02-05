@@ -1860,7 +1860,8 @@ class VisionServer:
                     Command.START_CAM_1_MANUAL,
                     success=False,
                     error_code="VISION_NOT_ACTIVE",
-                    error_desc="Vision system not started. Call START VISION first."
+                    error_desc="Vision system not started. Call START VISION first.",
+                    data={"x": 0.0, "y": 0.0, "rz": 0.0}
                 )
 
             # 우선 CAM1 트래킹 루프에서 갱신 중인 최신 프레임 사용 (별도 캡처 없음)
@@ -1880,7 +1881,8 @@ class VisionServer:
                         Command.START_CAM_1_MANUAL,
                         success=False,
                         error_code="CAM_NOT_INITIALIZED",
-                        error_desc=f"Failed to get camera 1 config: {e}"
+                        error_desc=f"Failed to get camera 1 config: {e}",
+                        data={"x": 0.0, "y": 0.0, "rz": 0.0}
                     )
                 self.logger.info(f"Camera 1 Manual: No tracking frame yet, opening capture from {source}")
                 manual_capture = cv2.VideoCapture(source)
@@ -1889,7 +1891,8 @@ class VisionServer:
                         Command.START_CAM_1_MANUAL,
                         success=False,
                         error_code="FRAME_READ_ERROR",
-                        error_desc=f"Failed to open camera 1 source: {source}"
+                        error_desc=f"Failed to open camera 1 source: {source}",
+                        data={"x": 0.0, "y": 0.0, "rz": 0.0}
                     )
                 ret, frame = manual_capture.read()
                 manual_capture.release()
@@ -1899,7 +1902,8 @@ class VisionServer:
                         Command.START_CAM_1_MANUAL,
                         success=False,
                         error_code="FRAME_READ_ERROR",
-                        error_desc="Failed to read frame from camera 1"
+                        error_desc="Failed to read frame from camera 1",
+                        data={"x": 0.0, "y": 0.0, "rz": 0.0}
                     )
 
             # Get detector from AMR tracker (detector is stateless, thread-safe)
@@ -1910,7 +1914,8 @@ class VisionServer:
                     Command.START_CAM_1_MANUAL,
                     success=False,
                     error_code="CAM_NOT_INITIALIZED",
-                    error_desc="Camera 1 detector not available"
+                    error_desc="Camera 1 detector not available",
+                    data={"x": 0.0, "y": 0.0, "rz": 0.0}
                 )
 
             # Detect object in frame (detector.detect is stateless)
@@ -1926,7 +1931,8 @@ class VisionServer:
                     Command.START_CAM_1_MANUAL,
                     success=False,
                     error_code="DETECTION_FAILED",
-                    error_desc="No object detected in camera 1 frame"
+                    error_desc="No object detected in camera 1 frame",
+                    data={"x": 0.0, "y": 0.0, "rz": 0.0}
                 )
 
             detection = detections[0]
@@ -2027,7 +2033,8 @@ class VisionServer:
                 Command.START_CAM_1_MANUAL,
                 success=False,
                 error_code="MANUAL_CAM_ERROR",
-                error_desc=str(e)
+                error_desc=str(e),
+                data={"x": 0.0, "y": 0.0, "rz": 0.0}
             )
         finally:
             # Ensure manual capture is released even on error
@@ -2090,7 +2097,23 @@ class VisionServer:
                     error_desc="path_csv는 유효한 문자열 경로여야 합니다."
                 )
 
+            # Normalize path (handle Windows forward slashes)
+            path_csv = path_csv.strip()
             csv_path = Path(path_csv)
+            
+            # Convert to absolute path and resolve
+            try:
+                if csv_path.is_absolute():
+                    # For absolute paths, ensure it's properly normalized
+                    csv_path = csv_path.resolve()
+                else:
+                    # For relative paths, resolve from current working directory
+                    csv_path = csv_path.resolve()
+            except (OSError, ValueError) as e:
+                # If resolve fails, try with the original path
+                self.logger.warning(f"Path resolution failed for {path_csv}: {e}, using original path")
+            
+            self.logger.debug(f"Checking CSV file: original={path_csv}, resolved={csv_path}, exists={csv_path.exists()}")
 
             # 3. Validate file existence
             if not csv_path.exists():
@@ -2098,7 +2121,7 @@ class VisionServer:
                     Command.MANUAL_CALC_RESULT,
                     success=False,
                     error_code="FILE_NOT_FOUND",
-                    error_desc=f"CSV 파일을 찾을 수 없습니다: {path_csv}"
+                    error_desc=f"CSV 파일을 찾을 수 없습니다: {path_csv} (확인한 경로: {csv_path})"
                 )
 
             # 4. Validate file format (extension)
