@@ -3,8 +3,8 @@
   "detector": {
     "_comment": "ArUco marker detector parameters for Camera 1 (단일 마커 ID만 검출)",
     "detector_type": "aruco",
-    "marker_id": 8,
-    "marker_size": 0.1,
+    "marker_id": 4,
+    "marker_size": 0.247,
     "dictionary": "DICT_4X4_50",
     "min_marker_perimeter": 0.0,
     "max_marker_perimeter": 0.0,
