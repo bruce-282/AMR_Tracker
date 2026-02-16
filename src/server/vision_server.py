@@ -259,11 +259,14 @@ class VisionServer:
         self.tracking_manager.on_camera_2_stop = self._start_camera_3_after_2
         self.tracking_manager.on_camera_1_3_first_detection = self._send_first_detection_response
         self.tracking_manager.on_camera_2_trajectory = self._send_camera2_trajectory
-        
-        # Share camera2_trajectory with TrackingManager
+        self.tracking_manager.on_camera_3_trajectory = self._send_camera3_trajectory
+
+        # Share camera2/camera3 trajectory with TrackingManager
         # This will be initialized in START_VISION
         self.camera2_trajectory = None
         self.camera2_trajectory_sent = False
+        self.camera3_trajectory = None
+        self.camera3_trajectory_sent = False
         
         # Protocol handler
         self.protocol = ProtocolHandler()
@@ -567,20 +570,18 @@ class VisionServer:
         return True  # Continue tracking
 
     def _start_next_camera_after_1_3(self, camera_id: int):
-        """Start next camera after camera 1 or 3 finishes tracking."""
-        # Only auto-start next camera if use_area_scan is false
-        
+        """Start next camera after camera 1 finishes tracking.
+
+        Note: Camera 3 no longer uses this method (it uses trajectory callback instead).
+        """
         if camera_id == 1:
             # Camera 1 -> Start camera 2
-            #self.logger.info("Camera 1: Stopping stream.")
-            # Stop camera 1 stream via CameraManager
             self.camera_manager.stop_camera_stream(1)
 
             if self.use_area_scan:
                 self.logger.info(f"Camera {camera_id}: Tracking finished. Waiting for client request (use_area_scan=true).")
                 return
 
-            #self.logger.info("Camera 2: Starting camera 2 stream.")
             if 2 not in self.tracking_threads or not self.tracking_threads[2].is_alive():
                 product_model_name = self.model_config.get_selected_model()
                 if self._ensure_camera_initialized(2, product_model_name):
@@ -593,25 +594,9 @@ class VisionServer:
                     self.tracking_manager.start_tracking(2)
 
         elif camera_id == 3:
-            # Camera 3 -> Start camera 1 (cycle)
-            #self.logger.info("Camera 3: Stopping stream.")
-            # Stop camera 3 stream via CameraManager
+            # Camera 3 should use trajectory callback (_send_camera3_trajectory -> _start_camera_1_after_3)
+            self.logger.warning("Camera 3: _start_next_camera_after_1_3 called unexpectedly (should use trajectory callback)")
             self.camera_manager.stop_camera_stream(3)
-            
-            if self.use_area_scan:
-                self.logger.info(f"Camera {camera_id}: Tracking finished. Waiting for client request (use_area_scan=true).")
-                return
-
-            self.logger.info("Camera 3: Starting camera 1 stream.")
-            self._reset_camera_state(1)
-            if 1 not in self.tracking_threads or not self.tracking_threads[1].is_alive():
-                if 1 in self.camera_loaders and 1 in self.trackers:
-                    # Start camera 1 stream before starting tracking via CameraManager
-                    self.camera_manager.start_camera_stream(1)
-                    self.tracking_manager.start_tracking(1)
-                    self.logger.info("Camera 1 tracking thread started (cycle restarted)")
-                else:
-                    self.logger.warning("Camera 1 not initialized, cannot start tracking")
 
     def _handle_camera_2_tracking(
         self,
@@ -817,6 +802,10 @@ class VisionServer:
         self.logger.info("Camera 3: Starting camera 3 stream.")
         if 3 not in self.tracking_threads or not self.tracking_threads[3].is_alive():
             self._reset_camera_state(3)
+            # Clear camera 3 trajectory for new tracking session
+            if self.camera3_trajectory is not None:
+                self.camera3_trajectory.clear()
+            self.camera3_trajectory_sent = False
             if 3 in self.camera_loaders and 3 in self.trackers:
                 # Start camera 3 stream before starting tracking via CameraManager
                 self.camera_manager.start_camera_stream(3)
@@ -824,8 +813,119 @@ class VisionServer:
             else:
                 self.logger.warning("Camera 3 not initialized, cannot start tracking")
 
+    def _send_camera3_trajectory(
+        self,
+        camera_id: int,
+        frame: Optional[np.ndarray],
+        detections: List[Detection],
+        tracking_results: List[Dict],
+        reason: str
+    ) -> bool:
+        """Send Camera 3 trajectory data to client (callback for TrackingManager).
+
+        Args:
+            camera_id: Camera ID (should be 3)
+            frame: Frame for result image
+            detections: Detections for result image
+            tracking_results: Tracking results for result image
+            reason: Reason for sending trajectory
+
+        Returns:
+            True if trajectory was sent, False otherwise
+        """
+        if camera_id != 3:
+            return False
+
+        if len(self.camera3_trajectory) == 0 or self.camera3_trajectory_sent:
+            return False
+
+        self.camera3_trajectory_sent = True
+        self.logger.info(f"Camera 3: {reason}. Sending trajectory data to client ({len(self.camera3_trajectory)} frames).")
+
+        # Apply homography transformation at save time only
+        homography = self.camera_manager.get_homography(camera_id)
+        trajectory_data = list(self.camera3_trajectory)
+
+        # Transform trajectory points if homography is available
+        if homography is not None and len(trajectory_data) > 0:
+            # Use pixel_size_x and pixel_size_y separately
+            pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
+            trajectory_data = transform_trajectory_data_with_homography(
+                trajectory_data, homography, pixel_size_dict
+            )
+            self.logger.debug(f"Camera {camera_id}: Applied homography transformation to {len(trajectory_data)} trajectory points")
+
+        # Save result image with trajectory drawn from transformed trajectory data
+        result_image_path = self.result_base_path / f"cam_{camera_id}_result.png"
+        try:
+            # Get frame to draw on
+            if frame is None:
+                loader = self.camera_manager.camera_loaders.get(camera_id)
+                if loader:
+                    ret, frame = loader.read()
+
+            if frame is not None:
+                # Apply homography to frame
+                if homography is not None:
+                    frame = warp_frame_with_homography(frame, homography)
+
+                # Draw trajectory from transformed trajectory data
+                vis_frame = draw_trajectory_on_frame(frame, trajectory_data)
+
+                result_image_path.parent.mkdir(parents=True, exist_ok=True)
+                success = cv2.imwrite(str(result_image_path), vis_frame)
+                if success:
+                    self.logger.info(f"Camera {camera_id}: Saved result image with trajectory ({len(trajectory_data)} points) to {result_image_path}")
+                else:
+                    self.logger.error(f"Camera {camera_id}: Failed to save result image")
+            else:
+                self.logger.warning(f"Camera {camera_id}: No frame available for result image")
+        except Exception as e:
+            self.logger.error(f"Camera {camera_id}: Failed to save result image: {e}")
+
+        # Remove x_pix, y_pix from response (only x, y in mm and rz are sent)
+        response_data = []
+        for point in trajectory_data:
+            response_point = {
+                "track_idx": point.get("track_idx", 0),
+                "x": point.get("x", 0),
+                "y": point.get("y", 0),
+                "rz": point.get("rz", 0)
+            }
+            response_data.append(response_point)
+
+        cmd = Command.START_CAM_3
+        if self._send_response_to_client(cmd, success=True, data=response_data):
+            self.logger.info(f"Camera 3 trajectory data sent ({len(response_data)} frames)")
+
+        self.camera3_trajectory.clear()
+
+        # Start camera 1 (cycle restart)
+        self._start_camera_1_after_3()
+
+        return True
+
+    def _start_camera_1_after_3(self):
+        """Start camera 1 after camera 3 finishes trajectory tracking."""
+        self.logger.info("Camera 3: Stopping stream.")
+        self.camera_manager.stop_camera_stream(3)
+
+        if self.use_area_scan:
+            self.logger.info("Camera 3: Tracking finished. Waiting for client request (use_area_scan=true).")
+            return
+
+        self.logger.info("Camera 3: Starting camera 1 stream.")
+        self._reset_camera_state(1)
+        if 1 not in self.tracking_threads or not self.tracking_threads[1].is_alive():
+            if 1 in self.camera_loaders and 1 in self.trackers:
+                self.camera_manager.start_camera_stream(1)
+                self.tracking_manager.start_tracking(1)
+                self.logger.info("Camera 1 tracking thread started (cycle restarted)")
+            else:
+                self.logger.warning("Camera 1 not initialized, cannot start tracking")
+
     def _send_first_detection_response(self, camera_id: int, detection: Detection, tracking_result: Dict, frame: np.ndarray):
-        """Send first detection response for cameras 1, 3 (use_area_scan=false).
+        """Send first detection response for camera 1 (use_area_scan=false).
         
         Args:
             camera_id: Camera ID
@@ -1136,12 +1236,17 @@ class VisionServer:
             # Tracking config is loaded per camera from tracker_config files
             # No global tracking_config needed
             self.tracking_config = None
-            # Update camera2_trajectory maxlen and share with TrackingManager
+            # Update camera2/camera3 trajectory maxlen and share with TrackingManager
             # Use default value - actual max_frames comes from camera-specific config
             camera2_trajectory_max_frames = 300  # Default, will be overridden by camera-specific config
             self.camera2_trajectory = deque(maxlen=camera2_trajectory_max_frames * 2)
             self.tracking_manager.camera2_trajectory = self.camera2_trajectory
             self.tracking_manager.camera2_trajectory_sent = False
+
+            camera3_trajectory_max_frames = 300  # Default, will be overridden by camera-specific config
+            self.camera3_trajectory = deque(maxlen=camera3_trajectory_max_frames * 2)
+            self.tracking_manager.camera3_trajectory = self.camera3_trajectory
+            self.tracking_manager.camera3_trajectory_sent = False
             
             self.vision_active = True
             # Update TrackingManager
@@ -1382,12 +1487,20 @@ class VisionServer:
                 # Camera 1: already started in START_VISION
                 # Camera 2: will be started automatically when camera 1 stops
                 # Camera 3: will be started automatically when camera 2 stops
-                # Only start tracking thread for cameras 1 and 3 if not already running
-                if camera_id in [1, 3]:
+                # Only start tracking thread for camera 1 if not already running
+                if camera_id == 1:
                     if camera_id not in self.tracking_threads or not self.tracking_threads[camera_id].is_alive():
                         self.tracking_manager.start_tracking(camera_id)
                         time.sleep(0.1)
-                # Camera 2: do not start tracking thread here (will be started when cameras 1/3 stop)
+                elif camera_id == 3:
+                    if camera_id not in self.tracking_threads or not self.tracking_threads[camera_id].is_alive():
+                        # Clear camera 3 trajectory for new tracking session
+                        if self.camera3_trajectory is not None:
+                            self.camera3_trajectory.clear()
+                        self.camera3_trajectory_sent = False
+                        self.tracking_manager.start_tracking(camera_id)
+                        time.sleep(0.1)
+                # Camera 2: do not start tracking thread here (will be started when camera 1 stops)
             
             # Handle response based on use_area_scan
             if self.use_area_scan:
@@ -1681,7 +1794,7 @@ class VisionServer:
             
             # 6. CSV 구조 검증 (필수 컬럼 확인). cam_1_x 또는 cam_1_x(mm) 형식 모두 허용
             aliases_cam1 = [['cam_1_x', 'cam_1_y', 'cam_1_rz'], ['cam_1_x(mm)', 'cam_1_y(mm)', 'cam_1_rz(deg)']]
-            aliases_cam3 = [['cam_3_x', 'cam_3_y', 'cam_3_rz'], ['cam_3_x(mm)', 'cam_3_y(mm)', 'cam_3_rz(deg)']]
+            aliases_cam3 = [['cam_3_x', 'cam_3_y', 'cam_3_rz'], ['cam_3_x(mm)', 'cam_3_y(mm)', 'cam_3_rz(deg)'], ['cam_3_x_0', 'cam_3_y_0', 'cam_3_rz_0']]
             aliases_cam2 = [['cam_2_x_0', 'cam_2_y_0', 'cam_2_rz_0']]  # cam_2는 인덱스만 붙는 형식만 사용
 
             def _has_columns(aliases_list):

@@ -52,8 +52,8 @@ class ResponseBuilder:
         Returns:
             Dictionary with x, y (in mm) and rz (yaw angle in degrees)
         """
-        # Cameras 1, 3: use detection data (not tracker) when use_area_scan is false
-        if camera_id in [1, 3] and not use_area_scan:
+        # Camera 1: use detection data (not tracker) when use_area_scan is false
+        if camera_id == 1 and not use_area_scan:
             detection = self.tracking_manager.latest_detections.get(camera_id)
             if detection is not None:
                 center = detection.get_center()
@@ -308,10 +308,10 @@ class ResponseBuilder:
             
             # Visualize and save
             # draw_oriented_box=True only when saving image (not for real-time window)
-            # draw_trajectory=True only for Camera 2 (trajectory tracking)
+            # draw_trajectory=True for Camera 2 and 3 (trajectory tracking)
             vis_frame = self.visualize_results(
-                camera_id, frame, detections, tracking_results, 
-                draw_trajectory=(camera_id == 2),
+                camera_id, frame, detections, tracking_results,
+                draw_trajectory=(camera_id in [2, 3]),
                 draw_oriented_box=True
             )
             # Ensure directory exists
@@ -380,27 +380,27 @@ class ResponseBuilder:
                 break
         
         if visualizer:
-            # For cameras 1, 3: do not draw tracking information, only detections
-            # For camera 2: draw tracking information with trajectory
-            if camera_id == 2:
-                # Camera 2: use tracking results with trajectory, but force track_id to 0
-                camera2_trackings = []
+            # For camera 1: do not draw tracking information, only detections
+            # For camera 2, 3: draw tracking information with trajectory
+            if camera_id in [2, 3]:
+                # Camera 2, 3: use tracking results with trajectory, but force track_id to 0
+                trajectory_trackings = []
                 for result in filtered_tracking_results:
                     result_copy = result.copy()
                     result_copy["track_id"] = 0
-                    camera2_trackings.append(result_copy)
+                    trajectory_trackings.append(result_copy)
                 return visualizer.draw_single_object(
-                    frame, detections, camera2_trackings, 
+                    frame, detections, trajectory_trackings,
                     draw_oriented_box=draw_oriented_box,
                     draw_trajectory=draw_trajectory
                 )
             else:
-                # Camera 1, 3: create empty tracking dicts for each detection (to draw detections only)
+                # Camera 1: create empty tracking dicts for each detection (to draw detections only)
                 empty_trackings = [{"track_id": 0, "trajectory": []} for _ in detections]
                 return visualizer.draw_single_object(
-                    frame, detections, empty_trackings, 
+                    frame, detections, empty_trackings,
                     draw_oriented_box=draw_oriented_box,
-                    draw_trajectory=False  # Camera 1, 3: no trajectory
+                    draw_trajectory=False  # Camera 1: no trajectory
                 )
         
         # Final fallback: return frame as-is

@@ -12,10 +12,9 @@ import argparse
 class TrajectoryRepeatability:
     """궤적 및 정지 위치 반복정밀도 분석"""
 
-    # Cam1/Cam3 위치·각도 컬럼 그룹 (이 중 NaN 또는 0.0인 행은 계산에서 제외)
+    # Cam1 위치·각도 컬럼 그룹 (이 중 NaN 또는 0.0인 행은 계산에서 제외)
     _POSITION_COLUMN_GROUPS = [
         ["cam_1_x(mm)", "cam_1_y(mm)", "cam_1_rz(deg)"],
-        ["cam_3_x(mm)", "cam_3_y(mm)", "cam_3_rz(deg)"],
     ]
 
     def __init__(self, csv_path: str):
@@ -185,9 +184,13 @@ class TrajectoryRepeatability:
             "trajectories": [],
         }
 
-    def analyze_trajectory(self, sampling_interval_mm: float = 20.0) -> Dict:
-        """궤적 반복정밀도 계산 (Cam2) - X축 기준으로 Y, Yaw 정밀도 분석"""
-        # Cam2 waypoint 데이터 추출
+    def analyze_trajectory(self, sampling_interval_mm: float = 20.0, camera_prefix: str = "cam_2") -> Dict:
+        """궤적 반복정밀도 계산 - X축 기준으로 Y, Yaw 정밀도 분석
+
+        Args:
+            sampling_interval_mm: 샘플링 간격 (mm)
+            camera_prefix: 카메라 컬럼 접두사 (예: "cam_2", "cam_3")
+        """
         n_trials = len(self.df)
         max_waypoints = 100  # 0-99
 
@@ -198,9 +201,9 @@ class TrajectoryRepeatability:
             theta_vals = []
 
             for wp_idx in range(max_waypoints):
-                x_col = f"cam_2_x_{wp_idx}"
-                y_col = f"cam_2_y_{wp_idx}"
-                theta_col = f"cam_2_rz_{wp_idx}"
+                x_col = f"{camera_prefix}_x_{wp_idx}"
+                y_col = f"{camera_prefix}_y_{wp_idx}"
+                theta_col = f"{camera_prefix}_rz_{wp_idx}"
 
                 if x_col in self.df.columns:
                     x = self.df.iloc[trial_idx][x_col]
@@ -359,16 +362,13 @@ class TrajectoryRepeatability:
         )
         # self._print_static_results('Cam1', self.results['cam1'])
 
-        # Cam3 분석
-        print("\n[Cam3 - 정지 위치 정밀도]")
-        self.results["cam3"] = self.analyze_static_position(
-            "cam3", "cam_3_x(mm)", "cam_3_y(mm)", "cam_3_rz(deg)"
-        )
-        # self._print_static_results('Cam3', self.results['cam3'])
-
         # Cam2 궤적 분석
         print("\n[Cam2 - 궤적 반복 정밀도]")
-        self.results["cam2"] = self.analyze_trajectory(sampling_interval_mm)
+        self.results["cam2"] = self.analyze_trajectory(sampling_interval_mm, camera_prefix="cam_2")
+
+        # Cam3 궤적 분석
+        print("\n[Cam3 - 궤적 반복 정밀도]")
+        self.results["cam3"] = self.analyze_trajectory(sampling_interval_mm, camera_prefix="cam_3")
         # self._print_trajectory_results('Cam2', self.results['cam2'])
 
     def save_results_to_csv(self, output_dir: str = "outputs"):
@@ -394,23 +394,6 @@ class TrajectoryRepeatability:
             }
         )
 
-        # Cam3 데이터
-        cam3 = self.results["cam3"]
-        summary_data.append(
-            {
-                "Camera": "Cam3",
-                "Type": "Static",
-                "Mean_X(mm)": cam3["mean_x"],
-                "Mean_Y(mm)": cam3["mean_y"],
-                "Mean_Theta(deg)": cam3["mean_theta"],
-                "Sigma_X(mm)": cam3["sigma_x"],
-                "Sigma_Y(mm)": cam3["sigma_y"],
-                "Sigma_Theta(deg)": cam3["sigma_theta"],
-                "Sigma_2D(mm)": cam3["sigma_2d"],
-                #'Rp_ISO9283(mm)': cam3['Rp_ISO9283'],
-            }
-        )
-
         # Cam2 전체 통계
         cam2 = self.results["cam2"]
         summary_data.append(
@@ -418,11 +401,28 @@ class TrajectoryRepeatability:
                 "Camera": "Cam2",
                 "Type": "Trajectory",
                 "Mean_X(mm)": np.nan,  # X는 제어 변수
-                "Mean_Y(mm)": np.mean(cam2["reference"]["y"]),
-                "Mean_Theta(deg)": np.mean(cam2["reference"]["theta"]),
+                "Mean_Y(mm)": np.mean(cam2["reference"]["y"]) if cam2.get("reference") else np.nan,
+                "Mean_Theta(deg)": np.mean(cam2["reference"]["theta"]) if cam2.get("reference") else np.nan,
                 "Sigma_X(mm)": np.nan,  # X는 측정 안함
-                "Sigma_Y(mm)": cam2["sigma_y"],
-                "Sigma_Theta(deg)": cam2["sigma_theta"],
+                "Sigma_Y(mm)": cam2.get("sigma_y", np.nan),
+                "Sigma_Theta(deg)": cam2.get("sigma_theta", np.nan),
+                "Sigma_2D(mm)": np.nan,  # 궤적은 2D 개념 없음
+                #'Rp_ISO9283(mm)': np.nan,
+            }
+        )
+
+        # Cam3 전체 통계 (Trajectory)
+        cam3 = self.results["cam3"]
+        summary_data.append(
+            {
+                "Camera": "Cam3",
+                "Type": "Trajectory",
+                "Mean_X(mm)": np.nan,  # X는 제어 변수
+                "Mean_Y(mm)": np.mean(cam3["reference"]["y"]) if cam3.get("reference") else np.nan,
+                "Mean_Theta(deg)": np.mean(cam3["reference"]["theta"]) if cam3.get("reference") else np.nan,
+                "Sigma_X(mm)": np.nan,  # X는 측정 안함
+                "Sigma_Y(mm)": cam3.get("sigma_y", np.nan),
+                "Sigma_Theta(deg)": cam3.get("sigma_theta", np.nan),
                 "Sigma_2D(mm)": np.nan,  # 궤적은 2D 개념 없음
                 #'Rp_ISO9283(mm)': np.nan,
             }
@@ -434,36 +434,53 @@ class TrajectoryRepeatability:
         print(f"\n[Summary CSV 저장] {summary_path}")
 
         # 2. Cam2 Detailed CSV (샘플 포인트별)
-        cam2_detailed_data = []
-
-        for i, x_pos in enumerate(cam2["target_x"]):
-            cam2_detailed_data.append(
-                {
-                    "Sample_Index": i,
-                    "X_Position(mm)": x_pos,
-                    "Reference_Y(mm)": cam2["reference"]["y"][i],
-                    "Reference_Theta(deg)": cam2["reference"]["theta"][i],
-                    "Sigma_Y(mm)": cam2["sigma_y_at_each_x"][i],
-                    "Sigma_Theta(deg)": cam2["sigma_theta_at_each_x"][i],
-                }
-            )
-
-        cam2_detailed_df = pd.DataFrame(cam2_detailed_data)
         cam2_detailed_path = f"{output_dir}/cam2_trajectory_detailed.csv"
-        cam2_detailed_df.to_csv(cam2_detailed_path, index=False)
-        print(f"[Cam2 Detailed CSV 저장] {cam2_detailed_path}")
+        if cam2.get("target_x") is not None and len(cam2["target_x"]) > 0:
+            cam2_detailed_data = []
+            for i, x_pos in enumerate(cam2["target_x"]):
+                cam2_detailed_data.append(
+                    {
+                        "Sample_Index": i,
+                        "X_Position(mm)": x_pos,
+                        "Reference_Y(mm)": cam2["reference"]["y"][i],
+                        "Reference_Theta(deg)": cam2["reference"]["theta"][i],
+                        "Sigma_Y(mm)": cam2["sigma_y_at_each_x"][i],
+                        "Sigma_Theta(deg)": cam2["sigma_theta_at_each_x"][i],
+                    }
+                )
+            cam2_detailed_df = pd.DataFrame(cam2_detailed_data)
+            cam2_detailed_df.to_csv(cam2_detailed_path, index=False)
+            print(f"[Cam2 Detailed CSV 저장] {cam2_detailed_path}")
+        else:
+            print(f"[Cam2 Detailed CSV 건너뜀] 유효한 trajectory 데이터 없음")
 
-        # 3. Cam1 & Cam3 개별 측정값 (전체 행 기록 유지, 무효 행은 Position_Error/Theta_Error만 NaN)
+        # 3. Cam3 Detailed CSV (샘플 포인트별, Trajectory)
+        cam3_detailed_path = f"{output_dir}/cam3_trajectory_detailed.csv"
+        if cam3.get("target_x") is not None and len(cam3["target_x"]) > 0:
+            cam3_detailed_data = []
+            for i, x_pos in enumerate(cam3["target_x"]):
+                cam3_detailed_data.append(
+                    {
+                        "Sample_Index": i,
+                        "X_Position(mm)": x_pos,
+                        "Reference_Y(mm)": cam3["reference"]["y"][i],
+                        "Reference_Theta(deg)": cam3["reference"]["theta"][i],
+                        "Sigma_Y(mm)": cam3["sigma_y_at_each_x"][i],
+                        "Sigma_Theta(deg)": cam3["sigma_theta_at_each_x"][i],
+                    }
+                )
+            cam3_detailed_df = pd.DataFrame(cam3_detailed_data)
+            cam3_detailed_df.to_csv(cam3_detailed_path, index=False)
+            print(f"[Cam3 Detailed CSV 저장] {cam3_detailed_path}")
+        else:
+            print(f"[Cam3 Detailed CSV 건너뜀] 유효한 trajectory 데이터 없음")
+
+        # 4. Cam1 개별 측정값 (전체 행 기록 유지, 무효 행은 Position_Error/Theta_Error만 NaN)
         valid_cam1 = self._valid_mask_for_columns(["cam_1_x(mm)", "cam_1_y(mm)", "cam_1_rz(deg)"])
-        valid_cam3 = self._valid_mask_for_columns(["cam_3_x(mm)", "cam_3_y(mm)", "cam_3_rz(deg)"])
         pos_err_cam1 = np.full(len(self.df), np.nan, dtype=float)
         pos_err_cam1[valid_cam1] = cam1["position_errors"]
         theta_err_cam1 = np.full(len(self.df), np.nan, dtype=float)
         theta_err_cam1[valid_cam1] = cam1["theta_errors"]
-        pos_err_cam3 = np.full(len(self.df), np.nan, dtype=float)
-        pos_err_cam3[valid_cam3] = cam3["position_errors"]
-        theta_err_cam3 = np.full(len(self.df), np.nan, dtype=float)
-        theta_err_cam3[valid_cam3] = cam3["theta_errors"]
         cam1_measurements = pd.DataFrame(
             {
                 "Trial": range(len(self.df)),
@@ -478,25 +495,11 @@ class TrajectoryRepeatability:
         cam1_measurements.to_csv(cam1_measurements_path, index=False)
         print(f"[Cam1 Measurements CSV 저장] {cam1_measurements_path}")
 
-        cam3_measurements = pd.DataFrame(
-            {
-                "Trial": range(len(self.df)),
-                "X(mm)": self.df["cam_3_x(mm)"],
-                "Y(mm)": self.df["cam_3_y(mm)"],
-                "Theta(deg)": self.df["cam_3_rz(deg)"],
-                "Position_Error(mm)": pos_err_cam3,
-                "Theta_Error(deg)": theta_err_cam3,
-            }
-        )
-        cam3_measurements_path = f"{output_dir}/cam3_measurements.csv"
-        cam3_measurements.to_csv(cam3_measurements_path, index=False)
-        print(f"[Cam3 Measurements CSV 저장] {cam3_measurements_path}")
-
         return {
             "summary": summary_path,
             "cam2_detailed": cam2_detailed_path,
+            "cam3_detailed": cam3_detailed_path,
             "cam1_measurements": cam1_measurements_path,
-            "cam3_measurements": cam3_measurements_path,
         }
 
     def _print_static_results(self, cam_name: str, results: Dict):
@@ -519,14 +522,114 @@ class TrajectoryRepeatability:
         print(f"  최대 Y 표준편차: {np.max(results['sigma_y_at_each_x']):.4f} mm")
         print(f"  최소 Y 표준편차: {np.min(results['sigma_y_at_each_x']):.4f} mm")
 
+    def _plot_trajectory_overlay(self, ax, cam_data, cam_name: str):
+        """궤적 오버레이 플롯 헬퍼 (Cam2, Cam3 공용)"""
+        if cam_data.get("trajectories") and len(cam_data["trajectories"]) > 0:
+            for traj in cam_data["trajectories"]:
+                ax.plot(traj["x"], traj["y"], "b-", alpha=0.3, linewidth=0.5)
+            if cam_data.get("reference") and len(cam_data["reference"]["x"]) > 0:
+                ax.plot(
+                    cam_data["reference"]["x"],
+                    cam_data["reference"]["y"],
+                    "r-",
+                    linewidth=2,
+                    label="Reference",
+                )
+            sigma_y_str = f"{cam_data['sigma_y']:.4f}" if not np.isnan(cam_data.get('sigma_y', np.nan)) else "N/A"
+            ax.set_title(f"{cam_name} Trajectories\nσ_y={sigma_y_str} mm")
+            ax.legend()
+        else:
+            ax.text(0.5, 0.5, "No trajectory data", ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(f"{cam_name} Trajectories\n(No data)")
+        ax.set_xlabel("X (mm)")
+        ax.set_ylabel("Y (mm)")
+        ax.grid(True, alpha=0.3)
+        ax.axis("equal")
+
+    def _plot_trajectory_sigma_theta(self, ax, cam_data, cam_name: str):
+        """궤적 각도 편차 플롯 헬퍼 (Cam2, Cam3 공용)"""
+        if cam_data.get("target_x") is not None and len(cam_data["target_x"]) > 0:
+            ax.plot(
+                cam_data["target_x"], cam_data["sigma_theta_at_each_x"], "g-", linewidth=2
+            )
+            ax.fill_between(
+                cam_data["target_x"],
+                0,
+                cam_data["sigma_theta_at_each_x"],
+                alpha=0.3,
+                color="green",
+            )
+            sigma_theta_str = f"{cam_data['sigma_theta']:.4f}" if not np.isnan(cam_data.get('sigma_theta', np.nan)) else "N/A"
+            ax.set_title(f"{cam_name} Yaw Repeatability\nσ_θ={sigma_theta_str}°")
+        else:
+            ax.text(0.5, 0.5, "No trajectory data", ha='center', va='center', transform=ax.transAxes)
+            ax.set_title(f"{cam_name} Yaw Repeatability\n(No data)")
+        ax.set_xlabel("X Position (mm)")
+        ax.set_ylabel("σ_θ (deg)")
+        ax.grid(True, alpha=0.3)
+
+    def _plot_trajectory_detailed(self, fig_or_axes, cam_data, cam_name: str):
+        """궤적 상세 분석 플롯 헬퍼 (Y/Theta deviation, Cam2/Cam3 공용)"""
+        if isinstance(fig_or_axes, tuple):
+            ax_y, ax_theta = fig_or_axes
+        else:
+            ax_y = fig_or_axes.add_subplot(1, 2, 1)
+            ax_theta = fig_or_axes.add_subplot(1, 2, 2)
+
+        # Y error along X trajectory
+        if cam_data.get("target_x") is not None and len(cam_data["target_x"]) > 0:
+            ax_y.plot(
+                cam_data["target_x"], cam_data["sigma_y_at_each_x"], "b-", linewidth=2
+            )
+            ax_y.fill_between(
+                cam_data["target_x"],
+                0,
+                cam_data["sigma_y_at_each_x"],
+                alpha=0.3,
+                color="blue",
+            )
+            sigma_y_str = f'{cam_data["sigma_y"]:.4f}' if not np.isnan(cam_data.get("sigma_y", np.nan)) else "N/A"
+            ax_y.set_title(f'{cam_name} Y Repeatability (Lateral Deviation)\nOverall σ_y={sigma_y_str} mm')
+        else:
+            ax_y.text(0.5, 0.5, "No trajectory data", ha='center', va='center', transform=ax_y.transAxes)
+            ax_y.set_title(f"{cam_name} Y Repeatability\n(No data)")
+        ax_y.set_xlabel("X Position (mm)")
+        ax_y.set_ylabel("σ_y (mm)")
+        ax_y.grid(True, alpha=0.3)
+
+        # Theta error along X trajectory
+        if cam_data.get("target_x") is not None and len(cam_data["target_x"]) > 0:
+            ax_theta.plot(
+                cam_data["target_x"], cam_data["sigma_theta_at_each_x"], "g-", linewidth=2
+            )
+            ax_theta.fill_between(
+                cam_data["target_x"],
+                0,
+                cam_data["sigma_theta_at_each_x"],
+                alpha=0.3,
+                color="green",
+            )
+            sigma_theta_str = f'{cam_data["sigma_theta"]:.4f}' if not np.isnan(cam_data.get("sigma_theta", np.nan)) else "N/A"
+            ax_theta.set_title(f'{cam_name} Yaw Repeatability (Angular Deviation)\nOverall σ_θ={sigma_theta_str}°')
+        else:
+            ax_theta.text(0.5, 0.5, "No trajectory data", ha='center', va='center', transform=ax_theta.transAxes)
+            ax_theta.set_title(f"{cam_name} Yaw Repeatability\n(No data)")
+        ax_theta.set_xlabel("X Position (mm)")
+        ax_theta.set_ylabel("σ_θ (deg)")
+        ax_theta.grid(True, alpha=0.3)
+
+        return ax_y, ax_theta
+
     def plot_results(self, output_dir: str = "outputs"):
         """결과 시각화"""
         # Figure 1: Position Repeatability (2x4 layout)
+        # Row 1: Cam1 static position, Cam2 trajectory, Cam3 trajectory, Cam1 position error histogram
+        # Row 2: Cam1 yaw, Cam2 yaw sigma, Cam3 yaw sigma, Cam1 yaw error histogram
         fig1 = plt.figure(figsize=(20, 10))
 
         cam1_data = self.results["cam1"]
-        cam3_data = self.results["cam3"]
         cam2_data = self.results["cam2"]
+        cam3_data = self.results["cam3"]
 
         # Helper function for bin calculation
         def get_bins(data, max_bins=20):
@@ -537,9 +640,9 @@ class TrajectoryRepeatability:
                 return 1
             return min(max_bins, max(1, len(data) // 5))
 
-        # Row 1: Position Repeatability (스캐터는 통계와 동일하게 유효 행만 표시)
+        # Row 1: Position Repeatability
         valid_cam1 = self._valid_mask_for_columns(["cam_1_x(mm)", "cam_1_y(mm)", "cam_1_rz(deg)"])
-        valid_cam3 = self._valid_mask_for_columns(["cam_3_x(mm)", "cam_3_y(mm)", "cam_3_rz(deg)"])
+
         # Cam1 Position scatter plot
         ax1 = plt.subplot(2, 4, 1)
         x_data = self.df.loc[valid_cam1, "cam_1_x(mm)"].astype(float).values
@@ -555,76 +658,32 @@ class TrajectoryRepeatability:
         ax1.grid(True, alpha=0.3)
         ax1.axis("equal")
 
-        # Cam3 Position scatter plot
+        # Cam2 trajectories overlay (X-Y plot)
         ax2 = plt.subplot(2, 4, 2)
-        x_data = self.df.loc[valid_cam3, "cam_3_x(mm)"].astype(float).values
-        y_data = self.df.loc[valid_cam3, "cam_3_y(mm)"].astype(float).values
-        ax2.scatter(x_data, y_data, alpha=0.6, s=50, c="blue")
-        ax2.plot(
-            cam3_data["mean_x"], cam3_data["mean_y"], "r*", markersize=15, label="Mean"
-        )
-        ax2.set_xlabel("X (mm)")
-        ax2.set_ylabel("Y (mm)")
-        ax2.set_title(f"Cam3 Position\nσ_2D={cam3_data['sigma_2d']:.4f} mm")
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        ax2.axis("equal")
+        self._plot_trajectory_overlay(ax2, cam2_data, "Cam2")
 
-        # Position Error Histogram (Cam1 & Cam3)
+        # Cam3 trajectories overlay (X-Y plot)
         ax3 = plt.subplot(2, 4, 3)
+        self._plot_trajectory_overlay(ax3, cam3_data, "Cam3")
+
+        # Cam1 Position Error Histogram
+        ax4 = plt.subplot(2, 4, 4)
         cam1_pos_errors = cam1_data["position_errors"]
-        cam3_pos_errors = cam3_data["position_errors"]
-
         cam1_bins = get_bins(cam1_pos_errors)
-        cam3_bins = get_bins(cam3_pos_errors)
-
         if len(cam1_pos_errors) > 0:
-            ax3.hist(
+            ax4.hist(
                 cam1_pos_errors,
                 bins=cam1_bins,
-                alpha=0.5,
+                alpha=0.7,
                 label="Cam1",
                 edgecolor="black",
                 color="blue",
             )
-        if len(cam3_pos_errors) > 0:
-            ax3.hist(
-                cam3_pos_errors,
-                bins=cam3_bins,
-                alpha=0.5,
-                label="Cam3",
-                edgecolor="black",
-                color="orange",
-            )
-        ax3.set_xlabel("2D Position Error (mm)")
-        ax3.set_ylabel("Frequency")
-        ax3.set_title("Cam1 & Cam3 Position Error Distribution")
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
-
-        # Cam2 trajectories overlay (X-Y plot)
-        ax4 = plt.subplot(2, 4, 4)
-        if len(cam2_data["trajectories"]) > 0:
-            for traj in cam2_data["trajectories"]:
-                ax4.plot(traj["x"], traj["y"], "b-", alpha=0.3, linewidth=0.5)
-            if len(cam2_data["reference"]["x"]) > 0:
-                ax4.plot(
-                    cam2_data["reference"]["x"],
-                    cam2_data["reference"]["y"],
-                    "r-",
-                    linewidth=2,
-                    label="Reference",
-                )
-            sigma_y_str = f"{cam2_data['sigma_y']:.4f}" if not np.isnan(cam2_data['sigma_y']) else "N/A"
-            ax4.set_title(f"Cam2 Trajectories\nσ_y={sigma_y_str} mm")
-            ax4.legend()
-        else:
-            ax4.text(0.5, 0.5, "No trajectory data", ha='center', va='center', transform=ax4.transAxes)
-            ax4.set_title("Cam2 Trajectories\n(No data)")
-        ax4.set_xlabel("X (mm)")
-        ax4.set_ylabel("Y (mm)")
+        ax4.set_xlabel("2D Position Error (mm)")
+        ax4.set_ylabel("Frequency")
+        ax4.set_title("Cam1 Position Error Distribution")
+        ax4.legend()
         ax4.grid(True, alpha=0.3)
-        ax4.axis("equal")
 
         # Row 2: Yaw (θ) Repeatability
         # Cam1 Yaw scatter plot (Trial vs Theta)
@@ -653,84 +712,31 @@ class TrajectoryRepeatability:
         ax5.legend(loc="upper right", fontsize=8)
         ax5.grid(True, alpha=0.3)
 
-        # Cam3 Yaw scatter plot (Trial vs Theta)
+        # Cam2 Angular error along X trajectory
         ax6 = plt.subplot(2, 4, 6)
-        theta_data_cam3 = self.df.loc[valid_cam3, "cam_3_rz(deg)"].astype(float).values
-        trials = np.arange(len(theta_data_cam3))
-        ax6.scatter(trials, theta_data_cam3, alpha=0.6, s=50, c="green")
-        ax6.axhline(
-            y=cam3_data["mean_theta"],
-            color="r",
-            linestyle="--",
-            linewidth=2,
-            label=f"Mean={cam3_data['mean_theta']:.2f}°",
-        )
-        ax6.fill_between(
-            trials,
-            cam3_data["mean_theta"] - cam3_data["sigma_theta"],
-            cam3_data["mean_theta"] + cam3_data["sigma_theta"],
-            alpha=0.2,
-            color="red",
-            label=f"±σ={cam3_data['sigma_theta']:.4f}°",
-        )
-        ax6.set_xlabel("Trial")
-        ax6.set_ylabel("Yaw (deg)")
-        ax6.set_title(f"Cam3 Yaw Repeatability\nσ_θ={cam3_data['sigma_theta']:.4f}°")
-        ax6.legend(loc="upper right", fontsize=8)
-        ax6.grid(True, alpha=0.3)
+        self._plot_trajectory_sigma_theta(ax6, cam2_data, "Cam2")
 
-        # Yaw Error Histogram (Cam1 & Cam3)
+        # Cam3 Angular error along X trajectory
         ax7 = plt.subplot(2, 4, 7)
+        self._plot_trajectory_sigma_theta(ax7, cam3_data, "Cam3")
+
+        # Cam1 Yaw Error Histogram
+        ax8 = plt.subplot(2, 4, 8)
         cam1_theta_errors = cam1_data["theta_errors"]
-        cam3_theta_errors = cam3_data["theta_errors"]
-
         cam1_theta_bins = get_bins(cam1_theta_errors)
-        cam3_theta_bins = get_bins(cam3_theta_errors)
-
         if len(cam1_theta_errors) > 0:
-            ax7.hist(
+            ax8.hist(
                 cam1_theta_errors,
                 bins=cam1_theta_bins,
-                alpha=0.5,
+                alpha=0.7,
                 label="Cam1",
                 edgecolor="black",
                 color="green",
             )
-        if len(cam3_theta_errors) > 0:
-            ax7.hist(
-                cam3_theta_errors,
-                bins=cam3_theta_bins,
-                alpha=0.5,
-                label="Cam3",
-                edgecolor="black",
-                color="purple",
-            )
-        ax7.set_xlabel("Yaw Error (deg)")
-        ax7.set_ylabel("Frequency")
-        ax7.set_title("Cam1 & Cam3 Yaw Error Distribution")
-        ax7.legend()
-        ax7.grid(True, alpha=0.3)
-
-        # Cam2 Angular error along X trajectory
-        ax8 = plt.subplot(2, 4, 8)
-        if len(cam2_data["target_x"]) > 0:
-            ax8.plot(
-                cam2_data["target_x"], cam2_data["sigma_theta_at_each_x"], "g-", linewidth=2
-            )
-            ax8.fill_between(
-                cam2_data["target_x"],
-                0,
-                cam2_data["sigma_theta_at_each_x"],
-                alpha=0.3,
-                color="green",
-            )
-            sigma_theta_str = f"{cam2_data['sigma_theta']:.4f}" if not np.isnan(cam2_data['sigma_theta']) else "N/A"
-            ax8.set_title(f"Cam2 Yaw Repeatability\nσ_θ={sigma_theta_str}°")
-        else:
-            ax8.text(0.5, 0.5, "No trajectory data", ha='center', va='center', transform=ax8.transAxes)
-            ax8.set_title("Cam2 Yaw Repeatability\n(No data)")
-        ax8.set_xlabel("X Position (mm)")
-        ax8.set_ylabel("σ_θ (deg)")
+        ax8.set_xlabel("Yaw Error (deg)")
+        ax8.set_ylabel("Frequency")
+        ax8.set_title("Cam1 Yaw Error Distribution")
+        ax8.legend()
         ax8.grid(True, alpha=0.3)
 
         plt.tight_layout()
@@ -740,57 +746,25 @@ class TrajectoryRepeatability:
 
         # Figure 2: Cam2 Detailed Analysis (Y deviation along trajectory)
         fig2 = plt.figure(figsize=(12, 5))
-
-        # Y error along X trajectory
-        ax_y = plt.subplot(1, 2, 1)
-        if len(cam2_data["target_x"]) > 0:
-            ax_y.plot(
-                cam2_data["target_x"], cam2_data["sigma_y_at_each_x"], "b-", linewidth=2
-            )
-            ax_y.fill_between(
-                cam2_data["target_x"],
-                0,
-                cam2_data["sigma_y_at_each_x"],
-                alpha=0.3,
-                color="blue",
-            )
-            sigma_y_str = f'{cam2_data["sigma_y"]:.4f}' if not np.isnan(cam2_data["sigma_y"]) else "N/A"
-            ax_y.set_title(f'Cam2 Y Repeatability (Lateral Deviation)\nOverall σ_y={sigma_y_str} mm')
-        else:
-            ax_y.text(0.5, 0.5, "No trajectory data", ha='center', va='center', transform=ax_y.transAxes)
-            ax_y.set_title("Cam2 Y Repeatability\n(No data)")
-        ax_y.set_xlabel("X Position (mm)")
-        ax_y.set_ylabel("σ_y (mm)")
-        ax_y.grid(True, alpha=0.3)
-
-        # Theta error along X trajectory
-        ax_theta = plt.subplot(1, 2, 2)
-        if len(cam2_data["target_x"]) > 0:
-            ax_theta.plot(
-                cam2_data["target_x"], cam2_data["sigma_theta_at_each_x"], "g-", linewidth=2
-            )
-            ax_theta.fill_between(
-                cam2_data["target_x"],
-                0,
-                cam2_data["sigma_theta_at_each_x"],
-                alpha=0.3,
-                color="green",
-            )
-            sigma_theta_str = f'{cam2_data["sigma_theta"]:.4f}' if not np.isnan(cam2_data["sigma_theta"]) else "N/A"
-            ax_theta.set_title(f'Cam2 Yaw Repeatability (Angular Deviation)\nOverall σ_θ={sigma_theta_str}°')
-        else:
-            ax_theta.text(0.5, 0.5, "No trajectory data", ha='center', va='center', transform=ax_theta.transAxes)
-            ax_theta.set_title("Cam2 Yaw Repeatability\n(No data)")
-        ax_theta.set_xlabel("X Position (mm)")
-        ax_theta.set_ylabel("σ_θ (deg)")
-        ax_theta.grid(True, alpha=0.3)
-
+        ax_y2 = fig2.add_subplot(1, 2, 1)
+        ax_theta2 = fig2.add_subplot(1, 2, 2)
+        self._plot_trajectory_detailed((ax_y2, ax_theta2), cam2_data, "Cam2")
         plt.tight_layout()
         fig2_path = f"{output_dir}/cam2_trajectory_detailed.png"
         plt.savefig(fig2_path, dpi=300, bbox_inches="tight")
         print(f"[그래프 저장] {fig2_path}")
 
-        return fig1, fig2
+        # Figure 3: Cam3 Detailed Analysis (Y deviation along trajectory)
+        fig3 = plt.figure(figsize=(12, 5))
+        ax_y3 = fig3.add_subplot(1, 2, 1)
+        ax_theta3 = fig3.add_subplot(1, 2, 2)
+        self._plot_trajectory_detailed((ax_y3, ax_theta3), cam3_data, "Cam3")
+        plt.tight_layout()
+        fig3_path = f"{output_dir}/cam3_trajectory_detailed.png"
+        plt.savefig(fig3_path, dpi=300, bbox_inches="tight")
+        print(f"[그래프 저장] {fig3_path}")
+
+        return fig1, fig2, fig3
 
 
 def _circular_mean_deg(angles_deg: np.ndarray) -> float:
