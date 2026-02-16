@@ -57,14 +57,17 @@ class TrackingManager:
         self.stopped_frames: Dict[int, np.ndarray] = {}  # Store frame when speed first became near zero
         self.camera2_trajectory = None  # Will be initialized with deque
         self.camera2_trajectory_sent = False
+        self.camera3_trajectory = None  # Will be initialized with deque
+        self.camera3_trajectory_sent = False
         self.last_frames: Dict[int, np.ndarray] = {}  # Store last frame for each camera
-        
+
         # Callbacks for camera-specific logic
         self.on_camera_1_3_stop: Optional[Callable[[int], None]] = None
         self.on_camera_2_stop: Optional[Callable[[], None]] = None
         # Callback signature: (camera_id, detection, tracking_result, frame)
         self.on_camera_1_3_first_detection: Optional[Callable[[int, Detection, Dict, np.ndarray], None]] = None
         self.on_camera_2_trajectory: Optional[Callable[[int, Optional[np.ndarray], List[Detection], List[Dict], str], bool]] = None
+        self.on_camera_3_trajectory: Optional[Callable[[int, Optional[np.ndarray], List[Detection], List[Dict], str], bool]] = None
     
     def set_vision_active(self, active: bool):
         """Set vision active state."""
@@ -197,9 +200,11 @@ class TrackingManager:
                 # Camera 1, 3: check response_sent
                 # Camera 2: check camera2_trajectory_sent
                 skip_visualization = False
-                if camera_id in [1, 3] and cam_state.response_sent:
+                if camera_id == 1 and cam_state.response_sent:
                     skip_visualization = True
                 elif camera_id == 2 and self.camera2_trajectory_sent:
+                    skip_visualization = True
+                elif camera_id == 3 and self.camera3_trajectory_sent:
                     skip_visualization = True
                 
                 if skip_visualization:
@@ -217,15 +222,15 @@ class TrackingManager:
                 
                 # Update detection state
                 if has_detection:
-                    if not (not self.use_area_scan and camera_id in [1, 3]):
+                    if not (not self.use_area_scan and camera_id == 1):
                         self.latest_detections[camera_id] = detections[0]
-                    if camera_id in [1, 3] and not self.use_area_scan:
+                    if camera_id == 1 and not self.use_area_scan:
                         # Mark that first detection has occurred
                         if not cam_state.has_first_detection:
                             cam_state.has_first_detection = True
                         cam_state.reset_detection_loss()
                 else:
-                    if camera_id in [1, 3] and not self.use_area_scan:
+                    if camera_id == 1 and not self.use_area_scan:
                         # Only increment if first detection has already occurred
                         if cam_state.has_first_detection:
                             cam_state.increment_detection_loss()
@@ -303,7 +308,7 @@ class TrackingManager:
                 logger.info(f"Camera {camera_id}: Using last frame for result image")
             else:
                 logger.warning(f"Camera {camera_id}: No last frame available, save_result_image will try to read from loader")
-            
+
             self.on_camera_2_trajectory(
                 camera_id,
                 frame=last_frame,
@@ -311,9 +316,23 @@ class TrackingManager:
                 tracking_results=[],
                 reason="No more frames available"
             )
-        
+        elif camera_id == 3 and self.on_camera_3_trajectory:
+            last_frame = self.last_frames.get(camera_id)
+            if last_frame is not None:
+                logger.info(f"Camera {camera_id}: Using last frame for result image")
+            else:
+                logger.warning(f"Camera {camera_id}: No last frame available, save_result_image will try to read from loader")
+
+            self.on_camera_3_trajectory(
+                camera_id,
+                frame=last_frame,
+                detections=[],
+                tracking_results=[],
+                reason="No more frames available"
+            )
+
         if not self.use_area_scan:
-            if camera_id in [1, 3] and self.on_camera_1_3_stop:
+            if camera_id == 1 and self.on_camera_1_3_stop:
                 self.on_camera_1_3_stop(camera_id)
             elif camera_id == 2 and self.on_camera_2_stop:
                 self.on_camera_2_stop()
@@ -330,12 +349,16 @@ class TrackingManager:
         cam_state
     ) -> bool:
         """Handle camera-specific tracking logic. Returns False if tracking should stop."""
-        if camera_id in [1, 3]:
+        if camera_id == 1:
             return self._handle_camera_1_3_tracking(
                 camera_id, trackers, detections, tracking_results, frame, cam_state
             )
         elif camera_id == 2:
             return self._handle_camera_2_tracking(
+                camera_id, trackers, tracking_results, has_detection, vis_frame, detections, cam_state, frame
+            )
+        elif camera_id == 3:
+            return self._handle_camera_3_tracking(
                 camera_id, trackers, tracking_results, has_detection, vis_frame, detections, cam_state, frame
             )
         return True
@@ -572,9 +595,110 @@ class TrackingManager:
         vy = state[4]  # velocity y (pixels/frame)
         return np.sqrt(vx**2 + vy**2)
     
+    def _handle_camera_3_tracking(
+        self,
+        camera_id: int,
+        trackers: Dict,
+        tracking_results: List[Dict],
+        has_detection: bool,
+        vis_frame: np.ndarray,
+        detections: List[Detection],
+        cam_state,
+        frame: Optional[np.ndarray] = None
+    ) -> bool:
+        """Handle camera 3 specific tracking logic (trajectory mode)."""
+        # Get camera-specific tracking config
+        cam_tracking_config = self.get_camera_tracking_config(camera_id)
+        detection_loss_thresh = cam_tracking_config.get('detection_loss_threshold_frames', 30)
+        camera3_trajectory_max_frames = cam_tracking_config.get('camera3_trajectory_max_frames', 300)
+
+        if tracking_results:
+            amr_tracker = self.camera_manager.amr_trackers.get(camera_id)
+            if amr_tracker and amr_tracker.tracker and amr_tracker.track_id is not None:
+                tracker = amr_tracker.tracker
+            else:
+                tracker = next(iter(trackers.values())) if trackers else None
+
+            if tracker:
+                kf_state = tracker.kf.statePost.flatten()
+                pixel_size_dict = self.camera_manager.get_pixel_size_dict(camera_id)
+                x_pix = kf_state[0]
+                y_pix = kf_state[1]
+                x_mm = x_pix * pixel_size_dict['x']
+                y_mm = y_pix * pixel_size_dict['y']
+                rz_deg = kf_state[2]
+
+                logger.debug(
+                    f"Camera {camera_id}: Tracking - "
+                    f"x={x_mm:.3f}mm, y={y_mm:.3f}mm, yaw={rz_deg:.3f}deg, "
+                    f"x_pix={x_pix:.1f}, y_pix={y_pix:.1f}"
+                )
+
+                # 미초기화/리셋 직후 (0,0) 위치는 trajectory에 넣지 않음
+                if x_pix != 0 or y_pix != 0:
+                    trajectory_index = len(self.camera3_trajectory)
+                    self.camera3_trajectory.append({
+                        "track_idx": trajectory_index,
+                        "x": round(float(x_mm), 3),
+                        "y": round(float(y_mm), 3),
+                        "rz": round(float(rz_deg), 3),
+                        "x_pix": round(float(x_pix), 1),
+                        "y_pix": round(float(y_pix), 1)
+                    })
+
+        # Check if detection lost
+        # Only increment detection loss after first detection has occurred
+        if has_detection:
+            if not cam_state.has_first_detection:
+                cam_state.has_first_detection = True
+            cam_state.reset_detection_loss()
+        else:
+            if cam_state.has_first_detection:
+                cam_state.increment_detection_loss()
+
+        logger.info(
+            f"Camera 3: Trajectory tracking - "
+            f"trajectory_frames={len(self.camera3_trajectory)}/{camera3_trajectory_max_frames}, "
+            f"has_detection={has_detection}, "
+            f"detection_loss_frames={cam_state.detection_loss_frames}/{detection_loss_thresh}"
+        )
+
+        # Check if should send trajectory data
+        end_tracking = False
+        reason = ""
+        if not has_detection and cam_state.detection_loss_frames >= detection_loss_thresh and len(self.camera3_trajectory) > 0:
+            end_tracking = True
+            reason = f"detection lost for {cam_state.detection_loss_frames} frames (>= {detection_loss_thresh})"
+        elif len(self.camera3_trajectory) >= camera3_trajectory_max_frames:
+            end_tracking = True
+            reason = f"trajectory reached {len(self.camera3_trajectory)} frames (>= {camera3_trajectory_max_frames})"
+
+        if end_tracking:
+            if self.on_camera_3_trajectory:
+                frame_to_save = frame if frame is not None else vis_frame
+                logger.info(f"Camera {camera_id}: End tracking triggered ({reason}), frame_to_save is {'not None' if frame_to_save is not None else 'None'}")
+                if self.on_camera_3_trajectory(
+                    camera_id,
+                    frame_to_save,
+                    detections,
+                    tracking_results,
+                    reason
+                ):
+                    cam_state.reset_detection_loss()
+                    logger.info("Camera 3: Tracking loop exiting after sending trajectory.")
+                    return False  # Break tracking loop
+
+        return True
+
     def initialize_camera2_trajectory(self, maxlen: int):
         """Initialize camera 2 trajectory deque."""
         from collections import deque
         self.camera2_trajectory = deque(maxlen=maxlen)
         self.camera2_trajectory_sent = False
+
+    def initialize_camera3_trajectory(self, maxlen: int):
+        """Initialize camera 3 trajectory deque."""
+        from collections import deque
+        self.camera3_trajectory = deque(maxlen=maxlen)
+        self.camera3_trajectory_sent = False
 
