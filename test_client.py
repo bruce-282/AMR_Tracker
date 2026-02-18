@@ -501,6 +501,8 @@ def main():
                         logger.error(f"  [FAIL] Failed: {response.get('error_desc', 'Unknown error')}")
                 else:
                     # use_area_scan=false: client does NOT send requests, only waits for periodic responses
+                    from datetime import datetime
+
                     logger.info("\n[INFO] use_area_scan=false: Waiting for responses from server...")
                     logger.info("  [INFO] 1 response = 1 camera result (cmd 3/4/5).")
                     logger.info("  [INFO] cam1: static position (dict), cam2/cam3: trajectory (list)")
@@ -508,13 +510,23 @@ def main():
                     logger.info(f"  [INFO] 1 full set = 3 responses (cam1+cam2+cam3)")
                     logger.info(f"  [INFO] Waiting for {args.cycles} response(s), then sending END_VISION")
 
-                    # 1 response = 1 camera result (any of cmd 3, 4, 5). --cycles N → exit after N responses.
-                    # 1 full set = 3 responses (cam1+cam2+cam3). Use multiples of 3 for complete sets.
                     cycles_to_complete = args.cycles
                     cycle_count = 0
-                    response_count = {3: 0, 4: 0, 5: 0}  # cam1, cam2, cam3
+                    response_count = {3: 0, 4: 0, 5: 0}
 
-                    client.socket.settimeout(None)  # No timeout
+                    # CSV: 매 회차 결과를 저장
+                    from src.utils.csv_writer import (
+                        init_csv_file, append_csv_row, extract_position, generate_csv_path
+                    )
+                    model_name = client.selected_model or "unknown"
+                    csv_path = generate_csv_path(model_name)
+                    csv_file = init_csv_file(csv_path)
+                    logger.info(f"  [CSV] Saving cycle results to: {csv_path}")
+
+                    current_cycle = {}  # {3: data, 4: data, 5: data}
+                    completed_set_count = 0
+
+                    client.socket.settimeout(None)
                     buffer = b""
 
                     try:
@@ -524,65 +536,53 @@ def main():
                                 break
                             buffer += chunk
 
-                            # Try to parse JSON
                             try:
                                 text = buffer.decode('utf-8')
-                                # Find complete JSON object
                                 brace_count = 0
                                 json_start = -1
                                 json_end = -1
 
-                                for i, char in enumerate(text):
+                                for idx, char in enumerate(text):
                                     if char == '{':
                                         if brace_count == 0:
-                                            json_start = i
+                                            json_start = idx
                                         brace_count += 1
                                     elif char == '}':
                                         brace_count -= 1
                                         if brace_count == 0 and json_start >= 0:
-                                            json_end = i + 1
+                                            json_end = idx + 1
                                             json_str = text[json_start:json_end]
                                             response = json.loads(json_str)
 
                                             cmd = response.get("cmd")
 
-                                            # Handle NOTIFY_CONNECTION (cmd: 7)
                                             if cmd == 7:
-                                                # Log NOTIFY_CONNECTION message as-is
                                                 logger.info(f"[NOTIFY_CONNECTION] {json.dumps(response, indent=2)}")
-
-                                                # Remove processed JSON from buffer
                                                 buffer = text[json_end:].encode('utf-8')
                                                 json_start = -1
                                                 json_end = -1
                                                 continue
 
-                                            # Handle camera responses (cmd: 3, 4, 5)
                                             if cmd in [3, 4, 5] and response.get("success"):
-                                                # Calculate memory size
                                                 import sys
                                                 json_size_bytes = len(json_str.encode('utf-8'))
                                                 json_size_kb = json_size_bytes / 1024
                                                 json_size_mb = json_size_kb / 1024
 
-                                                # Estimate Python object size
                                                 object_size_bytes = sys.getsizeof(response)
                                                 if isinstance(response.get("data"), list):
-                                                    # For trajectory data (list of dicts)
                                                     for item in response.get("data", []):
                                                         object_size_bytes += sys.getsizeof(item)
                                                         if isinstance(item, dict):
                                                             for key, value in item.items():
                                                                 object_size_bytes += sys.getsizeof(key) + sys.getsizeof(value)
                                                 elif isinstance(response.get("data"), dict):
-                                                    # For single detection data
                                                     for key, value in response.get("data", {}).items():
                                                         object_size_bytes += sys.getsizeof(key) + sys.getsizeof(value)
 
                                                 object_size_kb = object_size_bytes / 1024
                                                 object_size_mb = object_size_kb / 1024
 
-                                                # Log response in same format as send_request
                                                 logger.info(f"Response: {json.dumps(response, indent=2)}")
                                                 logger.info(
                                                     f"Response memory size: "
@@ -591,11 +591,33 @@ def main():
                                                 )
 
                                                 response_count[cmd] += 1
-                                                # 1사이클 = 카메라 응답 1건 (cmd 3/4/5 중 하나). --cycles N → N건 수신 시 종료
                                                 cycle_count = response_count[3] + response_count[4] + response_count[5]
                                                 logger.info(f"\n[INFO] === Cycle {cycle_count}/{cycles_to_complete} (cam1={response_count[3]}, cam2={response_count[4]}, cam3={response_count[5]}) ===")
 
-                                                # Remove processed JSON from buffer
+                                                # Collect cycle data for CSV
+                                                current_cycle[cmd] = response.get("data")
+
+                                                # Full set complete (cam1+cam2+cam3) → write CSV row
+                                                if all(c in current_cycle for c in [3, 4, 5]):
+                                                    completed_set_count += 1
+                                                    cycle_info = {
+                                                        "timestamp": datetime.now().strftime("%Y-%m-%d_%H;%M;%S"),
+                                                        "cam1": current_cycle.get(3),
+                                                        "cam2": current_cycle.get(4),
+                                                        "cam3": current_cycle.get(5),
+                                                    }
+                                                    append_csv_row(csv_file, cycle_info)
+                                                    cam1_x, cam1_y, cam1_rz = extract_position(cycle_info["cam1"])
+                                                    cam2_len = len(cycle_info["cam2"]) if isinstance(cycle_info["cam2"], list) else 0
+                                                    cam3_len = len(cycle_info["cam3"]) if isinstance(cycle_info["cam3"], list) else 0
+                                                    logger.info(
+                                                        f"  [CSV] Set #{completed_set_count} saved: "
+                                                        f"cam1=({cam1_x}, {cam1_y}, {cam1_rz}), "
+                                                        f"cam2={cam2_len} points, "
+                                                        f"cam3={cam3_len} points"
+                                                    )
+                                                    current_cycle = {}
+
                                                 buffer = text[json_end:].encode('utf-8')
 
                                                 if cycle_count >= cycles_to_complete:
@@ -609,26 +631,30 @@ def main():
                             except (UnicodeDecodeError, json.JSONDecodeError):
                                 continue
 
-                        logger.info(f"\n[INFO] All {cycles_to_complete} cycles completed. Sending END_VISION...")
+                        logger.info(f"\n[INFO] All {cycles_to_complete} responses received ({completed_set_count} full sets). Sending END_VISION...")
                     except KeyboardInterrupt:
                         logger.info("  [INFO] Interrupted by user")
                     except Exception as e:
                         logger.error(f"  [ERROR] Error during response wait: {e}")
                         import traceback
                         traceback.print_exc()
+                    finally:
+                        csv_file.close()
+                        logger.info(f"  [CSV] File closed: {csv_path}")
 
-                # Test 4: CALC RESULT
-
-                # Test 5: END VISION
+                # END VISION → CALC RESULT
                 time.sleep(3)
                 client.test_end_vision()
 
-                response = client.test_calc_result(path_csv="data/20251118-154122_zoom1_raw_data.csv")
-                if not response.get("success"):
-                    logger.error(f"CALC RESULT failed: {response}")
-                    return
+                if completed_set_count > 0:
+                    logger.info(f"\n[CALC] Running CALC RESULT on {csv_path} ({completed_set_count} sets)...")
+                    response = client.test_calc_result(path_csv=str(csv_path))
+                    if not response.get("success"):
+                        logger.error(f"CALC RESULT failed: {response}")
+                    else:
+                        logger.info(f"CALC RESULT success: {response}")
                 else:
-                    logger.info(f"CALC RESULT success: {response}")
+                    logger.warning("[CALC] No complete sets collected, skipping CALC RESULT")
 
                 logger.info("\n" + "=" * 60)
                 logger.info("[OK] All tests completed")

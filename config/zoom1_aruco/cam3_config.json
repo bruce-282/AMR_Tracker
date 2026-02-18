@@ -2,7 +2,7 @@
   "StreamAResolution": "4096x2160",
   "StreamAEncodeMode": "MJPEG",
   "Focus": "2m",
-  "FocusOffset": 32,
+  "FocusOffset": 34,
   "Iris": 25,
   "Zoom": 0,
   "ExposureTime": 32000,
@@ -14,14 +14,14 @@
   "calibration": {
     "CameraMatrix": [
       [
-        3609.535,
+        3604.332,
         0.0,
-        1939.708
+        2059.030
       ],
       [
         0.0,
-        3610.380,
-        955.580
+        3603.254,
+        1067.909
       ],
       [
         0.0,
@@ -30,9 +30,7 @@
       ]
     ],
     "DistortionCoefficients": [
-      [
-        -0.070256, 0.163879, -0.006555, -0.000548, 0.0
-      ]
+      [ -0.061021, 0.144135, 0.001500, 0.001198, 0.0 ]
     ]
   }
 }

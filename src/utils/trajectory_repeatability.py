@@ -142,9 +142,11 @@ class TrajectoryRepeatability:
         theta_errors = self.angular_diff(theta_data, theta_mean)
         sigma_theta = np.std(theta_errors, ddof=1)
 
-        # 2D position error
+        # 2D position repeatability: combined standard deviation
+        sigma_2d = np.sqrt(sigma_x**2 + sigma_y**2)
+
+        # per-point distance from mean (for histogram / ISO 9283)
         position_errors = np.sqrt((x_data - x_mean) ** 2 + (y_data - y_mean) ** 2)
-        sigma_2d = np.std(position_errors, ddof=1)
 
         # ISO 9283 방식: Rp = mean + 3*sigma
         # rp_2d = np.mean(position_errors) + 3 * sigma_2d
@@ -904,8 +906,7 @@ class ManualRepeatability:
         x_std, y_std = r["x_std"], r["y_std"]
         mean_theta_deg = _circular_mean_deg(theta_deg)
         sigma_theta = np.std(_angular_diff_deg(theta_deg, mean_theta_deg), ddof=1)
-        # Cam1/Cam3와 동일하게 σ(표준편차)만 표시 (3σ 아님)
-        sigma_2d = np.std(np.sqrt((x_v - x_mean) ** 2 + (y_v - y_mean) ** 2), ddof=1)
+        sigma_2d = np.sqrt(x_std**2 + y_std**2)
 
         fig = plt.figure(figsize=(14, 10))
 

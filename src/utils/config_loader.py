@@ -213,8 +213,9 @@ def get_execution_config(
 def get_camera_config_from_preset(
     camera_id: int,
     preset: Dict[str, Any],
-    product_model_name: Optional[str] = None
-) -> Tuple[Optional[str], Optional[str], float, Optional[str]]:
+    product_model_name: Optional[str] = None,
+    video_source_index: Optional[int] = None
+) -> Tuple[Optional[str], Optional[Any], float, Optional[str]]:
     """
     Get camera configuration from preset.
     
@@ -222,9 +223,13 @@ def get_camera_config_from_preset(
         camera_id: Camera ID (1, 2, or 3)
         preset: Preset dictionary from execution.presets
         product_model_name: Product model name (for logging)
+        video_source_index: If id is a list, selects source at this index (cycling).
+                           None means return the raw id value as-is.
     
     Returns:
         Tuple of (loader_mode, source, fps, config_path)
+        When id is a list and video_source_index is provided, source is the selected element.
+        When id is a list and video_source_index is None, source is the full list.
     """
     loader_mode = preset.get("loader_mode", "auto")
     
@@ -235,8 +240,18 @@ def get_camera_config_from_preset(
         logger.warning(f"Camera {camera_id}: '{camera_key}' not found or invalid in preset")
         return None, None, 30.0, None
     
-    # Get source from camera's id field
+    # Get source from camera's id field (supports string or list)
     source = camera_config.get("id")
+    
+    if isinstance(source, list) and len(source) > 0:
+        if video_source_index is not None:
+            idx = video_source_index % len(source)
+            selected = source[idx]
+            logger.info(f"Camera {camera_id}: id is a list ({len(source)} items), "
+                       f"selected index {idx}: {selected}")
+            source = selected
+        else:
+            logger.debug(f"Camera {camera_id}: id is a list ({len(source)} items), returning raw list")
     
     # Get fps from camera's measurement.fps
     measurement = camera_config.get("measurement", {})
@@ -255,8 +270,9 @@ def get_camera_config(
     camera_id: int,
     product_model_name: Optional[str],
     main_config_execution: Optional[Dict[str, Any]],
-    preset_name: Optional[str] = None
-) -> Tuple[str, Optional[str], float, Optional[str]]:
+    preset_name: Optional[str] = None,
+    video_source_index: Optional[int] = None
+) -> Tuple[str, Optional[Any], float, Optional[str]]:
     """
     Get camera configuration (loader_mode, source, fps, config_path) from config files.
     
@@ -269,6 +285,7 @@ def get_camera_config(
         product_model_name: Product model name (e.g., "zoom1")
         main_config_execution: Execution config from main config file
         preset_name: Preset name to use
+        video_source_index: If id is a list in config, selects source at this index (cycling).
     
     Returns:
         Tuple of (loader_mode, source, fps, config_path)
@@ -292,7 +309,8 @@ def get_camera_config(
         preset = presets.get(preset_name, {})
         if preset:
             loader_mode, source, fps, config_path = get_camera_config_from_preset(
-                camera_id, preset, product_model_name
+                camera_id, preset, product_model_name,
+                video_source_index=video_source_index
             )
             if loader_mode and source:
                 logger.info(

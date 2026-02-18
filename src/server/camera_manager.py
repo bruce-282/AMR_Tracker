@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any
 import cv2
 
 from src.utils.sequence_loader import create_sequence_loader, BaseLoader
@@ -12,12 +12,12 @@ from src.utils.config_loader import (
     get_camera_distance_map_paths, 
     get_camera_homographies,
     get_execution_config,
+    get_camera_config_from_preset,
     load_tracker_config_file,
     load_product_model_config
 )
 from src.core.amr_tracker import EnhancedAMRTracker
 from .model_config import ModelConfig
-# SystemConfig removed - all configs loaded directly json
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,10 @@ class CameraManager:
         self.frame_numbers: Dict[int, int] = {}
         self.camera_status: Dict[int, bool] = {1: False, 2: False, 3: False}
         
+        # Video source cycling: id가 리스트인 경우 회차마다 순환 선택
+        self._video_source_lists: Dict[int, List[str]] = {}  # camera_id -> source list
+        self._video_source_indices: Dict[int, int] = {}  # camera_id -> current index
+        
         # Trackers dict for compatibility with existing code that accesses trackers directly
         # Note: EnhancedAMRTracker manages its own tracker internally
         self.trackers: Dict[int, Dict] = {}  # camera_id -> tracker dict
@@ -61,6 +65,9 @@ class CameraManager:
     def get_camera_config(self, camera_id: int, product_model_name: Optional[str] = None) -> Tuple[str, Optional[Any], float, Optional[str]]:
         """
         Get camera configuration (loader_mode, source, fps, config_path).
+        
+        If config id is a list, the current cycle index is used to select the source.
+        Use advance_video_source() to move to the next source in the list.
         
         Args:
             camera_id: Camera ID (1, 2, or 3)
@@ -74,12 +81,21 @@ class CameraManager:
         
         # Load execution config json
         exec_config = get_execution_config(product_model_name, None)
+        
+        # Pass current video_source_index for list id cycling
+        video_source_index = self._video_source_indices.get(camera_id)
+        
         loader_mode, source, fps, config_path = get_camera_config(
             camera_id=camera_id,
             product_model_name=product_model_name,
             main_config_execution=exec_config,
-            preset_name=self.preset_name
+            preset_name=self.preset_name,
+            video_source_index=video_source_index
         )
+        
+        # Detect and register list sources for cycling
+        # (need raw config to check if id is a list before index selection)
+        self._register_video_source_list(camera_id, product_model_name, exec_config)
         
         # If camera mode and source is not set, use device ID from product model config
         if loader_mode == "camera" and not source and product_model_name:
@@ -87,6 +103,79 @@ class CameraManager:
             logger.info(f"Camera {camera_id}: Using device_id={source} from product config '{product_model_name}'")
         
         return loader_mode, source, fps, config_path
+    
+    def _register_video_source_list(self, camera_id: int, product_model_name: Optional[str], exec_config: Optional[Dict]) -> None:
+        """Register video source list from preset config if id is a list."""
+        if camera_id in self._video_source_lists:
+            return  # Already registered
+        
+        if not exec_config:
+            return
+        
+        preset_name = self.preset_name or exec_config.get("use_preset")
+        if not preset_name:
+            return
+        
+        presets = exec_config.get("presets", {})
+        preset = presets.get(preset_name, {})
+        if not preset:
+            return
+        
+        camera_key = f"camera_{camera_id}"
+        camera_config = preset.get(camera_key, {})
+        if not isinstance(camera_config, dict):
+            return
+        
+        source_id = camera_config.get("id")
+        if isinstance(source_id, list) and len(source_id) > 0:
+            self._video_source_lists[camera_id] = source_id
+            if camera_id not in self._video_source_indices:
+                self._video_source_indices[camera_id] = 0
+            logger.info(f"Camera {camera_id}: Registered {len(source_id)} video sources for cycling: {source_id}")
+    
+    def has_video_source_list(self, camera_id: int) -> bool:
+        """Check if a camera has multiple video sources configured."""
+        return camera_id in self._video_source_lists and len(self._video_source_lists[camera_id]) > 1
+    
+    def advance_video_source(self, camera_id: int) -> Optional[str]:
+        """
+        Advance to the next video source in the cycle for a camera.
+        
+        Returns:
+            The new source path, or None if camera has no source list.
+        """
+        if camera_id not in self._video_source_lists:
+            return None
+        
+        source_list = self._video_source_lists[camera_id]
+        old_idx = self._video_source_indices.get(camera_id, 0)
+        new_idx = (old_idx + 1) % len(source_list)
+        self._video_source_indices[camera_id] = new_idx
+        
+        new_source = source_list[new_idx]
+        logger.info(f"Camera {camera_id}: Advanced video source index {old_idx} -> {new_idx} "
+                    f"({len(source_list)} total), next source: {new_source}")
+        return new_source
+    
+    def get_video_source_info(self, camera_id: int) -> Optional[Dict[str, Any]]:
+        """Get current video source cycling info for a camera."""
+        if camera_id not in self._video_source_lists:
+            return None
+        source_list = self._video_source_lists[camera_id]
+        idx = self._video_source_indices.get(camera_id, 0)
+        return {
+            "sources": source_list,
+            "current_index": idx,
+            "current_source": source_list[idx % len(source_list)],
+            "total": len(source_list)
+        }
+    
+    def reset_video_source_indices(self) -> None:
+        """Reset all video source cycle indices to 0."""
+        for camera_id in self._video_source_indices:
+            self._video_source_indices[camera_id] = 0
+        self._video_source_lists.clear()
+        logger.info("All video source cycle indices reset")
     
     def load_camera_pixel_sizes(self, preset_name: Optional[str] = None, product_model_name: Optional[str] = None):
         """Pre-load pixel sizes for all cameras."""
@@ -479,6 +568,102 @@ class CameraManager:
         """Release all camera resources."""
         for camera_id in list(self.camera_loaders.keys()):
             self.release_camera(camera_id)
+    
+    def reset_loader_for_cycle(self, camera_id: int) -> bool:
+        """
+        Reset a camera loader for a new cycle.
+        
+        - For video loaders: reset to frame 0 (replay the same video)
+        - For cameras with list sources: advance index and recreate loader with next video
+        - For camera mode (Novitec): no-op (use start/stop_camera_stream instead)
+        
+        Returns:
+            True if loader was reset/recreated successfully, False otherwise.
+        """
+        loader = self.camera_loaders.get(camera_id)
+        if loader is None:
+            return False
+        
+        # For cameras with list sources, advance to next video
+        if self.has_video_source_list(camera_id):
+            new_source = self.advance_video_source(camera_id)
+            if new_source is None:
+                return False
+            
+            # Release old loader
+            if hasattr(loader, 'release'):
+                loader.release()
+            
+            # Recreate loader with new source using same parameters
+            try:
+                loader_mode = "video"
+                fps = self.get_fps_from_loader(loader) if loader else 30.0
+                
+                enable_undistortion = False
+                camera_matrix = None
+                dist_coeffs = None
+                if hasattr(loader, '_enable_undistortion'):
+                    enable_undistortion = loader._enable_undistortion
+                if hasattr(loader, '_camera_matrix'):
+                    camera_matrix = loader._camera_matrix
+                if hasattr(loader, '_dist_coeffs'):
+                    dist_coeffs = loader._dist_coeffs
+                
+                new_loader = create_sequence_loader(
+                    new_source,
+                    fps=fps,
+                    loader_mode=loader_mode,
+                    enable_undistortion=enable_undistortion,
+                    camera_matrix=camera_matrix,
+                    dist_coeffs=dist_coeffs,
+                    camera_index=camera_id,
+                    enable_buffering=False,
+                )
+                if new_loader is None:
+                    logger.error(f"Camera {camera_id}: Failed to create loader for new source: {new_source}")
+                    return False
+                
+                self.camera_loaders[camera_id] = new_loader
+                self.frame_numbers[camera_id] = 0
+                logger.info(f"Camera {camera_id}: Loader recreated with new source: {new_source}")
+                return True
+            except Exception as e:
+                logger.error(f"Camera {camera_id}: Failed to reinitialize loader: {e}")
+                return False
+        
+        # For video loaders with single source: reset to frame 0
+        if hasattr(loader, 'cap') and loader.cap is not None:
+            loader.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            if hasattr(loader, 'frame_number'):
+                loader.frame_number = 0
+            self.frame_numbers[camera_id] = 0
+            logger.info(f"Camera {camera_id}: Video loader reset to frame 0")
+            return True
+        
+        return False
+    
+    def prepare_all_cameras_for_next_cycle(self) -> Dict[int, bool]:
+        """
+        Prepare all video-mode cameras for the next cycle.
+        Advances list sources and resets single-source video loaders.
+        
+        Returns:
+            Dict mapping camera_id -> success status for each camera that was reset.
+        """
+        results = {}
+        for camera_id in list(self.camera_loaders.keys()):
+            loader = self.camera_loaders.get(camera_id)
+            if loader is None:
+                continue
+            # Only reset video loaders (not Novitec camera loaders)
+            from src.utils.sequence_loader import NovitecCameraLoader
+            if isinstance(loader, NovitecCameraLoader):
+                continue
+            results[camera_id] = self.reset_loader_for_cycle(camera_id)
+        
+        if results:
+            logger.info(f"Cycle preparation results: {results}")
+        return results
     
     def stop_camera_stream(self, camera_id: int) -> bool:
         """

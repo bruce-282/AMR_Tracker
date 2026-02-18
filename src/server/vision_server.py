@@ -914,6 +914,16 @@ class VisionServer:
             self.logger.info("Camera 3: Tracking finished. Waiting for client request (use_area_scan=true).")
             return
 
+        # Prepare all cameras for next cycle (advance list sources, reset video loaders)
+        cycle_results = self.camera_manager.prepare_all_cameras_for_next_cycle()
+        if cycle_results:
+            for cam_id, success in cycle_results.items():
+                info = self.camera_manager.get_video_source_info(cam_id)
+                if info:
+                    self.logger.info(f"Camera {cam_id}: Cycle advanced to source [{info['current_index']}/{info['total']}]: {info['current_source']}")
+                elif success:
+                    self.logger.info(f"Camera {cam_id}: Video loader reset for next cycle")
+
         self.logger.info("Camera 3: Starting camera 1 stream.")
         self._reset_camera_state(1)
         if 1 not in self.tracking_threads or not self.tracking_threads[1].is_alive():
