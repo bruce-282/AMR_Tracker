@@ -623,11 +623,13 @@ class TrajectoryRepeatability:
         return ax_y, ax_theta
 
     def plot_results(self, output_dir: str = "outputs"):
-        """결과 시각화"""
-        # Figure 1: Repeatability Overview (2x3 layout)
-        # Row 1: Cam1 position, Cam2 trajectory, Cam3 trajectory
-        # Row 2: Cam1 yaw, Cam2 yaw sigma, Cam3 yaw sigma
-        fig1 = plt.figure(figsize=(15, 10))
+        """결과 시각화 — 단일 PNG (3x3 layout)
+
+        Row 1: Cam1 Position, Cam1 Yaw, Cam1 X/Y Trend
+        Row 2: Cam2 Trajectory, Cam2 Y σ, Cam2 Yaw σ
+        Row 3: Cam3 Trajectory, Cam3 Y σ, Cam3 Yaw σ
+        """
+        fig, axes = plt.subplots(3, 3, figsize=(18, 15))
 
         cam1_data = self.results["cam1"]
         cam2_data = self.results["cam2"]
@@ -635,85 +637,65 @@ class TrajectoryRepeatability:
 
         valid_cam1 = self._valid_mask_for_columns(["cam_1_x(mm)", "cam_1_y(mm)", "cam_1_rz(deg)"])
 
-        # Row 1: Position Repeatability
-        ax1 = plt.subplot(2, 3, 1)
+        # ── Row 1: Cam1 ──
+        ax = axes[0, 0]
         x_data = self.df.loc[valid_cam1, "cam_1_x(mm)"].astype(float).values
         y_data = self.df.loc[valid_cam1, "cam_1_y(mm)"].astype(float).values
-        ax1.scatter(x_data, y_data, alpha=0.6, s=50, c="blue")
-        ax1.plot(
-            cam1_data["mean_x"], cam1_data["mean_y"], "r*", markersize=15, label="Mean"
-        )
-        ax1.set_xlabel("X (mm)")
-        ax1.set_ylabel("Y (mm)")
-        ax1.set_title(f"Cam1 Position\nσ_2D={cam1_data['sigma_2d']:.4f} mm")
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        ax1.axis("equal")
+        ax.scatter(x_data, y_data, alpha=0.6, s=50, c="blue")
+        ax.plot(cam1_data["mean_x"], cam1_data["mean_y"], "r*", markersize=15, label="Mean")
+        ax.set_xlabel("X (mm)")
+        ax.set_ylabel("Y (mm)")
+        ax.set_title(f"Cam1 Position\nσ_2D={cam1_data['sigma_2d']:.4f} mm")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        ax.axis("equal")
 
-        ax2 = plt.subplot(2, 3, 2)
-        self._plot_trajectory_overlay(ax2, cam2_data, "Cam2")
-
-        ax3 = plt.subplot(2, 3, 3)
-        self._plot_trajectory_overlay(ax3, cam3_data, "Cam3")
-
-        # Row 2: Yaw (θ) Repeatability
-        ax4 = plt.subplot(2, 3, 4)
+        ax = axes[0, 1]
         theta_data_cam1 = self.df.loc[valid_cam1, "cam_1_rz(deg)"].astype(float).values
-        trials = np.arange(len(theta_data_cam1))
-        ax4.scatter(trials, theta_data_cam1, alpha=0.6, s=50, c="green")
-        ax4.axhline(
-            y=cam1_data["mean_theta"],
-            color="r",
-            linestyle="--",
-            linewidth=2,
+        trials = np.arange(1, len(theta_data_cam1) + 1)
+        ax.scatter(trials, theta_data_cam1, alpha=0.6, s=50, c="green")
+        ax.axhline(
+            y=cam1_data["mean_theta"], color="r", linestyle="--", linewidth=2,
             label=f"Mean={cam1_data['mean_theta']:.2f}°",
         )
-        ax4.fill_between(
+        ax.fill_between(
             trials,
             cam1_data["mean_theta"] - cam1_data["sigma_theta"],
             cam1_data["mean_theta"] + cam1_data["sigma_theta"],
-            alpha=0.2,
-            color="red",
+            alpha=0.2, color="red",
             label=f"±σ={cam1_data['sigma_theta']:.4f}°",
         )
-        ax4.set_xlabel("Trial")
-        ax4.set_ylabel("Yaw (deg)")
-        ax4.set_title(f"Cam1 Yaw Repeatability\nσ_θ={cam1_data['sigma_theta']:.4f}°")
-        ax4.legend(loc="upper right", fontsize=8)
-        ax4.grid(True, alpha=0.3)
+        ax.set_xlabel("Trial")
+        ax.set_ylabel("Yaw (deg)")
+        ax.set_title(f"Cam1 Yaw Repeatability\nσ_θ={cam1_data['sigma_theta']:.4f}°")
+        ax.legend(loc="upper right", fontsize=8)
+        ax.grid(True, alpha=0.3)
 
-        ax5 = plt.subplot(2, 3, 5)
-        self._plot_trajectory_sigma_theta(ax5, cam2_data, "Cam2")
+        ax = axes[0, 2]
+        ax.plot(trials, x_data, "o-", alpha=0.7, markersize=4, color="blue", label="X")
+        ax.plot(trials, y_data, "s-", alpha=0.7, markersize=4, color="green", label="Y")
+        ax.axhline(y=cam1_data["mean_x"], color="blue", linestyle="--", alpha=0.4)
+        ax.axhline(y=cam1_data["mean_y"], color="green", linestyle="--", alpha=0.4)
+        ax.set_xlabel("Trial")
+        ax.set_ylabel("Position (mm)")
+        ax.set_title("Cam1 X/Y Trend")
+        ax.legend(loc="best", fontsize=8)
+        ax.grid(True, alpha=0.3)
 
-        ax6 = plt.subplot(2, 3, 6)
-        self._plot_trajectory_sigma_theta(ax6, cam3_data, "Cam3")
+        # ── Row 2: Cam2 ──
+        self._plot_trajectory_overlay(axes[1, 0], cam2_data, "Cam2")
+        self._plot_trajectory_detailed((axes[1, 1], axes[1, 2]), cam2_data, "Cam2")
+
+        # ── Row 3: Cam3 ──
+        self._plot_trajectory_overlay(axes[2, 0], cam3_data, "Cam3")
+        self._plot_trajectory_detailed((axes[2, 1], axes[2, 2]), cam3_data, "Cam3")
 
         plt.tight_layout()
-        fig1_path = f"{output_dir}/repeatability_analysis.png"
-        plt.savefig(fig1_path, dpi=300, bbox_inches="tight")
-        print(f"\n[그래프 저장] {fig1_path}")
+        fig_path = f"{output_dir}/repeatability_analysis.png"
+        plt.savefig(fig_path, dpi=300, bbox_inches="tight")
+        print(f"\n[그래프 저장] {fig_path}")
 
-        # Figure 2: Cam2 Detailed Analysis (Y deviation along trajectory)
-        fig2 = plt.figure(figsize=(12, 5))
-        ax_y2 = fig2.add_subplot(1, 2, 1)
-        ax_theta2 = fig2.add_subplot(1, 2, 2)
-        self._plot_trajectory_detailed((ax_y2, ax_theta2), cam2_data, "Cam2")
-        plt.tight_layout()
-        fig2_path = f"{output_dir}/cam2_trajectory_detailed.png"
-        plt.savefig(fig2_path, dpi=300, bbox_inches="tight")
-        print(f"[그래프 저장] {fig2_path}")
-
-        # Figure 3: Cam3 Detailed Analysis (Y deviation along trajectory)
-        fig3 = plt.figure(figsize=(12, 5))
-        ax_y3 = fig3.add_subplot(1, 2, 1)
-        ax_theta3 = fig3.add_subplot(1, 2, 2)
-        self._plot_trajectory_detailed((ax_y3, ax_theta3), cam3_data, "Cam3")
-        plt.tight_layout()
-        fig3_path = f"{output_dir}/cam3_trajectory_detailed.png"
-        plt.savefig(fig3_path, dpi=300, bbox_inches="tight")
-        print(f"[그래프 저장] {fig3_path}")
-
-        return fig1, fig2, fig3
+        return fig
 
 
 def _circular_mean_deg(angles_deg: np.ndarray) -> float:
@@ -872,7 +854,7 @@ class ManualRepeatability:
 
         # 2) Yaw (θ) repeatability
         ax2 = plt.subplot(1, 2, 2)
-        trials = np.arange(len(theta_deg))
+        trials = np.arange(1, len(theta_deg) + 1)
         ax2.scatter(trials, theta_deg, alpha=0.6, s=50, c="green")
         ax2.axhline(mean_theta_deg, color="r", linestyle="--", linewidth=2, label=f"Mean={mean_theta_deg:.2f}°")
         ax2.fill_between(
