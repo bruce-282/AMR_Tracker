@@ -624,29 +624,19 @@ class TrajectoryRepeatability:
 
     def plot_results(self, output_dir: str = "outputs"):
         """결과 시각화"""
-        # Figure 1: Position Repeatability (2x4 layout)
-        # Row 1: Cam1 static position, Cam2 trajectory, Cam3 trajectory, Cam1 position error histogram
-        # Row 2: Cam1 yaw, Cam2 yaw sigma, Cam3 yaw sigma, Cam1 yaw error histogram
-        fig1 = plt.figure(figsize=(20, 10))
+        # Figure 1: Repeatability Overview (2x3 layout)
+        # Row 1: Cam1 position, Cam2 trajectory, Cam3 trajectory
+        # Row 2: Cam1 yaw, Cam2 yaw sigma, Cam3 yaw sigma
+        fig1 = plt.figure(figsize=(15, 10))
 
         cam1_data = self.results["cam1"]
         cam2_data = self.results["cam2"]
         cam3_data = self.results["cam3"]
 
-        # Helper function for bin calculation
-        def get_bins(data, max_bins=20):
-            if len(data) < 2:
-                return 1
-            data_range = np.ptp(data)  # peak-to-peak (max - min)
-            if data_range == 0:
-                return 1
-            return min(max_bins, max(1, len(data) // 5))
-
-        # Row 1: Position Repeatability
         valid_cam1 = self._valid_mask_for_columns(["cam_1_x(mm)", "cam_1_y(mm)", "cam_1_rz(deg)"])
 
-        # Cam1 Position scatter plot
-        ax1 = plt.subplot(2, 4, 1)
+        # Row 1: Position Repeatability
+        ax1 = plt.subplot(2, 3, 1)
         x_data = self.df.loc[valid_cam1, "cam_1_x(mm)"].astype(float).values
         y_data = self.df.loc[valid_cam1, "cam_1_y(mm)"].astype(float).values
         ax1.scatter(x_data, y_data, alpha=0.6, s=50, c="blue")
@@ -660,47 +650,25 @@ class TrajectoryRepeatability:
         ax1.grid(True, alpha=0.3)
         ax1.axis("equal")
 
-        # Cam2 trajectories overlay (X-Y plot)
-        ax2 = plt.subplot(2, 4, 2)
+        ax2 = plt.subplot(2, 3, 2)
         self._plot_trajectory_overlay(ax2, cam2_data, "Cam2")
 
-        # Cam3 trajectories overlay (X-Y plot)
-        ax3 = plt.subplot(2, 4, 3)
+        ax3 = plt.subplot(2, 3, 3)
         self._plot_trajectory_overlay(ax3, cam3_data, "Cam3")
 
-        # Cam1 Position Error Histogram
-        ax4 = plt.subplot(2, 4, 4)
-        cam1_pos_errors = cam1_data["position_errors"]
-        cam1_bins = get_bins(cam1_pos_errors)
-        if len(cam1_pos_errors) > 0:
-            ax4.hist(
-                cam1_pos_errors,
-                bins=cam1_bins,
-                alpha=0.7,
-                label="Cam1",
-                edgecolor="black",
-                color="blue",
-            )
-        ax4.set_xlabel("2D Position Error (mm)")
-        ax4.set_ylabel("Frequency")
-        ax4.set_title("Cam1 Position Error Distribution")
-        ax4.legend()
-        ax4.grid(True, alpha=0.3)
-
         # Row 2: Yaw (θ) Repeatability
-        # Cam1 Yaw scatter plot (Trial vs Theta)
-        ax5 = plt.subplot(2, 4, 5)
+        ax4 = plt.subplot(2, 3, 4)
         theta_data_cam1 = self.df.loc[valid_cam1, "cam_1_rz(deg)"].astype(float).values
         trials = np.arange(len(theta_data_cam1))
-        ax5.scatter(trials, theta_data_cam1, alpha=0.6, s=50, c="green")
-        ax5.axhline(
+        ax4.scatter(trials, theta_data_cam1, alpha=0.6, s=50, c="green")
+        ax4.axhline(
             y=cam1_data["mean_theta"],
             color="r",
             linestyle="--",
             linewidth=2,
             label=f"Mean={cam1_data['mean_theta']:.2f}°",
         )
-        ax5.fill_between(
+        ax4.fill_between(
             trials,
             cam1_data["mean_theta"] - cam1_data["sigma_theta"],
             cam1_data["mean_theta"] + cam1_data["sigma_theta"],
@@ -708,38 +676,17 @@ class TrajectoryRepeatability:
             color="red",
             label=f"±σ={cam1_data['sigma_theta']:.4f}°",
         )
-        ax5.set_xlabel("Trial")
-        ax5.set_ylabel("Yaw (deg)")
-        ax5.set_title(f"Cam1 Yaw Repeatability\nσ_θ={cam1_data['sigma_theta']:.4f}°")
-        ax5.legend(loc="upper right", fontsize=8)
-        ax5.grid(True, alpha=0.3)
+        ax4.set_xlabel("Trial")
+        ax4.set_ylabel("Yaw (deg)")
+        ax4.set_title(f"Cam1 Yaw Repeatability\nσ_θ={cam1_data['sigma_theta']:.4f}°")
+        ax4.legend(loc="upper right", fontsize=8)
+        ax4.grid(True, alpha=0.3)
 
-        # Cam2 Angular error along X trajectory
-        ax6 = plt.subplot(2, 4, 6)
-        self._plot_trajectory_sigma_theta(ax6, cam2_data, "Cam2")
+        ax5 = plt.subplot(2, 3, 5)
+        self._plot_trajectory_sigma_theta(ax5, cam2_data, "Cam2")
 
-        # Cam3 Angular error along X trajectory
-        ax7 = plt.subplot(2, 4, 7)
-        self._plot_trajectory_sigma_theta(ax7, cam3_data, "Cam3")
-
-        # Cam1 Yaw Error Histogram
-        ax8 = plt.subplot(2, 4, 8)
-        cam1_theta_errors = cam1_data["theta_errors"]
-        cam1_theta_bins = get_bins(cam1_theta_errors)
-        if len(cam1_theta_errors) > 0:
-            ax8.hist(
-                cam1_theta_errors,
-                bins=cam1_theta_bins,
-                alpha=0.7,
-                label="Cam1",
-                edgecolor="black",
-                color="green",
-            )
-        ax8.set_xlabel("Yaw Error (deg)")
-        ax8.set_ylabel("Frequency")
-        ax8.set_title("Cam1 Yaw Error Distribution")
-        ax8.legend()
-        ax8.grid(True, alpha=0.3)
+        ax6 = plt.subplot(2, 3, 6)
+        self._plot_trajectory_sigma_theta(ax6, cam3_data, "Cam3")
 
         plt.tight_layout()
         fig1_path = f"{output_dir}/repeatability_analysis.png"
@@ -897,21 +844,21 @@ class ManualRepeatability:
         return path
 
     def plot_results(self, output_dir: str) -> str:
-        """반복정밀도 그래프 저장 (Position + Yaw 포함, Cam1/Cam3와 동일하게). 반환: 저장된 PNG 경로."""
+        """반복정밀도 그래프 저장 (Position + Yaw). 반환: 저장된 PNG 경로."""
         r = self.results
         n = r["n_measurements"]
         x_v, y_v = r["x_values"], r["y_values"]
-        theta_deg = r["theta_deg"]  # Yaw (deg)
+        theta_deg = r["theta_deg"]
         x_mean, y_mean = r["x_mean"], r["y_mean"]
         x_std, y_std = r["x_std"], r["y_std"]
         mean_theta_deg = _circular_mean_deg(theta_deg)
         sigma_theta = np.std(_angular_diff_deg(theta_deg, mean_theta_deg), ddof=1)
         sigma_2d = np.sqrt(x_std**2 + y_std**2)
 
-        fig = plt.figure(figsize=(14, 10))
+        fig = plt.figure(figsize=(12, 5))
 
-        # 1) Position scatter (Cam1/Cam3와 동일: σ_2D)
-        ax1 = plt.subplot(2, 2, 1)
+        # 1) Position scatter
+        ax1 = plt.subplot(1, 2, 1)
         ax1.scatter(x_v, y_v, alpha=0.6, s=50, c="blue")
         ax1.plot(x_mean, y_mean, "r*", markersize=15, label="Mean")
         ax1.axhline(y_mean, color="gray", linestyle="--", alpha=0.5)
@@ -923,36 +870,12 @@ class ManualRepeatability:
         ax1.grid(True, alpha=0.3)
         ax1.axis("equal")
 
-        # 2) X distribution (Cam1/Cam3 스타일: ±σ)
-        ax2 = plt.subplot(2, 2, 2)
-        ax2.hist(x_v, bins=min(20, max(1, n // 2)), alpha=0.7, color="blue", edgecolor="black")
-        ax2.axvline(x_mean, color="r", linestyle="--", linewidth=2, label=f"Mean={x_mean:.2f}")
-        ax2.axvline(x_mean - x_std, color="orange", linestyle=":", alpha=0.8)
-        ax2.axvline(x_mean + x_std, color="orange", linestyle=":", alpha=0.8, label=f"±σ={x_std:.4f} mm")
-        ax2.set_xlabel("X (mm)")
-        ax2.set_ylabel("Frequency")
-        ax2.set_title("X Distribution")
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-
-        # 3) Y distribution (±σ)
-        ax3 = plt.subplot(2, 2, 3)
-        ax3.hist(y_v, bins=min(20, max(1, n // 2)), alpha=0.7, color="green", edgecolor="black")
-        ax3.axvline(y_mean, color="r", linestyle="--", linewidth=2, label=f"Mean={y_mean:.2f}")
-        ax3.axvline(y_mean - y_std, color="orange", linestyle=":", alpha=0.8)
-        ax3.axvline(y_mean + y_std, color="orange", linestyle=":", alpha=0.8, label=f"±σ={y_std:.4f} mm")
-        ax3.set_xlabel("Y (mm)")
-        ax3.set_ylabel("Frequency")
-        ax3.set_title("Y Distribution")
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
-
-        # 4) Yaw (θ) 반복정밀도 - Cam1/Cam3와 동일 (σ_θ, ±σ)
-        ax4 = plt.subplot(2, 2, 4)
+        # 2) Yaw (θ) repeatability
+        ax2 = plt.subplot(1, 2, 2)
         trials = np.arange(len(theta_deg))
-        ax4.scatter(trials, theta_deg, alpha=0.6, s=50, c="green")
-        ax4.axhline(mean_theta_deg, color="r", linestyle="--", linewidth=2, label=f"Mean={mean_theta_deg:.2f}°")
-        ax4.fill_between(
+        ax2.scatter(trials, theta_deg, alpha=0.6, s=50, c="green")
+        ax2.axhline(mean_theta_deg, color="r", linestyle="--", linewidth=2, label=f"Mean={mean_theta_deg:.2f}°")
+        ax2.fill_between(
             trials,
             mean_theta_deg - sigma_theta,
             mean_theta_deg + sigma_theta,
@@ -960,11 +883,11 @@ class ManualRepeatability:
             color="red",
             label=f"±σ={sigma_theta:.4f}°",
         )
-        ax4.set_xlabel("Trial")
-        ax4.set_ylabel("Yaw (deg)")
-        ax4.set_title(f"Cam1 Manual Yaw Repeatability\nσ_θ={sigma_theta:.4f}°")
-        ax4.legend(loc="upper right", fontsize=8)
-        ax4.grid(True, alpha=0.3)
+        ax2.set_xlabel("Trial")
+        ax2.set_ylabel("Yaw (deg)")
+        ax2.set_title(f"Cam1 Manual Yaw Repeatability\nσ_θ={sigma_theta:.4f}°")
+        ax2.legend(loc="upper right", fontsize=8)
+        ax2.grid(True, alpha=0.3)
 
         plt.tight_layout()
         fig_path = f"{output_dir}/cam1_manual_repeatability_analysis.png"
