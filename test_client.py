@@ -430,8 +430,8 @@ def main():
     parser = argparse.ArgumentParser(description="Vision Tracking TCP/IP Server - Test Client")
     parser.add_argument("--interactive", "-i", action="store_true",
                         help="Run in interactive mode for manual testing")
-    parser.add_argument("--cycles", type=int, default=2,
-                        help="Number of cycles to wait in automatic mode (default: 2)")
+    parser.add_argument("--cycles", type=int, default=6,
+                        help="Number of camera responses to wait (default: 3, i.e. 1 full set of cam1+cam2+cam3)")
     args = parser.parse_args()
 
     # Setup logger
@@ -502,10 +502,14 @@ def main():
                 else:
                     # use_area_scan=false: client does NOT send requests, only waits for periodic responses
                     logger.info("\n[INFO] use_area_scan=false: Waiting for responses from server...")
-                    logger.info("  [INFO] 1 cycle = 1 camera response (cmd 3/4/5). Server sends 1→2→3→1→2→3...")
-                    logger.info(f"  [INFO] Waiting for {args.cycles} cycle(s), then sending END_VISION")
+                    logger.info("  [INFO] 1 response = 1 camera result (cmd 3/4/5).")
+                    logger.info("  [INFO] cam1: static position (dict), cam2/cam3: trajectory (list)")
+                    logger.info("  [INFO] Server sends 1(static)→2(trajectory)→3(trajectory)→1→2→3...")
+                    logger.info(f"  [INFO] 1 full set = 3 responses (cam1+cam2+cam3)")
+                    logger.info(f"  [INFO] Waiting for {args.cycles} response(s), then sending END_VISION")
 
-                    # 1 cycle = 1 camera response (any of cmd 3, 4, 5). --cycles N → exit after N responses.
+                    # 1 response = 1 camera result (any of cmd 3, 4, 5). --cycles N → exit after N responses.
+                    # 1 full set = 3 responses (cam1+cam2+cam3). Use multiples of 3 for complete sets.
                     cycles_to_complete = args.cycles
                     cycle_count = 0
                     response_count = {3: 0, 4: 0, 5: 0}  # cam1, cam2, cam3
@@ -588,7 +592,7 @@ def main():
 
                                                 response_count[cmd] += 1
                                                 # 1사이클 = 카메라 응답 1건 (cmd 3/4/5 중 하나). --cycles N → N건 수신 시 종료
-                                                #cycle_count = response_count[3] + response_count[4] + response_count[5]
+                                                cycle_count = response_count[3] + response_count[4] + response_count[5]
                                                 logger.info(f"\n[INFO] === Cycle {cycle_count}/{cycles_to_complete} (cam1={response_count[3]}, cam2={response_count[4]}, cam3={response_count[5]}) ===")
 
                                                 # Remove processed JSON from buffer
@@ -599,8 +603,6 @@ def main():
 
                                             json_start = -1
                                             json_end = -1
-
-                                cycle_count+=1
 
                                 if cycle_count >= cycles_to_complete:
                                     break

@@ -49,7 +49,7 @@
           "tracker_config": "config/zoom1_aruco/cam2_tracker_config.json"
         },
         "camera_3": {
-          "id": "data/260127_marker/CAM2_1.mp4",
+          "id": "data/260127_marker/CAM3_2.mp4",
           "config": "config/zoom1_aruco/cam3_config.json",
           "tracker_config": "config/zoom1_aruco/cam3_tracker_config.json"
         }
