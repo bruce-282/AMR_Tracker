@@ -450,12 +450,12 @@ class TrajectoryRepeatability:
         )
 
         summary_df = pd.DataFrame(summary_data)
-        summary_path = f"{output_dir}/repeatability_summary.csv"
+        summary_path = f"{output_dir}/auto_repeatability_summary.csv"
         summary_df.to_csv(summary_path, index=False)
         print(f"\n[Summary CSV 저장] {summary_path}")
 
         # 2. Cam2 Detailed CSV (샘플 포인트별)
-        cam2_detailed_path = f"{output_dir}/cam2_trajectory_detailed.csv"
+        cam2_detailed_path = f"{output_dir}/auto_cam2_trajectory_detailed.csv"
         if cam2.get("target_x") is not None and len(cam2["target_x"]) > 0:
             cam2_detailed_data = []
             for i, x_pos in enumerate(cam2["target_x"]):
@@ -476,7 +476,7 @@ class TrajectoryRepeatability:
             print(f"[Cam2 Detailed CSV 건너뜀] 유효한 trajectory 데이터 없음")
 
         # 3. Cam3 Detailed CSV (샘플 포인트별, Trajectory)
-        cam3_detailed_path = f"{output_dir}/cam3_trajectory_detailed.csv"
+        cam3_detailed_path = f"{output_dir}/auto_cam3_trajectory_detailed.csv"
         if cam3.get("target_x") is not None and len(cam3["target_x"]) > 0:
             cam3_detailed_data = []
             for i, x_pos in enumerate(cam3["target_x"]):
@@ -512,7 +512,7 @@ class TrajectoryRepeatability:
                 "Theta_Error(deg)": theta_err_cam1,
             }
         )
-        cam1_measurements_path = f"{output_dir}/cam1_measurements.csv"
+        cam1_measurements_path = f"{output_dir}/auto_cam1_measurements.csv"
         cam1_measurements.to_csv(cam1_measurements_path, index=False)
         print(f"[Cam1 Measurements CSV 저장] {cam1_measurements_path}")
 
@@ -841,7 +841,7 @@ class ManualRepeatability:
             "Position_Error(mm)": position_errors_full,
             "Theta_Error(deg)": theta_errors_full,
         })
-        path = f"{output_dir}/cam1_manual_measurements.csv"
+        path = f"{output_dir}/manual_cam1_measurements.csv"
         cam1_manual_measurements.to_csv(path, index=False)
         print(f"[Cam1] Manual measurements CSV 저장: {path}")
         return path
