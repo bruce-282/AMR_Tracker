@@ -8,6 +8,8 @@ from scipy.interpolate import interp1d
 from typing import Tuple, List, Dict
 import argparse
 
+from src.utils.csv_writer import MAX_TRAJECTORY_POINTS
+
 
 class TrajectoryRepeatability:
     """궤적 및 정지 위치 반복정밀도 분석"""
@@ -33,24 +35,28 @@ class TrajectoryRepeatability:
         try:
             self.df = pd.read_csv(csv_path)
         except pd.errors.ParserError as e:
-            # 컬럼 수 불일치 오류 발생 시, 헤더 컬럼 수에 맞게 데이터 자르기
             print(f"CSV 파싱 오류 감지: {e}")
             print("헤더 컬럼 수에 맞게 데이터를 자르는 중...")
 
-            # 헤더만 먼저 읽기
             with open(csv_path, "r", encoding="utf-8") as f:
                 header_line = f.readline().strip()
             n_cols = len(header_line.split(","))
 
-            # 헤더 컬럼 수만큼만 읽기 (초과 컬럼 무시)
             self.df = pd.read_csv(
                 csv_path,
                 usecols=range(n_cols),
-                on_bad_lines="warn",  # 경고만 출력하고 계속 진행
+                on_bad_lines="warn",
             )
             print(f"✓ {n_cols}개 컬럼만 로드 완료")
 
+        self._coerce_numeric_columns()
         self.results = {}
+
+    def _coerce_numeric_columns(self):
+        """cam_1/cam_2/cam_3 수치 컬럼을 강제 numeric 변환 (공백·문자열 → NaN)."""
+        for col in self.df.columns:
+            if col.startswith(("cam_1_", "cam_2_", "cam_3_", "velocity")):
+                self.df[col] = pd.to_numeric(self.df[col], errors="coerce")
 
     def _valid_mask_for_columns(self, cols: List[str]) -> np.ndarray:
         """지정한 컬럼들에 대해 NaN·0.0이 아닌 행만 True. (행은 삭제하지 않고, 계산 시에만 사용.)"""
@@ -194,35 +200,47 @@ class TrajectoryRepeatability:
             camera_prefix: 카메라 컬럼 접두사 (예: "cam_2", "cam_3")
         """
         n_trials = len(self.df)
-        max_waypoints = 100  # 0-99
-
         trajectories = []
         for trial_idx in range(n_trials):
             x_vals = []
             y_vals = []
             theta_vals = []
 
-            for wp_idx in range(max_waypoints):
+            for wp_idx in range(MAX_TRAJECTORY_POINTS):
                 x_col = f"{camera_prefix}_x_{wp_idx}"
                 y_col = f"{camera_prefix}_y_{wp_idx}"
                 theta_col = f"{camera_prefix}_rz_{wp_idx}"
 
-                if x_col in self.df.columns:
-                    x = self.df.iloc[trial_idx][x_col]
-                    y = self.df.iloc[trial_idx][y_col]
-                    theta = self.df.iloc[trial_idx][theta_col]
+                if x_col not in self.df.columns:
+                    break
 
-                    if pd.notna(x) and pd.notna(y) and pd.notna(theta):
-                        x_vals.append(x)
-                        y_vals.append(y)
-                        theta_vals.append(theta)
+                x = self.df.iloc[trial_idx][x_col]
+                y = self.df.iloc[trial_idx][y_col]
+                theta = self.df.iloc[trial_idx][theta_col]
+
+                if pd.isna(x) or pd.isna(y) or pd.isna(theta):
+                    break
+
+                x_vals.append(float(x))
+                y_vals.append(float(y))
+                theta_vals.append(float(theta))
 
             if len(x_vals) > 1:
+                x_arr = np.array(x_vals)
+                y_arr = np.array(y_vals)
+                theta_arr = np.array(theta_vals)
+
+                # np.interp requires monotonically increasing x
+                if x_arr[-1] < x_arr[0]:
+                    x_arr = x_arr[::-1]
+                    y_arr = y_arr[::-1]
+                    theta_arr = theta_arr[::-1]
+
                 trajectories.append(
                     {
-                        "x": np.array(x_vals),
-                        "y": np.array(y_vals),
-                        "theta": np.array(theta_vals),
+                        "x": x_arr,
+                        "y": y_arr,
+                        "theta": theta_arr,
                     }
                 )
 

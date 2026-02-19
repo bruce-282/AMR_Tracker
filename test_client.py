@@ -58,7 +58,7 @@ class VisionClient:
     def send_request(self, request: dict) -> dict:
         """Send request and receive response."""
         # Log request
-        self.logger.info(f"Request: {json.dumps(request, indent=2)}")
+        self.logger.info(f"Request: {json.dumps(request, indent=2, ensure_ascii=False)}")
         
         # Send request
         request_json = json.dumps(request)
@@ -102,7 +102,7 @@ class VisionClient:
                             # Handle NOTIFY_CONNECTION (cmd: 7) separately
                             if response.get("cmd") == 7:
                                 # Log NOTIFY_CONNECTION message as-is
-                                self.logger.info(f"[NOTIFY_CONNECTION] {json.dumps(response, indent=2)}")
+                                self.logger.info(f"[NOTIFY_CONNECTION] {json.dumps(response, indent=2, ensure_ascii=False)}")
                                 
                                 # Remove this JSON from buffer and continue looking for expected response
                                 buffer = text[json_end:].encode('utf-8')
@@ -139,7 +139,7 @@ class VisionClient:
                                 object_size_mb = object_size_kb / 1024
                                 
                                 # Log response with memory info
-                                self.logger.info(f"Response: {json.dumps(response, indent=2)}")
+                                self.logger.info(f"Response: {json.dumps(response, indent=2, ensure_ascii=False)}")
                                 self.logger.info(
                                     f"Response memory size: "
                                     f"JSON={json_size_bytes} bytes ({json_size_kb:.2f} KB, {json_size_mb:.3f} MB), "
@@ -315,11 +315,11 @@ def run_interactive_mode(client, logger):
                                 cmd = response.get("cmd")
 
                                 if cmd == 7:  # NOTIFY_CONNECTION
-                                    logger.info(f"\n[NOTIFY_CONNECTION] {json.dumps(response, indent=2)}")
+                                    logger.info(f"\n[NOTIFY_CONNECTION] {json.dumps(response, indent=2, ensure_ascii=False)}")
                                 elif cmd in [3, 4, 5]:  # Camera responses
-                                    logger.info(f"\n[CAM {cmd-2}] {json.dumps(response, indent=2)}")
+                                    logger.info(f"\n[CAM {cmd-2}] {json.dumps(response, indent=2, ensure_ascii=False)}")
                                 elif cmd == 8:  # Manual camera response
-                                    logger.info(f"\n[MANUAL CAM 1] {json.dumps(response, indent=2)}")
+                                    logger.info(f"\n[MANUAL CAM 1] {json.dumps(response, indent=2, ensure_ascii=False)}")
                                     if response.get("success"):
                                         data = response.get("data", {})
                                         x = data.get("x", 0)
@@ -333,7 +333,7 @@ def run_interactive_mode(client, logger):
                                     else:
                                         logger.error(f"  [FAIL] {response.get('error_code')}: {response.get('error_desc')}")
                                 elif cmd == 9:  # Manual calc result
-                                    logger.info(f"\n[MANUAL CALC] {json.dumps(response, indent=2)}")
+                                    logger.info(f"\n[MANUAL CALC] {json.dumps(response, indent=2, ensure_ascii=False)}")
                                     if response.get("success"):
                                         data = response.get("data", {})
                                         stats = data.get("statistics", {})
@@ -346,7 +346,7 @@ def run_interactive_mode(client, logger):
                                     else:
                                         logger.error(f"  [FAIL] {response.get('error_code')}: {response.get('error_desc')}")
                                 else:
-                                    logger.info(f"\n[CMD {cmd}] {json.dumps(response, indent=2)}")
+                                    logger.info(f"\n[CMD {cmd}] {json.dumps(response, indent=2, ensure_ascii=False)}")
 
                                 # Remove processed JSON from buffer and reset
                                 text = text[json_end:]
@@ -557,7 +557,7 @@ def main():
                                             cmd = response.get("cmd")
 
                                             if cmd == 7:
-                                                logger.info(f"[NOTIFY_CONNECTION] {json.dumps(response, indent=2)}")
+                                                logger.info(f"[NOTIFY_CONNECTION] {json.dumps(response, indent=2, ensure_ascii=False)}")
                                                 buffer = text[json_end:].encode('utf-8')
                                                 json_start = -1
                                                 json_end = -1
@@ -583,7 +583,7 @@ def main():
                                                 object_size_kb = object_size_bytes / 1024
                                                 object_size_mb = object_size_kb / 1024
 
-                                                logger.info(f"Response: {json.dumps(response, indent=2)}")
+                                                logger.info(f"Response: {json.dumps(response, indent=2, ensure_ascii=False)}")
                                                 logger.info(
                                                     f"Response memory size: "
                                                     f"JSON={json_size_bytes} bytes ({json_size_kb:.2f} KB, {json_size_mb:.3f} MB), "

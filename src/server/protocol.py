@@ -81,7 +81,7 @@ class ProtocolHandler:
             if data:
                 response["data"] = data
         
-        return json.dumps(response).encode('utf-8')
+        return json.dumps(response, ensure_ascii=False).encode('utf-8')
     
     @staticmethod
     def create_notification(
@@ -113,5 +113,5 @@ class ProtocolHandler:
         if error_desc:
             response["error_desc"] = error_desc
         
-        return json.dumps(response).encode('utf-8')
+        return json.dumps(response, ensure_ascii=False).encode('utf-8')
 

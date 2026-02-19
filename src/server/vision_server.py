@@ -1058,7 +1058,7 @@ class VisionServer:
                     continue
                 
                 # Log request
-                self.logger.info(f"Request: {json.dumps(request, indent=2)}")
+                self.logger.info(f"Request: {json.dumps(request, indent=2, ensure_ascii=False)}")
                 
                 # Handle command
                 response = self._handle_command(request)
@@ -1070,7 +1070,7 @@ class VisionServer:
                         # Log response
                         try:
                             response_dict = json.loads(response.decode('utf-8'))
-                            self.logger.info(f"Response: {json.dumps(response_dict, indent=2)}")
+                            self.logger.info(f"Response: {json.dumps(response_dict, indent=2, ensure_ascii=False)}")
                         except (json.JSONDecodeError, UnicodeDecodeError):
                             pass  # If response is not JSON, skip logging
                     except (ConnectionError, OSError) as e:
