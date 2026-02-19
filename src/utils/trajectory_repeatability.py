@@ -4,6 +4,7 @@ import matplotlib
 
 matplotlib.use("Agg")  # Use non-interactive backend (no GUI required)
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 from scipy.interpolate import interp1d
 from typing import Tuple, List, Dict
 import argparse
@@ -687,6 +688,7 @@ class TrajectoryRepeatability:
         ax.set_ylabel("Yaw (deg)")
         ax.set_title(f"Cam1 Yaw Repeatability\nσ_θ={cam1_data['sigma_theta']:.4f}°")
         ax.legend(loc="upper right", fontsize=8)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
         ax.grid(True, alpha=0.3)
 
         ax = axes[0, 2]
@@ -698,6 +700,7 @@ class TrajectoryRepeatability:
         ax.set_ylabel("Position (mm)")
         ax.set_title("Cam1 X/Y Trend")
         ax.legend(loc="best", fontsize=8)
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
         ax.grid(True, alpha=0.3)
 
         # ── Row 2: Cam2 ──
@@ -709,7 +712,7 @@ class TrajectoryRepeatability:
         self._plot_trajectory_detailed((axes[2, 1], axes[2, 2]), cam3_data, "Cam3")
 
         plt.tight_layout()
-        fig_path = f"{output_dir}/repeatability_analysis.png"
+        fig_path = f"{output_dir}/auto_repeatability_analysis.png"
         plt.savefig(fig_path, dpi=300, bbox_inches="tight")
         print(f"\n[그래프 저장] {fig_path}")
 
@@ -887,10 +890,11 @@ class ManualRepeatability:
         ax2.set_ylabel("Yaw (deg)")
         ax2.set_title(f"Cam1 Manual Yaw Repeatability\nσ_θ={sigma_theta:.4f}°")
         ax2.legend(loc="upper right", fontsize=8)
+        ax2.xaxis.set_major_locator(MaxNLocator(integer=True))
         ax2.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        fig_path = f"{output_dir}/cam1_manual_repeatability_analysis.png"
+        fig_path = f"{output_dir}/manual_cam1_repeatability_analysis.png"
         plt.savefig(fig_path, dpi=300, bbox_inches="tight")
         plt.close(fig)
         print(f"[Cam1] Manual repeatability analysis PNG 저장: {fig_path}")
