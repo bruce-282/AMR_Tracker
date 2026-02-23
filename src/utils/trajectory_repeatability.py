@@ -710,17 +710,43 @@ class TrajectoryRepeatability:
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
         ax.grid(True, alpha=0.3)
 
-        ax = axes[0, 2]
-        ax.plot(trials, x_data, "o-", alpha=0.7, markersize=4, color="blue", label="X")
-        ax.plot(trials, y_data, "s-", alpha=0.7, markersize=4, color="green", label="Y")
-        ax.axhline(y=cam1_data["mean_x"], color="blue", linestyle="--", alpha=0.4)
-        ax.axhline(y=cam1_data["mean_y"], color="green", linestyle="--", alpha=0.4)
-        ax.set_xlabel("Trial")
-        ax.set_ylabel("Position (mm)")
-        ax.set_title("Cam1 X/Y Trend")
-        ax.legend(loc="best", fontsize=8)
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        ax.grid(True, alpha=0.3)
+        # Split axes[0,2] into two vertically stacked subplots for X and Y trends
+        axes[0, 2].remove()
+        gs_top_right = axes[0, 0].get_gridspec()
+        gs_inner = gs_top_right[0, 2].subgridspec(2, 1, hspace=0.45)
+        ax_x_trend = fig.add_subplot(gs_inner[0])
+        ax_y_trend = fig.add_subplot(gs_inner[1])
+
+        ax_x_trend.plot(trials, x_data, "o-", alpha=0.7, markersize=3, color="blue")
+        ax_x_trend.axhline(y=cam1_data["mean_x"], color="red", linestyle="--", linewidth=1.5,
+                           label=f"Mean={cam1_data['mean_x']:.2f}")
+        ax_x_trend.fill_between(trials,
+                                cam1_data["mean_x"] - cam1_data["sigma_x"],
+                                cam1_data["mean_x"] + cam1_data["sigma_x"],
+                                alpha=0.2, color="red",
+                                label=f"±σ={cam1_data['sigma_x']:.3f}")
+        ax_x_trend.set_ylabel("X (mm)", fontsize=8)
+        ax_x_trend.set_title(f"Cam1 X Trend  σ_x={cam1_data['sigma_x']:.4f} mm", fontsize=9)
+        ax_x_trend.legend(loc="upper right", fontsize=6)
+        ax_x_trend.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax_x_trend.grid(True, alpha=0.3)
+        ax_x_trend.tick_params(labelsize=7)
+
+        ax_y_trend.plot(trials, y_data, "s-", alpha=0.7, markersize=3, color="green")
+        ax_y_trend.axhline(y=cam1_data["mean_y"], color="red", linestyle="--", linewidth=1.5,
+                           label=f"Mean={cam1_data['mean_y']:.2f}")
+        ax_y_trend.fill_between(trials,
+                                cam1_data["mean_y"] - cam1_data["sigma_y"],
+                                cam1_data["mean_y"] + cam1_data["sigma_y"],
+                                alpha=0.2, color="red",
+                                label=f"±σ={cam1_data['sigma_y']:.3f}")
+        ax_y_trend.set_xlabel("Trial", fontsize=8)
+        ax_y_trend.set_ylabel("Y (mm)", fontsize=8)
+        ax_y_trend.set_title(f"Cam1 Y Trend  σ_y={cam1_data['sigma_y']:.4f} mm", fontsize=9)
+        ax_y_trend.legend(loc="upper right", fontsize=6)
+        ax_y_trend.xaxis.set_major_locator(MaxNLocator(integer=True))
+        ax_y_trend.grid(True, alpha=0.3)
+        ax_y_trend.tick_params(labelsize=7)
 
         # ── Row 2: Cam2 ──
         self._plot_trajectory_overlay(axes[1, 0], cam2_data, "Cam2")
