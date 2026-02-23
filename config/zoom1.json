@@ -26,12 +26,12 @@
           "tracker_config": "config/zoom1_aruco/cam1_tracker_config.json"
         },
         "camera_2": {
-          "id": "I3ZEB1AD",
+          "id": "I3ZEB19D",
           "config": "config/zoom1_aruco/cam2_config.json",
           "tracker_config": "config/zoom1_aruco/cam2_tracker_config.json"
         },
         "camera_3": {
-          "id": "I3ZEB19D",
+          "id": "I3ZEB1AD",
           "config": "config/zoom1_aruco/cam3_config.json",
           "tracker_config": "config/zoom1_aruco/cam3_tracker_config.json"
         }
@@ -39,17 +39,17 @@
       "video_tracking": {
         "loader_mode": "video",
         "camera_1": {
-          "id": ["data/260127_marker/CAM1_1.mp4", "data/260127_marker/CAM1_3.mp4"],
+          "id": ["data/260223_marker/CAM1.mp4"],
           "config": "config/zoom1_aruco/cam1_config.json",
           "tracker_config": "config/zoom1_aruco/cam1_tracker_config.json"
         },
         "camera_2": {
-          "id": ["data/260127_marker/CAM2_1.mp4", "data/260127_marker/CAM3_1.mp4"],
+          "id": ["data/260223_marker/CAM3_4.mp4"],
           "config": "config/zoom1_aruco/cam2_config.json",
           "tracker_config": "config/zoom1_aruco/cam2_tracker_config.json"
         },
         "camera_3": {
-          "id": "data/260127_marker/CAM3_1.mp4",
+          "id": "data/260223_marker/CAM3.mp4",
           "config": "config/zoom1_aruco/cam3_config.json",
           "tracker_config": "config/zoom1_aruco/cam3_tracker_config.json"
         }
