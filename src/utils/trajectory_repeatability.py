@@ -543,11 +543,29 @@ class TrajectoryRepeatability:
         print(f"  최대 Y 표준편차: {np.max(results['sigma_y_at_each_x']):.4f} mm")
         print(f"  최소 Y 표준편차: {np.min(results['sigma_y_at_each_x']):.4f} mm")
 
+    @staticmethod
+    def _zoom_to_data(ax, x_data: np.ndarray, y_data: np.ndarray, margin_ratio: float = 0.15,
+                      zoom_x: bool = True, zoom_y: bool = True):
+        """축 범위를 데이터의 min-max에 맞게 zoom-in (마진 포함)."""
+        if len(x_data) == 0 or len(y_data) == 0:
+            return
+        if zoom_x:
+            x_min, x_max = float(np.min(x_data)), float(np.max(x_data))
+            x_margin = max((x_max - x_min) * margin_ratio, 0.5)
+            ax.set_xlim(x_min - x_margin, x_max + x_margin)
+        if zoom_y:
+            y_min, y_max = float(np.min(y_data)), float(np.max(y_data))
+            y_margin = max((y_max - y_min) * margin_ratio, 0.5)
+            ax.set_ylim(y_min - y_margin, y_max + y_margin)
+
     def _plot_trajectory_overlay(self, ax, cam_data, cam_name: str):
         """궤적 오버레이 플롯 헬퍼 (Cam2, Cam3 공용)"""
+        all_x, all_y = [], []
         if cam_data.get("trajectories") and len(cam_data["trajectories"]) > 0:
             for traj in cam_data["trajectories"]:
                 ax.plot(traj["x"], traj["y"], "b-", alpha=0.3, linewidth=0.5)
+                all_x.extend(traj["x"])
+                all_y.extend(traj["y"])
             if cam_data.get("reference") and len(cam_data["reference"]["x"]) > 0:
                 ax.plot(
                     cam_data["reference"]["x"],
@@ -565,7 +583,8 @@ class TrajectoryRepeatability:
         ax.set_xlabel("X (mm)")
         ax.set_ylabel("Y (mm)")
         ax.grid(True, alpha=0.3)
-        ax.axis("equal")
+        if all_x and all_y:
+            self._zoom_to_data(ax, np.array(all_x), np.array(all_y), zoom_x=False, zoom_y=True)
 
     def _plot_trajectory_sigma_theta(self, ax, cam_data, cam_name: str):
         """궤적 각도 편차 플롯 헬퍼 (Cam2, Cam3 공용)"""
@@ -667,7 +686,7 @@ class TrajectoryRepeatability:
         ax.set_title(f"Cam1 Position\nσ_2D={cam1_data['sigma_2d']:.4f} mm")
         ax.legend()
         ax.grid(True, alpha=0.3)
-        ax.axis("equal")
+        self._zoom_to_data(ax, x_data, y_data)
 
         ax = axes[0, 1]
         theta_data_cam1 = self.df.loc[valid_cam1, "cam_1_rz(deg)"].astype(float).values
@@ -766,6 +785,18 @@ class ManualRepeatability:
                 return
         missing = [c for c in required if c not in self.df.columns]
         raise ValueError(f"CSV에 필수 컬럼이 없습니다: {missing}. 지원 형식: x,y,rz(rad) 또는 cam_1_x(mm),cam_1_y(mm),cam_1_rz(deg)")
+
+    @staticmethod
+    def _zoom_to_data_static(ax, x_data: np.ndarray, y_data: np.ndarray, margin_ratio: float = 0.15):
+        """축 범위를 데이터의 min-max에 맞게 zoom-in (마진 포함)."""
+        if len(x_data) == 0 or len(y_data) == 0:
+            return
+        x_min, x_max = float(np.min(x_data)), float(np.max(x_data))
+        y_min, y_max = float(np.min(y_data)), float(np.max(y_data))
+        x_margin = max((x_max - x_min) * margin_ratio, 0.5)
+        y_margin = max((y_max - y_min) * margin_ratio, 0.5)
+        ax.set_xlim(x_min - x_margin, x_max + x_margin)
+        ax.set_ylim(y_min - y_margin, y_max + y_margin)
 
     def _valid_mask_xy_rz(self) -> np.ndarray:
         """x, y, rz 중 NaN·0.0이 아닌 행만 True. (행은 삭제하지 않고, 평균/편차 계산 시에만 사용.)"""
@@ -871,7 +902,7 @@ class ManualRepeatability:
         ax1.set_title(f"Cam1 Manual Position\n(n={n}, σ_2D={sigma_2d:.4f} mm)")
         ax1.legend()
         ax1.grid(True, alpha=0.3)
-        ax1.axis("equal")
+        self._zoom_to_data_static(ax1, x_v, y_v)
 
         # 2) Yaw (θ) repeatability
         ax2 = plt.subplot(1, 2, 2)
