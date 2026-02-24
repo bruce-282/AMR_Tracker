@@ -1462,19 +1462,19 @@ def parse_arguments():
     parser.add_argument(
         "--camera-config",
         type=str,
-        default="../config/zoom1/cam3_config.json",
+        default="../config/zoom1_aruco/cam3_config.json",
         help="카메라 설정 파일 경로"
     )
     parser.add_argument(
         "--world-coords",
         type=str,
-        default="../config/zoom1/cam3_world_coords.json",
+        default="../config/zoom1_aruco/cam3_world_coords.json",
         help="모든 점의 실제 world 좌표 JSON 파일 경로 (정확한 보정용). 형식: {\"points\": [[x1,y1], [x2,y2], ...]} (mm 단위)"
     )
     parser.add_argument(
         "--rotate",
         type=float,
-        default=-30.0,
+        default=-90.0,
         help="World 좌표를 회전할 각도 (도 단위, 시계방향이 양수). 첫 번째 점을 중심으로 회전합니다."
     )
     parser.add_argument(
