@@ -44,9 +44,9 @@
   "measurement": {
     "_comment": "Camera 2 measurement parameters (pixel to mm conversion)",
     "PixelSize": {
-      "x": 0.9025862796170592,
-      "y": 0.9273348015107777,
-      "average": 0.9149605405639185,
+      "x": 1.375599079793613,
+      "y": 1.0182360375706063,
+      "average": 1.1969175586821097,
       "unit": "mm/pixel"
     },
     "Homography": [

@@ -26,12 +26,12 @@
           "tracker_config": "config/zoom1_aruco/cam1_tracker_config.json"
         },
         "camera_2": {
-          "id": "I3ZEB19D",
+          "id": "I3ZEB1AD",
           "config": "config/zoom1_aruco/cam2_config.json",
           "tracker_config": "config/zoom1_aruco/cam2_tracker_config.json"
         },
         "camera_3": {
-          "id": "I3ZEB1AD",
+          "id": "I3ZEB19D",
           "config": "config/zoom1_aruco/cam3_config.json",
           "tracker_config": "config/zoom1_aruco/cam3_tracker_config.json"
         }
@@ -49,7 +49,7 @@
           "tracker_config": "config/zoom1_aruco/cam2_tracker_config.json"
         },
         "camera_3": {
-          "id": ["data/260223_marker/CAM3.mp4"],
+          "id": ["data/CAM3.mp4"],
           "config": "config/zoom1_aruco/cam3_config.json",
           "tracker_config": "config/zoom1_aruco/cam3_tracker_config.json"
         }

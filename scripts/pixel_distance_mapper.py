@@ -487,48 +487,48 @@ class PixelDistanceMapper:
         return True
 
 
-def detect_aruco_board_center(image: np.ndarray, camera_matrix: np.ndarray, dist_coeffs: np.ndarray) -> Optional[Tuple[float, float]]:
-    """
-    ArUco 보드의 중심을 찾습니다.
+# def detect_aruco_board_center(image: np.ndarray, camera_matrix: np.ndarray, dist_coeffs: np.ndarray) -> Optional[Tuple[float, float]]:
+#     """
+#     ArUco 보드의 중심을 찾습니다.
     
-    Args:
-        image: 입력 이미지 (undistortion된 이미지 권장)
-        camera_matrix: 카메라 내부 파라미터
-        dist_coeffs: 왜곡 계수
+#     Args:
+#         image: 입력 이미지 (undistortion된 이미지 권장)
+#         camera_matrix: 카메라 내부 파라미터
+#         dist_coeffs: 왜곡 계수
     
-    Returns:
-        (center_x, center_y) 또는 None (검출 실패 시)
-    """
-    # 이미지 undistortion
-    undistorted = cv2.undistort(image, camera_matrix, dist_coeffs)
-    gray = cv2.cvtColor(undistorted, cv2.COLOR_BGR2GRAY)
+#     Returns:
+#         (center_x, center_y) 또는 None (검출 실패 시)
+#     """
+#     # 이미지 undistortion
+#     undistorted = cv2.undistort(image, camera_matrix, dist_coeffs)
+#     gray = cv2.cvtColor(undistorted, cv2.COLOR_BGR2GRAY)
     
-    # ArUco 딕셔너리 생성 (기본 DICT_4X4_50 사용, 필요시 변경 가능)
-    aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
-    aruco_params = cv2.aruco.DetectorParameters()
+#     # ArUco 딕셔너리 생성 (기본 DICT_4X4_50 사용, 필요시 변경 가능)
+#     aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+#     aruco_params = cv2.aruco.DetectorParameters()
     
-    # 마커 검출
-    corners, ids, rejected = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=aruco_params)
+#     # 마커 검출
+#     corners, ids, rejected = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=aruco_params)
     
-    if ids is None or len(ids) == 0:
-        print("  ArUco 마커를 찾을 수 없습니다.")
-        return None
+#     if ids is None or len(ids) == 0:
+#         print("  ArUco 마커를 찾을 수 없습니다.")
+#         return None
     
-    # 모든 마커의 중심점 계산
-    centers = []
-    for i, corner in enumerate(corners):
-        # corner는 (1, 4, 2) 형태의 배열
-        corner_pts = corner[0]  # (4, 2) 형태
-        center = np.mean(corner_pts, axis=0)  # 4개 코너의 평균
-        centers.append(center)
-        marker_id = ids[i][0]
-        print(f"  마커 ID {marker_id} 중심: ({center[0]:.1f}, {center[1]:.1f})")
+#     # 모든 마커의 중심점 계산
+#     centers = []
+#     for i, corner in enumerate(corners):
+#         # corner는 (1, 4, 2) 형태의 배열
+#         corner_pts = corner[0]  # (4, 2) 형태
+#         center = np.mean(corner_pts, axis=0)  # 4개 코너의 평균
+#         centers.append(center)
+#         marker_id = ids[i][0]
+#         print(f"  마커 ID {marker_id} 중심: ({center[0]:.1f}, {center[1]:.1f})")
     
-    # 모든 마커 중심의 평균을 보드 중심으로 사용
-    board_center = np.mean(centers, axis=0)
-    print(f"  보드 중심: ({board_center[0]:.1f}, {board_center[1]:.1f})")
+#     # 모든 마커 중심의 평균을 보드 중심으로 사용
+#     board_center = np.mean(centers, axis=0)
+#     print(f"  보드 중심: ({board_center[0]:.1f}, {board_center[1]:.1f})")
     
-    return float(board_center[0]), float(board_center[1])
+#     return float(board_center[0]), float(board_center[1])
 
 
 def detect_aruco_from_single_image(image_path: str, camera_matrix: np.ndarray, dist_coeffs: np.ndarray, min_markers: int = 4) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]:
@@ -1474,7 +1474,7 @@ def parse_arguments():
     parser.add_argument(
         "--rotate",
         type=float,
-        default=-90.0,
+        default=-100.0,
         help="World 좌표를 회전할 각도 (도 단위, 시계방향이 양수). 첫 번째 점을 중심으로 회전합니다."
     )
     parser.add_argument(
