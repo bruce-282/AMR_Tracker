@@ -1,14 +1,16 @@
+
 """Test script for CALC RESULT (cmd: 6) and MANUAL CALC RESULT (cmd: 9).
 
 Usage:
     # Trajectory analysis (cmd: 6)
-    python test_calc_result.py
+    python test_calc_result.py --csv data/20260223-204647_zoom1_raw_data_augmented_30.csv
     python test_calc_result.py --csv data/20260219-112921_zoom1_raw_data.csv
     python test_calc_result.py --csv data/20260219-112921_zoom1_raw_data.csv --sampling 50.0
 
     # Manual measurement analysis (cmd: 9)
     python test_calc_result.py --manual
     python test_calc_result.py --manual --csv data/20260219-145717_zoom1_start_cam_1_manual_raw_data.csv
+    python test_calc_result.py --manual --csv data/20260223_zoom1_cam1_manual_raw_data_augmented_30.csv
 """
 
 import socket
