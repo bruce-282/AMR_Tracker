@@ -22,7 +22,7 @@
     "_desc_detection_loss": "객체 검출 실패 허용 프레임 수. 이 프레임 이상 검출 실패 시 trajectory 전송 후 종료",
     "max_frames_lost": 500,
     "_desc_max_frames_lost": "트래커 유지 최대 프레임 수",
-    "camera2_trajectory_max_frames": 500,
+    "camera2_trajectory_max_frames": 100,
     "_desc_trajectory_max": "수집할 최대 trajectory 포인트 수. 이 개수 도달 시 trajectory 전송 후 종료",
     "boundary_margin_ratio": 0.1,
     "_desc_boundary_margin": "이미지 경계 마진 비율 (0.1 = 10%). 예측 위치가 이 마진 밖으로 나가면 트래커 리셋",
