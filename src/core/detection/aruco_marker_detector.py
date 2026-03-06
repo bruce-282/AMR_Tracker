@@ -143,36 +143,28 @@ class ArUcoMarkerDetector:
                 return []
 
             poly_xy = corner_pts.astype(np.float32).tolist()
-            # ArUco corners are already 4 points (TL, TR, BR, BL); use them directly (no minAreaRect)
             pts = corner_pts.astype(np.float32)
             center = np.mean(pts, axis=0)
-            # Edge lengths: [0-1]=top, [1-2]=right, [2-3]=bottom, [3-0]=left
+
             e01 = float(np.linalg.norm(pts[1] - pts[0]))
             e12 = float(np.linalg.norm(pts[2] - pts[1]))
             e23 = float(np.linalg.norm(pts[3] - pts[2]))
             e30 = float(np.linalg.norm(pts[0] - pts[3]))
             width_avg = (e01 + e23) * 0.5
             height_avg = (e12 + e30) * 0.5
-            # Angle from top edge (pts[0] -> pts[1])
+
+            # ArUco corners have fixed order (TL→TR→BR→BL) based on marker pattern,
+            # so the top-edge vector gives stable rotation angle across full ±180° range
+            # without the long/short axis ambiguity of square markers.
             top_vec = pts[1] - pts[0]
             angle_deg = float(np.degrees(np.arctan2(top_vec[1], top_vec[0])))
-            if height_avg > width_avg:
-                long_axis, short_axis = height_avg, width_avg
-                normalized_angle = angle_deg - 90
-            else:
-                long_axis, short_axis = width_avg, height_avg
-                normalized_angle = angle_deg
-            while normalized_angle > 90:
-                normalized_angle -= 180
-            while normalized_angle < -90:
-                normalized_angle += 180
 
             oriented_box_info = {
                 "center": tuple(center),
-                "width": long_axis,
-                "height": short_axis,
-                "angle": normalized_angle,
-                "angle_rad": np.deg2rad(normalized_angle),
+                "width": width_avg,
+                "height": height_avg,
+                "angle": angle_deg,
+                "angle_rad": np.deg2rad(angle_deg),
                 "box_points": pts,
             }
 

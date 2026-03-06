@@ -166,7 +166,15 @@ class TrajectoryRepeatability:
             "sigma_y": sigma_y,
             "sigma_theta": sigma_theta,
             "sigma_2d": sigma_2d,
-            #'Rp_ISO9283': rp_2d,
+            "x_min": float(np.min(x_data)),
+            "x_max": float(np.max(x_data)),
+            "x_range": float(np.max(x_data) - np.min(x_data)),
+            "y_min": float(np.min(y_data)),
+            "y_max": float(np.max(y_data)),
+            "y_range": float(np.max(y_data) - np.min(y_data)),
+            "theta_min": float(np.min(theta_data)),
+            "theta_max": float(np.max(theta_data)),
+            "theta_range": float(np.max(theta_data) - np.min(theta_data)),
             "position_errors": position_errors,
             "theta_errors": theta_errors,
         }
@@ -576,6 +584,13 @@ class TrajectoryRepeatability:
                 )
             sigma_y_str = f"{cam_data['sigma_y']:.4f}" if not np.isnan(cam_data.get('sigma_y', np.nan)) else "N/A"
             ax.set_title(f"{cam_name} Trajectories\nσ_y={sigma_y_str} mm")
+            if all_y:
+                y_arr = np.array(all_y)
+                y_min_v, y_max_v = np.min(y_arr), np.max(y_arr)
+                ax.text(0.03, 0.97,
+                        f"Y: {y_min_v:.2f} ~ {y_max_v:.2f}\nRange={y_max_v - y_min_v:.4f} mm",
+                        transform=ax.transAxes, fontsize=8, verticalalignment='top',
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='wheat', alpha=0.8))
             ax.legend()
         else:
             ax.text(0.5, 0.5, "No trajectory data", ha='center', va='center', transform=ax.transAxes)
@@ -629,7 +644,13 @@ class TrajectoryRepeatability:
                 color="blue",
             )
             sigma_y_str = f'{cam_data["sigma_y"]:.4f}' if not np.isnan(cam_data.get("sigma_y", np.nan)) else "N/A"
+            sy = cam_data["sigma_y_at_each_x"]
+            sy_min, sy_max = np.min(sy), np.max(sy)
             ax_y.set_title(f'{cam_name} Y Repeatability (Lateral Deviation)\nOverall σ_y={sigma_y_str} mm')
+            ax_y.text(0.03, 0.97,
+                      f"Min={sy_min:.4f}  Max={sy_max:.4f}\nRange={sy_max - sy_min:.4f} mm",
+                      transform=ax_y.transAxes, fontsize=8, verticalalignment='top',
+                      bbox=dict(boxstyle='round,pad=0.3', facecolor='wheat', alpha=0.8))
         else:
             ax_y.text(0.5, 0.5, "No trajectory data", ha='center', va='center', transform=ax_y.transAxes)
             ax_y.set_title(f"{cam_name} Y Repeatability\n(No data)")
@@ -650,7 +671,13 @@ class TrajectoryRepeatability:
                 color="green",
             )
             sigma_theta_str = f'{cam_data["sigma_theta"]:.4f}' if not np.isnan(cam_data.get("sigma_theta", np.nan)) else "N/A"
+            st = cam_data["sigma_theta_at_each_x"]
+            st_min, st_max = np.min(st), np.max(st)
             ax_theta.set_title(f'{cam_name} Yaw Repeatability (Angular Deviation)\nOverall σ_θ={sigma_theta_str}°')
+            ax_theta.text(0.03, 0.97,
+                          f"Min={st_min:.4f}  Max={st_max:.4f}\nRange={st_max - st_min:.4f}°",
+                          transform=ax_theta.transAxes, fontsize=8, verticalalignment='top',
+                          bbox=dict(boxstyle='round,pad=0.3', facecolor='wheat', alpha=0.8))
         else:
             ax_theta.text(0.5, 0.5, "No trajectory data", ha='center', va='center', transform=ax_theta.transAxes)
             ax_theta.set_title(f"{cam_name} Yaw Repeatability\n(No data)")
@@ -684,6 +711,12 @@ class TrajectoryRepeatability:
         ax.set_xlabel("X (mm)")
         ax.set_ylabel("Y (mm)")
         ax.set_title(f"Cam1 Position\nσ_2D={cam1_data['sigma_2d']:.4f} mm")
+        stats_text = (
+            f"X: {cam1_data['x_min']:.2f} ~ {cam1_data['x_max']:.2f}  Range={cam1_data['x_range']:.4f}\n"
+            f"Y: {cam1_data['y_min']:.2f} ~ {cam1_data['y_max']:.2f}  Range={cam1_data['y_range']:.4f}"
+        )
+        ax.text(0.03, 0.97, stats_text, transform=ax.transAxes, fontsize=8,
+                verticalalignment='top', bbox=dict(boxstyle='round,pad=0.3', facecolor='wheat', alpha=0.8))
         ax.legend()
         ax.grid(True, alpha=0.3)
         self._zoom_to_data(ax, x_data, y_data)
@@ -706,6 +739,12 @@ class TrajectoryRepeatability:
         ax.set_xlabel("Trial")
         ax.set_ylabel("Yaw (deg)")
         ax.set_title(f"Cam1 Yaw Repeatability\nσ_θ={cam1_data['sigma_theta']:.4f}°")
+        yaw_stats = (
+            f"Min={cam1_data['theta_min']:.2f}°  Max={cam1_data['theta_max']:.2f}°\n"
+            f"Range={cam1_data['theta_range']:.4f}°"
+        )
+        ax.text(0.03, 0.97, yaw_stats, transform=ax.transAxes, fontsize=8,
+                verticalalignment='top', bbox=dict(boxstyle='round,pad=0.3', facecolor='wheat', alpha=0.8))
         ax.legend(loc="upper right", fontsize=8)
         ax.xaxis.set_major_locator(MaxNLocator(integer=True))
         ax.grid(True, alpha=0.3)
@@ -726,7 +765,12 @@ class TrajectoryRepeatability:
                                 alpha=0.2, color="red",
                                 label=f"±σ={cam1_data['sigma_x']:.3f}")
         ax_x_trend.set_ylabel("X (mm)", fontsize=8)
-        ax_x_trend.set_title(f"Cam1 X Trend  σ_x={cam1_data['sigma_x']:.4f} mm", fontsize=9)
+        ax_x_trend.set_title(f"Cam1 X Trend  σ={cam1_data['sigma_x']:.4f} mm", fontsize=9)
+        ax_x_trend.text(0.03, 0.97,
+                        f"Min={cam1_data['x_min']:.2f}  Max={cam1_data['x_max']:.2f}  Range={cam1_data['x_range']:.4f}",
+                        transform=ax_x_trend.transAxes, fontsize=7,
+                        verticalalignment='top',
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='wheat', alpha=0.8))
         ax_x_trend.legend(loc="upper right", fontsize=6)
         ax_x_trend.xaxis.set_major_locator(MaxNLocator(integer=True))
         ax_x_trend.grid(True, alpha=0.3)
@@ -742,7 +786,12 @@ class TrajectoryRepeatability:
                                 label=f"±σ={cam1_data['sigma_y']:.3f}")
         ax_y_trend.set_xlabel("Trial", fontsize=8)
         ax_y_trend.set_ylabel("Y (mm)", fontsize=8)
-        ax_y_trend.set_title(f"Cam1 Y Trend  σ_y={cam1_data['sigma_y']:.4f} mm", fontsize=9)
+        ax_y_trend.set_title(f"Cam1 Y Trend  σ={cam1_data['sigma_y']:.4f} mm", fontsize=9)
+        ax_y_trend.text(0.03, 0.97,
+                        f"Min={cam1_data['y_min']:.2f}  Max={cam1_data['y_max']:.2f}  Range={cam1_data['y_range']:.4f}",
+                        transform=ax_y_trend.transAxes, fontsize=7,
+                        verticalalignment='top',
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='wheat', alpha=0.8))
         ax_y_trend.legend(loc="upper right", fontsize=6)
         ax_y_trend.xaxis.set_major_locator(MaxNLocator(integer=True))
         ax_y_trend.grid(True, alpha=0.3)
@@ -926,6 +975,14 @@ class ManualRepeatability:
         ax1.set_xlabel("X (mm)")
         ax1.set_ylabel("Y (mm)")
         ax1.set_title(f"Cam1 Manual Position\n(n={n}, σ_2D={sigma_2d:.4f} mm)")
+        x_min_v, x_max_v = np.min(x_v), np.max(x_v)
+        y_min_v, y_max_v = np.min(y_v), np.max(y_v)
+        stats_text = (
+            f"X: {x_min_v:.2f} ~ {x_max_v:.2f}  Range={x_max_v - x_min_v:.4f}\n"
+            f"Y: {y_min_v:.2f} ~ {y_max_v:.2f}  Range={y_max_v - y_min_v:.4f}"
+        )
+        ax1.text(0.03, 0.97, stats_text, transform=ax1.transAxes, fontsize=8,
+                 verticalalignment='top', bbox=dict(boxstyle='round,pad=0.3', facecolor='wheat', alpha=0.8))
         ax1.legend()
         ax1.grid(True, alpha=0.3)
         self._zoom_to_data_static(ax1, x_v, y_v)
@@ -946,6 +1003,13 @@ class ManualRepeatability:
         ax2.set_xlabel("Trial")
         ax2.set_ylabel("Yaw (deg)")
         ax2.set_title(f"Cam1 Manual Yaw Repeatability\nσ_θ={sigma_theta:.4f}°")
+        t_min, t_max = np.min(theta_deg), np.max(theta_deg)
+        yaw_stats = (
+            f"Min={t_min:.2f}°  Max={t_max:.2f}°\n"
+            f"Range={t_max - t_min:.4f}°"
+        )
+        ax2.text(0.03, 0.97, yaw_stats, transform=ax2.transAxes, fontsize=8,
+                 verticalalignment='top', bbox=dict(boxstyle='round,pad=0.3', facecolor='wheat', alpha=0.8))
         ax2.legend(loc="upper right", fontsize=8)
         ax2.xaxis.set_major_locator(MaxNLocator(integer=True))
         ax2.grid(True, alpha=0.3)
