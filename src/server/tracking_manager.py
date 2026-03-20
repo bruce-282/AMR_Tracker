@@ -124,8 +124,7 @@ class TrackingManager:
     
     def _tracking_loop(self, camera_id: int):
         """Main tracking loop for camera."""
-        loader = self.camera_manager.camera_loaders.get(camera_id)
-        if not loader:
+        if camera_id not in self.camera_manager.camera_loaders:
             return
 
         amr_tracker = self.camera_manager.amr_trackers.get(camera_id)
@@ -139,6 +138,11 @@ class TrackingManager:
         logger.info(f"Camera {camera_id} tracking started")
         
         while self.vision_active and camera_id in self.camera_manager.camera_loaders:
+            loader = self.camera_manager.camera_loaders.get(camera_id)
+            if loader is None:
+                # e.g. Novitec manual subprocess: loader released, slot temporarily None
+                time.sleep(0.05)
+                continue
             try:
                 ret, frame = loader.read()
                 if not ret:

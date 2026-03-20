@@ -1,6 +1,12 @@
 """Camera management for vision server."""
 
+import json
 import logging
+import os
+import subprocess
+import sys
+import tempfile
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import cv2
@@ -61,7 +67,121 @@ class CameraManager:
         # Note: EnhancedAMRTracker manages its own tracker internally
         self.trackers: Dict[int, Dict] = {}  # camera_id -> tracker dict
         self.next_track_ids: Dict[int, int] = {}
-    
+
+        # Novitec 수동 캡처: 상주 데몬(프로세스 1개) — 요청마다 cold subprocess 대신 stdin JSON 1줄
+        self._novitec_manual_daemon_lock = threading.Lock()
+        self._novitec_manual_daemon_proc: Optional[subprocess.Popen] = None
+
+    @staticmethod
+    def _amr_repo_root() -> Path:
+        return Path(__file__).resolve().parent.parent.parent
+
+    def ensure_novitec_manual_daemon(self) -> bool:
+        """
+        `scripts/novitec_manual_trigger_daemon.py` 가 있으면 상주 프로세스를 기동.
+        START VISION 직후 호출 권장 (첫 수동 캡처 지연 완화).
+        """
+        with self._novitec_manual_daemon_lock:
+            return self._ensure_novitec_manual_daemon_unlocked()
+
+    def _ensure_novitec_manual_daemon_unlocked(self) -> bool:
+        script = self._amr_repo_root() / "scripts" / "novitec_manual_trigger_daemon.py"
+        if not script.is_file():
+            return False
+        proc = self._novitec_manual_daemon_proc
+        if proc is not None and proc.poll() is None:
+            return True
+        self._novitec_manual_daemon_proc = None
+        repo_root = self._amr_repo_root()
+        novitec_src = repo_root / "submodules" / "novitec_camera_module" / "src"
+        py_path = str(repo_root)
+        if novitec_src.is_dir():
+            py_path = f"{str(novitec_src)}{os.pathsep}{py_path}"
+        env = os.environ.copy()
+        prev = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{py_path}{os.pathsep}{prev}" if prev else py_path
+        try:
+            self._novitec_manual_daemon_proc = subprocess.Popen(
+                [sys.executable, str(script)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+                env=env,
+                cwd=str(repo_root),
+            )
+        except Exception as e:
+            logger.error(f"Novitec manual daemon start failed: {e}")
+            self._novitec_manual_daemon_proc = None
+            return False
+        logger.info("Novitec manual capture daemon started (persistent; warmup for fast manual capture)")
+        return True
+
+    def stop_novitec_manual_daemon(self) -> None:
+        """END VISION 등에서 데몬 종료."""
+        with self._novitec_manual_daemon_lock:
+            proc = self._novitec_manual_daemon_proc
+            self._novitec_manual_daemon_proc = None
+        if proc is None:
+            return
+        try:
+            if proc.stdin:
+                proc.stdin.write(json.dumps({"cmd": "quit"}) + "\n")
+                proc.stdin.flush()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        logger.info("Novitec manual capture daemon stopped")
+
+    def _novitec_manual_daemon_capture_unlocked(
+        self,
+        device_id: str,
+        camera_index: int,
+        config_tmp: str,
+        out_png: str,
+    ) -> bool:
+        proc = self._novitec_manual_daemon_proc
+        if proc is None or proc.poll() is not None:
+            return False
+        req = {
+            "cmd": "capture",
+            "device_id": device_id,
+            "camera_index": camera_index,
+            "config_json": config_tmp,
+            "output": out_png,
+        }
+        try:
+            assert proc.stdin is not None and proc.stdout is not None
+            proc.stdin.write(json.dumps(req, ensure_ascii=False) + "\n")
+            proc.stdin.flush()
+            line = proc.stdout.readline()
+            if not line:
+                logger.error("Novitec manual daemon: empty response (crashed?)")
+                self._novitec_manual_daemon_proc = None
+                return False
+            resp = json.loads(line)
+            if not resp.get("ok"):
+                logger.error(
+                    f"Novitec manual daemon capture failed: {resp.get('err', resp)}"
+                )
+                return False
+            return True
+        except Exception as e:
+            logger.exception(f"Novitec manual daemon IPC failed: {e}")
+            try:
+                if proc.poll() is not None:
+                    self._novitec_manual_daemon_proc = None
+            except Exception:
+                self._novitec_manual_daemon_proc = None
+            return False
+
     def get_camera_config(self, camera_id: int, product_model_name: Optional[str] = None) -> Tuple[str, Optional[Any], float, Optional[str]]:
         """
         Get camera configuration (loader_mode, source, fps, config_path).
@@ -680,6 +800,8 @@ class CameraManager:
             return False
         
         loader = self.camera_loaders[camera_id]
+        if loader is None:
+            return False
         # Check if it's a NovitecCameraLoader
         from src.utils.sequence_loader import NovitecCameraLoader
         if isinstance(loader, NovitecCameraLoader):
@@ -727,6 +849,8 @@ class CameraManager:
             return False
         
         loader = self.camera_loaders[camera_id]
+        if loader is None:
+            return False
         # Check if it's a NovitecCameraLoader
         from src.utils.sequence_loader import NovitecCameraLoader
         if isinstance(loader, NovitecCameraLoader):
@@ -772,4 +896,185 @@ class CameraManager:
         for camera_id, loader in self.camera_loaders.items():
             if isinstance(loader, NovitecCameraLoader):
                 self.stop_camera_stream(camera_id)
+
+    def is_novitec_camera(self, camera_id: int) -> bool:
+        """CAM이 Novitec 로더인지."""
+        from src.utils.sequence_loader import NovitecCameraLoader
+        loader = self.camera_loaders.get(camera_id)
+        return isinstance(loader, NovitecCameraLoader)
+
+    def is_camera_stream_active(self, camera_id: int) -> bool:
+        """Novitec 스트림(start_stream)이 켜져 있는지."""
+        from src.utils.sequence_loader import NovitecCameraLoader
+        loader = self.camera_loaders.get(camera_id)
+        if not isinstance(loader, NovitecCameraLoader) or not loader.camera:
+            return False
+        return bool(getattr(loader.camera, "_is_streaming", False))
+
+    def grab_novitec_single_frame_from_stream(self, camera_id: int) -> Optional[Any]:
+        """
+        스트림이 이미 켜진 상태에서 ``capture()`` 한 장 (연속 모드).
+        ``last_frames``가 없을 때 보조용. 언디스토션은 로더 설정을 따름.
+        """
+        from src.utils.sequence_loader import NovitecCameraLoader
+        loader = self.camera_loaders.get(camera_id)
+        if not isinstance(loader, NovitecCameraLoader) or not loader.camera:
+            return None
+        try:
+            data = loader.camera.capture(output_formats=["image"])
+            if not data or "image" not in data:
+                return None
+            frame = data["image"]
+            return loader._undistort_frame(frame)
+        except Exception as e:
+            logger.warning(f"Camera {camera_id}: grab_novitec_single_frame_from_stream failed: {e}")
+            return None
+
+    def grab_novitec_manual_frame_subprocess(self, camera_id: int) -> Optional[Any]:
+        """
+        스트림이 꺼진 상태에서 수동 1장: **별도 프로세스**에서 디바이스 독점 후
+        소프트웨어 트리거 캡처. 부모는 해당 카메라 로더를 잠시 release 후 재생성.
+
+        기본은 START VISION 때 띄워 둔 **상주 데몬**(`novitec_manual_trigger_daemon`)에
+        stdin JSON 한 줄로 요청 (cold subprocess / 매번 Python·DLL 로드 비용 제거).
+        데몬 실패 시 `novitec_manual_trigger_worker` 1회 실행으로 폴백.
+        """
+        from src.utils.sequence_loader import NovitecCameraLoader
+
+        loader = self.camera_loaders.get(camera_id)
+        if not isinstance(loader, NovitecCameraLoader) or not loader.camera:
+            return None
+
+        device_id = loader.device_id
+        config = dict(loader.config or {})
+        camera_index = loader.camera_index
+        enable_undistortion = getattr(loader, "enable_undistortion", False)
+        camera_matrix = getattr(loader, "camera_matrix", None)
+        dist_coeffs = getattr(loader, "dist_coeffs", None)
+        enable_buffering = loader.enable_buffering
+        buffer_size = loader.buffer_size
+        buffer_drop_policy = loader.buffer_drop_policy
+        fps = self.get_fps_from_loader(loader)
+
+        repo_root = self._amr_repo_root()
+        fallback_script = repo_root / "scripts" / "novitec_manual_trigger_worker.py"
+
+        config_tmp = None
+        out_png = None
+        frame = None
+
+        with self._novitec_manual_daemon_lock:
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".json", delete=False, encoding="utf-8"
+                ) as tf:
+                    json.dump(config, tf, ensure_ascii=False)
+                    config_tmp = tf.name
+                out_png = tempfile.NamedTemporaryFile(suffix=".png", delete=False).name
+
+                self._ensure_novitec_manual_daemon_unlocked()
+
+                logger.info(
+                    f"Camera {camera_id}: Manual capture (daemon or one-shot worker), "
+                    f"device={device_id!r}"
+                )
+                loader.release()
+                self.camera_loaders[camera_id] = None
+
+                novitec_src = repo_root / "submodules" / "novitec_camera_module" / "src"
+                py_path = str(repo_root)
+                if novitec_src.is_dir():
+                    py_path = f"{str(novitec_src)}{os.pathsep}{py_path}"
+                env = os.environ.copy()
+                prev = env.get("PYTHONPATH", "")
+                env["PYTHONPATH"] = f"{py_path}{os.pathsep}{prev}" if prev else py_path
+
+                got_frame = False
+                if self._novitec_manual_daemon_capture_unlocked(
+                    device_id, camera_index, config_tmp, out_png
+                ):
+                    got_frame = True
+                elif fallback_script.is_file():
+                    logger.warning(
+                        f"Camera {camera_id}: manual daemon failed; falling back to one-shot worker"
+                    )
+                    cmd = [
+                        sys.executable,
+                        str(fallback_script),
+                        "--device-id",
+                        device_id,
+                        "--camera-index",
+                        str(camera_index),
+                        "--config-json",
+                        config_tmp,
+                        "--output",
+                        out_png,
+                    ]
+                    proc = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                        env=env,
+                        cwd=str(repo_root),
+                    )
+                    if proc.returncode != 0:
+                        logger.error(
+                            f"Camera {camera_id}: one-shot worker exit={proc.returncode} "
+                            f"stderr={proc.stderr!r}"
+                        )
+                    else:
+                        got_frame = True
+                else:
+                    logger.error(
+                        f"Camera {camera_id}: no daemon IPC and no fallback at {fallback_script}"
+                    )
+
+                if got_frame:
+                    frame = cv2.imread(out_png)
+                    if frame is None:
+                        logger.error(
+                            f"Camera {camera_id}: capture OK but failed to read {out_png}"
+                        )
+            except subprocess.TimeoutExpired:
+                logger.error(f"Camera {camera_id}: manual one-shot worker timed out")
+            except Exception as e:
+                logger.exception(f"Camera {camera_id}: manual capture failed: {e}")
+            finally:
+                for p in (config_tmp, out_png):
+                    if p:
+                        try:
+                            Path(p).unlink(missing_ok=True)
+                        except Exception:
+                            pass
+
+            new_loader = create_sequence_loader(
+                device_id,
+                fps=fps,
+                loader_mode="camera",
+                config=config,
+                enable_undistortion=enable_undistortion,
+                camera_matrix=camera_matrix,
+                dist_coeffs=dist_coeffs,
+                camera_index=camera_index,
+                enable_buffering=enable_buffering,
+                buffer_size=buffer_size,
+                buffer_drop_policy=buffer_drop_policy,
+            )
+            if new_loader is None:
+                logger.error(
+                    f"Camera {camera_id}: failed to recreate Novitec loader after manual capture"
+                )
+                return frame
+            self.camera_loaders[camera_id] = new_loader
+            self.frame_numbers[camera_id] = 0
+            logger.info(f"Camera {camera_id}: Novitec loader recreated after manual capture")
+
+        if frame is not None and enable_undistortion and camera_matrix is not None and dist_coeffs is not None:
+            try:
+                frame = cv2.undistort(frame, camera_matrix, dist_coeffs)
+            except Exception as e:
+                logger.warning(f"Camera {camera_id}: undistort after manual capture failed: {e}")
+
+        return frame
 

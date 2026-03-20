@@ -812,6 +812,7 @@ class NovitecCameraLoader(BaseLoader):
 
             self.initialized = False
             self.is_connected = False
+            NovitecCameraLoader._all_instances.pop(self.device_id, None)
 
         except Exception as e:
             print(f"Error releasing Novitec camera {self.device_id}: {e}")

@@ -58,6 +58,10 @@ LOADER_MODE_MAP = {
     "camera": "camera_device"
 }
 
+# Novitec 수동: 데몬/워커 서브프로세스 경로 (camera_manager 구현은 유지).
+# False — 미사용: CAM1 스트림 상시 유지 전제. True — START VISION 시 데몬 기동·스트림 OFF 시 워커 캡처.
+USE_NOVITEC_MANUAL_SUBPROCESS = False
+
 # No default tracking config - must be loaded from tracker_config file
 
 
@@ -576,7 +580,8 @@ class VisionServer:
         """
         if camera_id == 1:
             # Camera 1 -> Start camera 2
-            self.camera_manager.stop_camera_stream(1)
+            # CAM1 Novitec 스트림은 상시 유지(향후 CAM1 전용 별도 프로세스와 맞추기 위함). 여기서 끊지 않음.
+            # self.camera_manager.stop_camera_stream(1)
 
             if self.use_area_scan:
                 self.logger.info(f"Camera {camera_id}: Tracking finished. Waiting for client request (use_area_scan=true).")
@@ -1414,6 +1419,15 @@ class VisionServer:
                     self.tracking_manager.start_tracking(1)
                     time.sleep(0.1)
             
+            if USE_NOVITEC_MANUAL_SUBPROCESS:
+                try:
+                    if self.camera_manager.ensure_novitec_manual_daemon():
+                        self.logger.info(
+                            "Novitec manual capture daemon pre-started (persistent worker)"
+                        )
+                except Exception as e:
+                    self.logger.debug(f"Novitec manual daemon pre-start skipped: {e}")
+
             return self.protocol.create_response(
                 Command.START_VISION,
                 success=True
@@ -1444,6 +1458,8 @@ class VisionServer:
             self.tracking_manager.set_vision_active(False)
             self.logger.info("END VISION command received")
             self._stop_all_cameras()
+            if USE_NOVITEC_MANUAL_SUBPROCESS:
+                self.camera_manager.stop_novitec_manual_daemon()
             # Reset all camera states
             self.camera_state_manager.reset_all()
 
@@ -1944,10 +1960,12 @@ class VisionServer:
     def _handle_start_cam_manual(self, request: Dict[str, Any]) -> bytes:
         """Handle START CAM 1 Manual command (cmd: 8).
 
-        Performs a single-shot detection on camera 1. Uses the latest frame from the
-        CAM1 tracking loop (tracking_manager.last_frames[1]) when available, so manual
-        measurement is taken on the same frame stream as START CAM 1. Falls back to
-        an independent capture only if no frame has been stored yet.
+        Performs a single-shot detection on camera 1.
+
+        Novitec CAM1: If **stream is on**, use the latest tracking frame when available,
+        else one in-process capture. If **stream is off** and ``USE_NOVITEC_MANUAL_SUBPROCESS``:
+        subprocess worker/daemon (fresh frame). If that flag is False (default), stream off →
+        error (CAM1 상시 스트림 유지 전제). Non-Novitec: last_frames if present, else VideoCapture(source).
 
         Request format:
         {
@@ -1987,47 +2005,103 @@ class VisionServer:
                     data={"x": 0.0, "y": 0.0, "rz": 0.0}
                 )
 
-            # 우선 CAM1 트래킹 루프에서 갱신 중인 최신 프레임 사용 (별도 캡처 없음)
-            frame = self.tracking_manager.last_frames.get(camera_id)
-            if frame is not None:
-                frame = frame.copy()
-                self.logger.info("Camera 1 Manual: Using latest frame from tracking loop (CAM1 START)")
+            product_model_name = self.model_config.get_selected_model()
+            try:
+                loader_mode, source, fps, config_path = self.camera_manager.get_camera_config(
+                    camera_id, product_model_name
+                )
+            except Exception as e:
+                return self.protocol.create_response(
+                    Command.START_CAM_1_MANUAL,
+                    success=False,
+                    error_code="CAM_NOT_INITIALIZED",
+                    error_desc=f"Failed to get camera 1 config: {e}",
+                    data={"x": 0.0, "y": 0.0, "rz": 0.0}
+                )
+
+            frame = None
+            is_novitec = (
+                loader_mode == "camera" and self.camera_manager.is_novitec_camera(camera_id)
+            )
+
+            if is_novitec:
+                if self.camera_manager.is_camera_stream_active(camera_id):
+                    # 스트리밍 중: 최신 트래킹 프레임 또는 인프로세스 1장
+                    frame = self.tracking_manager.last_frames.get(camera_id)
+                    if frame is not None:
+                        frame = frame.copy()
+                        self.logger.info(
+                            "Camera 1 Manual: Latest tracking frame (Novitec stream active)"
+                        )
+                    else:
+                        frame = self.camera_manager.grab_novitec_single_frame_from_stream(camera_id)
+                        if frame is not None:
+                            self.logger.info(
+                                "Camera 1 Manual: Novitec in-process single capture "
+                                "(stream active, no last_frames yet)"
+                            )
+                else:
+                    # 스트림 꺼짐: last_frames 미사용. 서브프로세스 경로는 플래그로만 (기본 비활성)
+                    if USE_NOVITEC_MANUAL_SUBPROCESS:
+                        frame = self.camera_manager.grab_novitec_manual_frame_subprocess(
+                            camera_id
+                        )
+                        if frame is not None:
+                            self.logger.info(
+                                "Camera 1 Manual: Novitec subprocess trigger (stream stopped; "
+                                "fresh frame, not last_frames)"
+                            )
+                    else:
+                        self.logger.warning(
+                            "Camera 1 Manual: Novitec stream is OFF and subprocess manual "
+                            "is disabled (USE_NOVITEC_MANUAL_SUBPROCESS=False). Keep CAM1 streaming."
+                        )
+                        frame = None
             else:
-                # 트래킹이 아직 한 프레임도 안 돌았을 때만 별도 캡처
-                product_model_name = self.model_config.get_selected_model()
-                try:
-                    loader_mode, source, fps, config_path = self.camera_manager.get_camera_config(
-                        camera_id, product_model_name
+                frame = self.tracking_manager.last_frames.get(camera_id)
+                if frame is not None:
+                    frame = frame.copy()
+                    self.logger.info(
+                        "Camera 1 Manual: Using latest frame from tracking loop"
                     )
-                except Exception as e:
-                    return self.protocol.create_response(
-                        Command.START_CAM_1_MANUAL,
-                        success=False,
-                        error_code="CAM_NOT_INITIALIZED",
-                        error_desc=f"Failed to get camera 1 config: {e}",
-                        data={"x": 0.0, "y": 0.0, "rz": 0.0}
+                else:
+                    self.logger.info(
+                        f"Camera 1 Manual: No tracking frame yet, opening capture from {source}"
                     )
-                self.logger.info(f"Camera 1 Manual: No tracking frame yet, opening capture from {source}")
-                manual_capture = cv2.VideoCapture(source)
-                if not manual_capture.isOpened():
-                    return self.protocol.create_response(
-                        Command.START_CAM_1_MANUAL,
-                        success=False,
-                        error_code="FRAME_READ_ERROR",
-                        error_desc=f"Failed to open camera 1 source: {source}",
-                        data={"x": 0.0, "y": 0.0, "rz": 0.0}
-                    )
-                ret, frame = manual_capture.read()
-                manual_capture.release()
-                manual_capture = None
-                if not ret or frame is None:
-                    return self.protocol.create_response(
-                        Command.START_CAM_1_MANUAL,
-                        success=False,
-                        error_code="FRAME_READ_ERROR",
-                        error_desc="Failed to read frame from camera 1",
-                        data={"x": 0.0, "y": 0.0, "rz": 0.0}
-                    )
+                    manual_capture = cv2.VideoCapture(source)
+                    if not manual_capture.isOpened():
+                        return self.protocol.create_response(
+                            Command.START_CAM_1_MANUAL,
+                            success=False,
+                            error_code="FRAME_READ_ERROR",
+                            error_desc=f"Failed to open camera 1 source: {source}",
+                            data={"x": 0.0, "y": 0.0, "rz": 0.0}
+                        )
+                    ret, frame = manual_capture.read()
+                    manual_capture.release()
+                    manual_capture = None
+                    if not ret or frame is None:
+                        return self.protocol.create_response(
+                            Command.START_CAM_1_MANUAL,
+                            success=False,
+                            error_code="FRAME_READ_ERROR",
+                            error_desc="Failed to read frame from camera 1",
+                            data={"x": 0.0, "y": 0.0, "rz": 0.0}
+                        )
+
+            if frame is None:
+                return self.protocol.create_response(
+                    Command.START_CAM_1_MANUAL,
+                    success=False,
+                    error_code="FRAME_READ_ERROR",
+                    error_desc=(
+                        "Failed to acquire camera 1 frame (Novitec: keep CAM1 stream on, or enable "
+                        "USE_NOVITEC_MANUAL_SUBPROCESS)"
+                        if is_novitec
+                        else "Failed to acquire camera 1 frame"
+                    ),
+                    data={"x": 0.0, "y": 0.0, "rz": 0.0}
+                )
 
             # Get detector from AMR tracker (detector is stateless, thread-safe)
             amr_tracker = self.amr_trackers.get(camera_id)
