@@ -457,8 +457,37 @@ def transform_detection_with_homography(
     # Re-extract oriented_box_info from transformed mask or OBB box_points
     # This ensures accurate box_points, center, width, height, and angle after homography transformation
     new_oriented_box_info = None
-    
-    if new_masks is not None:
+    is_aruco = getattr(detection, 'class_name', '') == 'aruco'
+
+    # ArUco: keep corner order through homography and compute angle from top edge.
+    # Do this even when masks exist, to avoid minAreaRect long/short-axis angle flips.
+    if (
+        is_aruco
+        and detection.oriented_box_info is not None
+        and "box_points" in detection.oriented_box_info
+    ):
+        original_box_points = np.array(detection.oriented_box_info["box_points"], dtype=np.float32)
+        transformed_points = cv2.perspectiveTransform(
+            original_box_points.reshape(-1, 1, 2), homography
+        ).reshape(-1, 2)
+        center = np.mean(transformed_points, axis=0)
+        top_vec = transformed_points[1] - transformed_points[0]
+        angle_deg = float(np.degrees(np.arctan2(top_vec[1], top_vec[0])))
+        e01 = float(np.linalg.norm(transformed_points[1] - transformed_points[0]))
+        e12 = float(np.linalg.norm(transformed_points[2] - transformed_points[1]))
+        e23 = float(np.linalg.norm(transformed_points[3] - transformed_points[2]))
+        e30 = float(np.linalg.norm(transformed_points[0] - transformed_points[3]))
+        width_avg = (e01 + e23) * 0.5
+        height_avg = (e12 + e30) * 0.5
+        new_oriented_box_info = {
+            "center": tuple(center),
+            "width": width_avg,
+            "height": height_avg,
+            "angle": angle_deg,
+            "angle_rad": np.deg2rad(angle_deg),
+            "box_points": transformed_points,
+        }
+    elif new_masks is not None:
         # Case 1: Mask available - extract oriented_box_info from transformed mask
         # Determine image size for mask extraction
         if transformed_image_size is None:
@@ -488,53 +517,30 @@ def transform_detection_with_homography(
             original_box_points.reshape(-1, 1, 2), homography
         ).reshape(-1, 2)
         
-        is_aruco = getattr(detection, 'class_name', '') == 'aruco'
-        
-        if is_aruco:
-            # ArUco: corners keep their order (TL→TR→BR→BL) through homography,
-            # so use top-edge vector for stable full-range angle
-            center = np.mean(transformed_points, axis=0)
-            top_vec = transformed_points[1] - transformed_points[0]
-            angle_deg = float(np.degrees(np.arctan2(top_vec[1], top_vec[0])))
-            e01 = float(np.linalg.norm(transformed_points[1] - transformed_points[0]))
-            e12 = float(np.linalg.norm(transformed_points[2] - transformed_points[1]))
-            e23 = float(np.linalg.norm(transformed_points[3] - transformed_points[2]))
-            e30 = float(np.linalg.norm(transformed_points[0] - transformed_points[3]))
-            width_avg = (e01 + e23) * 0.5
-            height_avg = (e12 + e30) * 0.5
-            new_oriented_box_info = {
-                "center": tuple(center),
-                "width": width_avg,
-                "height": height_avg,
-                "angle": angle_deg,
-                "angle_rad": np.deg2rad(angle_deg),
-                "box_points": transformed_points,
-            }
+        # Non-ArUco (rectangular): use minAreaRect with long/short axis normalization
+        rect = cv2.minAreaRect(transformed_points)
+        center, (w, h), angle = rect
+        if h > w:
+            normalized_angle = angle - 90
+            long_axis = h
+            short_axis = w
         else:
-            # Non-ArUco (rectangular): use minAreaRect with long/short axis normalization
-            rect = cv2.minAreaRect(transformed_points)
-            center, (w, h), angle = rect
-            if h > w:
-                normalized_angle = angle - 90
-                long_axis = h
-                short_axis = w
-            else:
-                normalized_angle = angle
-                long_axis = w
-                short_axis = h
-            while normalized_angle > 90:
-                normalized_angle -= 180
-            while normalized_angle < -90:
-                normalized_angle += 180
-            new_oriented_box_info = {
-                "center": tuple(center),
-                "width": long_axis,
-                "height": short_axis,
-                "angle": normalized_angle,
-                "angle_rad": np.deg2rad(normalized_angle),
-                "box_points": transformed_points,
-                "rect": rect
-            }
+            normalized_angle = angle
+            long_axis = w
+            short_axis = h
+        while normalized_angle > 90:
+            normalized_angle -= 180
+        while normalized_angle < -90:
+            normalized_angle += 180
+        new_oriented_box_info = {
+            "center": tuple(center),
+            "width": long_axis,
+            "height": short_axis,
+            "angle": normalized_angle,
+            "angle_rad": np.deg2rad(normalized_angle),
+            "box_points": transformed_points,
+            "rect": rect
+        }
     
     # Apply edge-based refinement if oriented_box_info and frame are available
     if new_oriented_box_info is not None:
