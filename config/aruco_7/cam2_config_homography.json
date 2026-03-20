@@ -23,7 +23,7 @@
     ]
   ],
   "image_path": "data/aruco/cam2/cam2.png",
-  "camera_config_path": "config/cam2_config.json",
+  "camera_config_path": "config/aruco_7/cam2_config.json",
   "WarpOffset": {
     "x": 2090.18701171875,
     "y": 3433.332763671875,

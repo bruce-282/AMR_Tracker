@@ -1,8 +1,7 @@
 {
   "model_list": [
-    "zoom1",
-    "zoom2",
-    "zoom3"
+    "aruco_4",
+    "aruco_7"
   ],
-  "selected_model": "zoom1"
+  "selected_model": "aruco_4"
 }

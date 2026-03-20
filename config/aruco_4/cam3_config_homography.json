@@ -23,7 +23,7 @@
     ]
   ],
   "image_path": "C:\\Users\\user\\Documents\\cmes_repo\\AMR_Tracker\\submodules\\novitec_camera_module\\src\\crp_camera\\cam\\novitec\\scripts\\output\\novitec_manual_1771906000_cam3.png",
-  "camera_config_path": "../config/zoom1_aruco/cam3_config.json",
+  "camera_config_path": "../config/aruco_4/cam3_config.json",
   "WarpOffset": {
     "x": 4782.76953125,
     "y": 812.5853271484375,

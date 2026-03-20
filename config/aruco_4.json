@@ -22,44 +22,44 @@
         "loader_mode": "camera",
         "camera_1": {                                      
           "id": "I3ZEB19C",
-          "config": "config/zoom1_aruco/cam1_config.json",
-          "tracker_config": "config/zoom1_aruco/cam1_tracker_config.json"
+          "config": "config/aruco_4/cam1_config.json",
+          "tracker_config": "config/aruco_4/cam1_tracker_config.json"
         },
         "camera_2": {
           "id": "I3ZEB1AD",
-          "config": "config/zoom1_aruco/cam2_config.json",
-          "tracker_config": "config/zoom1_aruco/cam2_tracker_config.json"
+          "config": "config/aruco_4/cam2_config.json",
+          "tracker_config": "config/aruco_4/cam2_tracker_config.json"
         },
         "camera_3": {
           "id": "I3ZEB19D",
-          "config": "config/zoom1_aruco/cam3_config.json",
-          "tracker_config": "config/zoom1_aruco/cam3_tracker_config.json"
+          "config": "config/aruco_4/cam3_config.json",
+          "tracker_config": "config/aruco_4/cam3_tracker_config.json"
         }
       },
       "video_tracking": {
         "loader_mode": "video",
         "camera_1": {
           "id": ["data/260223_marker/CAM1.mp4"],
-          "config": "config/zoom1_aruco/cam1_config.json",
-          "tracker_config": "config/zoom1_aruco/cam1_tracker_config.json"
+          "config": "config/aruco_4/cam1_config.json",
+          "tracker_config": "config/aruco_4/cam1_tracker_config.json"
         },
         "camera_2": {
           "id": ["data/260223_marker/CAM2.mp4"],
-          "config": "config/zoom1_aruco/cam2_config.json",
-          "tracker_config": "config/zoom1_aruco/cam2_tracker_config.json"
+          "config": "config/aruco_4/cam2_config.json",
+          "tracker_config": "config/aruco_4/cam2_tracker_config.json"
         },
         "camera_3": {
           "id": ["data/CAM3.mp4"],
-          "config": "config/zoom1_aruco/cam3_config.json",
-          "tracker_config": "config/zoom1_aruco/cam3_tracker_config.json"
+          "config": "config/aruco_4/cam3_config.json",
+          "tracker_config": "config/aruco_4/cam3_tracker_config.json"
         }
       },
       "sequence_tracking": {
         "loader_mode": "sequence",
         "camera_1": {
           "id": "data/0001_fixed",
-          "config": "config/zoom1_aruco/sequence_config.json",
-          "tracker_config": "config/zoom1_aruco/cam1_tracker_config.json"
+          "config": "config/aruco_4/sequence_config.json",
+          "tracker_config": "config/aruco_4/cam1_tracker_config.json"
         }
       }
   
