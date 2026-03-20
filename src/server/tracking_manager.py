@@ -15,6 +15,11 @@ from .camera_manager import CameraManager
 from .camera_state import CameraStateManager
 # TrackingConfig removed - using dict from tracker_config files
 
+try:
+    from src.utils.novitec_cam1_subprocess_loader import NovitecCamera1SubprocessLoader
+except ImportError:
+    NovitecCamera1SubprocessLoader = None  # type: ignore[misc, assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -146,6 +151,19 @@ class TrackingManager:
             try:
                 ret, frame = loader.read()
                 if not ret:
+                    # CAM1 서브프로세스: Queue get 타임아웃이면 일시적 실패 — 루프 유지(트래킹 창/비디오)
+                    if NovitecCamera1SubprocessLoader is not None and isinstance(
+                        loader, NovitecCamera1SubprocessLoader
+                    ):
+                        if not loader.is_stream_process_alive():
+                            logger.error(
+                                f"Camera {camera_id}: CAM1 capture subprocess exited. "
+                                "Stopping tracking loop."
+                            )
+                            self._handle_no_frames(camera_id)
+                            break
+                        time.sleep(0.002)
+                        continue
                     logger.info(f"Camera {camera_id}: No more frames available. Exiting tracking loop.")
                     self._handle_no_frames(camera_id)
                     break

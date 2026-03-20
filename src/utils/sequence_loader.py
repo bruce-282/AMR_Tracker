@@ -835,7 +835,8 @@ def create_sequence_loader(
     camera_index: Optional[int] = None,
     enable_buffering: bool = True,
     buffer_size: int = 30,
-    buffer_drop_policy: str = "oldest"
+    buffer_drop_policy: str = "oldest",
+    novitec_cam1_subprocess: bool = False,
 ) -> Optional[BaseLoader]:
     """
     Create appropriate sequence loader based on source and mode
@@ -867,7 +868,8 @@ def create_sequence_loader(
                 camera_index=camera_index,
                 enable_buffering=enable_buffering,
                 buffer_size=buffer_size,
-                buffer_drop_policy=buffer_drop_policy
+                buffer_drop_policy=buffer_drop_policy,
+                novitec_cam1_subprocess=novitec_cam1_subprocess,
             )
         elif loader_mode == "video":
             return create_video_file_loader(source=source, enable_undistortion=enable_undistortion, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
@@ -891,11 +893,37 @@ def create_camera_device_loader(
     camera_index: Optional[int] = None,
     enable_buffering: bool = True,
     buffer_size: int = 30,
-    buffer_drop_policy: str = "oldest"
+    buffer_drop_policy: str = "oldest",
+    novitec_cam1_subprocess: bool = False,
 ) -> Optional[BaseLoader]:
-    """Create camera device loader with Novitec fallback"""
+    """Create camera device loader with Novitec fallback. CAM1 은 옵션으로 별도 프로세스 스트림."""
 
     try:
+        if (
+            novitec_cam1_subprocess
+            and camera_index == 1
+            and NOVITEC_AVAILABLE
+        ):
+            from src.utils.novitec_cam1_subprocess_loader import (
+                NovitecCamera1SubprocessLoader,
+            )
+
+            loader = NovitecCamera1SubprocessLoader(
+                device_id=source,
+                config=config,
+                enable_undistortion=enable_undistortion,
+                camera_matrix=camera_matrix,
+                dist_coeffs=dist_coeffs,
+                camera_index=1,
+                enable_buffering=enable_buffering,
+                buffer_size=buffer_size,
+                buffer_drop_policy=buffer_drop_policy,
+            )
+            print(
+                f"[OK] Novitec CAM1 subprocess loader (camera_index=1, pid={loader._proc.pid})"
+            )
+            return loader
+
         loader = NovitecCameraLoader(
             device_id=source, 
             config=config, 

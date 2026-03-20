@@ -1334,20 +1334,45 @@ class VisionServer:
             else:
                 self.logger.debug(f"execution config not found in {product_model_name}.json, using default: {self.visualize_stream}, draw_masks={self.draw_masks}")
             
-            # Initialize all 3 cameras and initialize trackers (without starting tracking threads)
+            # Initialize all 3 cameras and initialize trackers (without starting tracking threads).
+            # CAM1이 Novitec 서브프로세스일 때는 반드시 1→2→3 순서로 두고, CAM1 첫 프레임 후에
+            # CAM2/CAM3 SDK를 띄워 GigE/Novitec 소켓(Windows 10048) 충돌 가능성을 줄인다.
             failed_cameras = []
             for cam_id in [1, 2, 3]:
                 try:
+                    cam1_stream_warmup_failed = False
                     self.logger.info(f"Initializing camera {cam_id}...")
                     
                     loader_mode, source, fps, config_path = self.camera_manager.get_camera_config(cam_id, product_model_name)
                     
                     # Initialize camera loader
                     self._initialize_camera(cam_id, loader_mode=loader_mode, source=source, fps=fps, camera_config_path=config_path)
+
+                    if cam_id == 1:
+                        if not self.camera_manager.wait_for_novitec_cam1_subprocess_first_frame():
+                            self.logger.error(
+                                "Camera 1: subprocess did not deliver a frame before CAM2/CAM3 init"
+                            )
+                            self._send_notification(
+                                cam_id,
+                                False,
+                                error_code="CAM1_FIRST_FRAME_TIMEOUT",
+                                error_desc="CAM1 subprocess stream: no frame before other cameras init",
+                            )
+                            failed_cameras.append(cam_id)
+                            cam1_stream_warmup_failed = True
                     
-                    # Check connection and send NOTIFY_CONNECTION
-                    is_connected = self.camera_manager.check_camera_connection(cam_id)
-                    if is_connected:
+                    # Check connection and send NOTIFY_CONNECTION (CAM1 워밍업 실패 시 이미 실패 NOTIFY 전송함)
+                    if cam1_stream_warmup_failed:
+                        is_connected = False
+                        self.logger.warning(
+                            f"Camera {cam_id}: skipping connection success NOTIFY (first-frame warmup failed)"
+                        )
+                    else:
+                        is_connected = self.camera_manager.check_camera_connection(cam_id)
+                    if cam1_stream_warmup_failed:
+                        pass
+                    elif is_connected:
                         self._send_notification(cam_id, True)
                         self.logger.info(f"Camera {cam_id} connection confirmed - NOTIFY_CONNECTION sent")
                     else:
@@ -1962,8 +1987,11 @@ class VisionServer:
 
         Performs a single-shot detection on camera 1.
 
-        Novitec CAM1: If **stream is on**, use the latest tracking frame when available,
-        else one in-process capture. If **stream is off** and ``USE_NOVITEC_MANUAL_SUBPROCESS``:
+        Novitec CAM1: If **stream is on**, always try a **fresh** capture from the stream
+        (``grab_novitec_single_frame_from_stream`` / subprocess ``read``), not ``last_frames``,
+        so cmd 8 stays correct when CAM2 is active and the CAM1 tracking loop is not updating
+        ``last_frames``. Retries a few times; only if all fail, falls back to ``last_frames`` with
+        a warning. If **stream is off** and ``USE_NOVITEC_MANUAL_SUBPROCESS``:
         subprocess worker/daemon (fresh frame). If that flag is False (default), stream off →
         error (CAM1 상시 스트림 유지 전제). Non-Novitec: last_frames if present, else VideoCapture(source).
 
@@ -2026,20 +2054,31 @@ class VisionServer:
 
             if is_novitec:
                 if self.camera_manager.is_camera_stream_active(camera_id):
-                    # 스트리밍 중: 최신 트래킹 프레임 또는 인프로세스 1장
-                    frame = self.tracking_manager.last_frames.get(camera_id)
-                    if frame is not None:
-                        frame = frame.copy()
-                        self.logger.info(
-                            "Camera 1 Manual: Latest tracking frame (Novitec stream active)"
+                    # 스트리밍 중: 항상 실제 카메라(또는 CAM1 서브프로세스 큐)에서 신규 1장 우선.
+                    # last_frames는 CAM1 트래킹 루프가 돌 때만 갱신되므로 CAM2 구간에서는 오래된 값이 됨.
+                    frame = None
+                    max_attempts = 8
+                    for attempt in range(1, max_attempts + 1):
+                        frame = self.camera_manager.grab_novitec_single_frame_from_stream(
+                            camera_id
                         )
-                    else:
-                        frame = self.camera_manager.grab_novitec_single_frame_from_stream(camera_id)
                         if frame is not None:
                             self.logger.info(
-                                "Camera 1 Manual: Novitec in-process single capture "
-                                "(stream active, no last_frames yet)"
+                                "Camera 1 Manual: Fresh frame from Novitec stream "
+                                f"(attempt {attempt}/{max_attempts})"
                             )
+                            break
+                        time.sleep(0.05)
+                    if frame is None:
+                        stale = self.tracking_manager.last_frames.get(camera_id)
+                        if stale is not None:
+                            frame = stale
+                            self.logger.warning(
+                                "Camera 1 Manual: Fresh capture failed after retries; "
+                                "using last tracking frame (may be stale)"
+                            )
+                    if frame is not None:
+                        frame = frame.copy()
                 else:
                     # 스트림 꺼짐: last_frames 미사용. 서브프로세스 경로는 플래그로만 (기본 비활성)
                     if USE_NOVITEC_MANUAL_SUBPROCESS:

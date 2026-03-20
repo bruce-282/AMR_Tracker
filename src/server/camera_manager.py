@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import cv2
@@ -26,6 +27,18 @@ from src.core.amr_tracker import EnhancedAMRTracker
 from .model_config import ModelConfig
 
 logger = logging.getLogger(__name__)
+
+# True: CAM1 Novitec만 자식 프로세스에서 connect/stream (NovitecCamera1SubprocessLoader)
+USE_NOVITEC_CAM1_SUBPROCESS_STREAM = True
+
+
+def _loader_is_novitec_family(loader: Any) -> bool:
+    if loader is None:
+        return False
+    from src.utils.sequence_loader import NovitecCameraLoader
+    from src.utils.novitec_cam1_subprocess_loader import NovitecCamera1SubprocessLoader
+
+    return isinstance(loader, (NovitecCameraLoader, NovitecCamera1SubprocessLoader))
 
 
 class CameraManager:
@@ -585,6 +598,11 @@ class CameraManager:
         except Exception as e:
             logger.debug(f"Failed to load buffer config from {product_model_name}.json: {e}")
         
+        novitec_cam1_sp = (
+            USE_NOVITEC_CAM1_SUBPROCESS_STREAM
+            and loader_mode == "camera"
+            and camera_id == 1
+        )
         loader = create_sequence_loader(
             source, 
             fps=fps, 
@@ -596,7 +614,8 @@ class CameraManager:
             camera_index=camera_id,  # Use camera_id as camera_index for DLL isolation
             enable_buffering=enable_buffering,
             buffer_size=buffer_size,
-            buffer_drop_policy=buffer_drop_policy
+            buffer_drop_policy=buffer_drop_policy,
+            novitec_cam1_subprocess=novitec_cam1_sp,
         )
         if loader is None:
             raise RuntimeError(f"Failed to create loader for camera {camera_id} (mode: {loader_mode}, source: {source})")
@@ -661,6 +680,48 @@ class CameraManager:
         
         logger.info(f"Camera {camera_id} initialized with EnhancedAMRTracker")
     
+    def wait_for_novitec_cam1_subprocess_first_frame(
+        self,
+        timeout_sec: float = 60.0,
+        poll_sec: float = 0.05,
+    ) -> bool:
+        """
+        CAM1이 NovitecCamera1SubprocessLoader일 때, 다른 카메라(CAM2/3) SDK를 올리기 전에
+        자식 프로세스에서 첫 라이브 프레임이 큐에 도착할 때까지 대기한다.
+
+        - GigE/Novitec가 동일 PC에서 두 프로세스로 동시 discovery 할 때 10048 등이 나기 쉬워
+          CAM1 스트림을 먼저 안정화한 뒤 CAM2/CAM3 초기화 순서를 맞춘다.
+        - 첫 번째로 읽은 프레임은 소비(consume)되며, 이후 read()는 다음 프레임부터다.
+        """
+        from src.utils.novitec_cam1_subprocess_loader import NovitecCamera1SubprocessLoader
+
+        loader = self.camera_loaders.get(1)
+        if not isinstance(loader, NovitecCamera1SubprocessLoader):
+            return True
+
+        deadline = time.time() + timeout_sec
+        logger.info(
+            "CAM1 subprocess: waiting for first frame before initializing other cameras "
+            f"(timeout={timeout_sec:.0f}s)..."
+        )
+        while time.time() < deadline:
+            if not loader.is_stream_process_alive():
+                logger.error("CAM1 subprocess: worker exited while waiting for first frame")
+                return False
+            ret, frame = loader.read()
+            if ret and frame is not None:
+                logger.info(
+                    "CAM1 subprocess: first frame received; continuing with CAM2/CAM3 init"
+                )
+                return True
+            time.sleep(poll_sec)
+
+        logger.error(
+            "CAM1 subprocess: timeout waiting for first frame "
+            "(GigE conflict / error 10048 / network / device busy)"
+        )
+        return False
+
     def check_camera_connection(self, camera_id: int) -> bool:
         """Check if camera is connected."""
         loader = self.camera_loaders.get(camera_id)
@@ -776,8 +837,7 @@ class CameraManager:
             if loader is None:
                 continue
             # Only reset video loaders (not Novitec camera loaders)
-            from src.utils.sequence_loader import NovitecCameraLoader
-            if isinstance(loader, NovitecCameraLoader):
+            if _loader_is_novitec_family(loader):
                 continue
             results[camera_id] = self.reset_loader_for_cycle(camera_id)
         
@@ -802,9 +862,7 @@ class CameraManager:
         loader = self.camera_loaders[camera_id]
         if loader is None:
             return False
-        # Check if it's a NovitecCameraLoader
-        from src.utils.sequence_loader import NovitecCameraLoader
-        if isinstance(loader, NovitecCameraLoader):
+        if _loader_is_novitec_family(loader):
             try:
                 # IMPORTANT: Stop frame buffer FIRST to prevent it from restarting the stream
                 if hasattr(loader, 'stop_buffering'):
@@ -815,8 +873,8 @@ class CameraManager:
                     if loader.camera._is_streaming:
                         logger.info(f"Camera {camera_id}: Stopping stream...")
                         if loader.camera.stop_stream():
-                            loader._stream_started = False
-                            loader.camera._is_streaming = False
+                            if hasattr(loader, '_stream_started'):
+                                loader._stream_started = False
                             logger.info(f"Camera {camera_id}: Stream stopped successfully")
                             return True
                         else:
@@ -851,63 +909,65 @@ class CameraManager:
         loader = self.camera_loaders[camera_id]
         if loader is None:
             return False
-        # Check if it's a NovitecCameraLoader
-        from src.utils.sequence_loader import NovitecCameraLoader
-        if isinstance(loader, NovitecCameraLoader):
+        if _loader_is_novitec_family(loader):
             try:
-                if loader.camera:
-                    # Start stream (each camera has its own DLL, so no conflicts)
-                    if hasattr(loader.camera, 'start_stream'):
-                        if not loader.camera._is_streaming:
-                            logger.info(f"Camera {camera_id}: Starting stream...")
-                            if loader.camera.start_stream():
+                from src.utils.novitec_cam1_subprocess_loader import (
+                    NovitecCamera1SubprocessLoader,
+                )
+
+                if loader.camera and hasattr(loader.camera, 'start_stream'):
+                    if not loader.camera._is_streaming:
+                        logger.info(f"Camera {camera_id}: Starting stream...")
+                        if loader.camera.start_stream():
+                            if hasattr(loader, '_stream_started'):
                                 loader._stream_started = True
-                                loader.camera._is_streaming = True
-                                logger.info(f"Camera {camera_id}: Stream started successfully")
-                                
-                                # Start frame buffer after stream is active
-                                if hasattr(loader, 'start_buffering') and loader.enable_buffering:
-                                    loader.start_buffering()
-                                    logger.info(f"Camera {camera_id}: Frame buffer started")
-                                
-                                return True
-                            else:
-                                logger.warning(f"Camera {camera_id}: start_stream() returned False")
-                                return False
-                        else:
-                            logger.debug(f"Camera {camera_id}: Stream already started")
-                            # Make sure buffer is running if stream is already active
-                            if hasattr(loader, 'start_buffering') and loader.enable_buffering:
-                                if loader._frame_buffer is None or not loader._frame_buffer.is_running:
-                                    loader.start_buffering()
-                                    logger.info(f"Camera {camera_id}: Frame buffer started (stream was already active)")
+                            logger.info(f"Camera {camera_id}: Stream started successfully")
+                            if (
+                                hasattr(loader, 'start_buffering')
+                                and getattr(loader, 'enable_buffering', False)
+                                and not isinstance(loader, NovitecCamera1SubprocessLoader)
+                            ):
+                                loader.start_buffering()
+                                logger.info(f"Camera {camera_id}: Frame buffer started")
                             return True
+                        logger.warning(f"Camera {camera_id}: start_stream() returned False")
+                        return False
+                    logger.debug(f"Camera {camera_id}: Stream already started")
+                    if (
+                        hasattr(loader, 'start_buffering')
+                        and loader.enable_buffering
+                        and not isinstance(loader, NovitecCamera1SubprocessLoader)
+                    ):
+                        fb = getattr(loader, '_frame_buffer', None)
+                        if fb is None or not fb.is_running:
+                            loader.start_buffering()
+                            logger.info(
+                                f"Camera {camera_id}: Frame buffer started (stream was already active)"
+                            )
+                    return True
             except Exception as e:
                 logger.warning(f"Camera {camera_id}: Failed to start stream: {e}")
                 import traceback
                 traceback.print_exc()
                 return False
-        
+
         return False
     
     def stop_all_camera_streams(self):
         """Stop streams for all Novitec cameras."""
-        from src.utils.sequence_loader import NovitecCameraLoader
         for camera_id, loader in self.camera_loaders.items():
-            if isinstance(loader, NovitecCameraLoader):
+            if _loader_is_novitec_family(loader):
                 self.stop_camera_stream(camera_id)
 
     def is_novitec_camera(self, camera_id: int) -> bool:
         """CAM이 Novitec 로더인지."""
-        from src.utils.sequence_loader import NovitecCameraLoader
         loader = self.camera_loaders.get(camera_id)
-        return isinstance(loader, NovitecCameraLoader)
+        return _loader_is_novitec_family(loader)
 
     def is_camera_stream_active(self, camera_id: int) -> bool:
         """Novitec 스트림(start_stream)이 켜져 있는지."""
-        from src.utils.sequence_loader import NovitecCameraLoader
         loader = self.camera_loaders.get(camera_id)
-        if not isinstance(loader, NovitecCameraLoader) or not loader.camera:
+        if not _loader_is_novitec_family(loader) or not getattr(loader, 'camera', None):
             return False
         return bool(getattr(loader.camera, "_is_streaming", False))
 
@@ -917,10 +977,17 @@ class CameraManager:
         ``last_frames``가 없을 때 보조용. 언디스토션은 로더 설정을 따름.
         """
         from src.utils.sequence_loader import NovitecCameraLoader
+        from src.utils.novitec_cam1_subprocess_loader import NovitecCamera1SubprocessLoader
+
         loader = self.camera_loaders.get(camera_id)
-        if not isinstance(loader, NovitecCameraLoader) or not loader.camera:
+        if loader is None or not loader.camera:
             return None
         try:
+            if isinstance(loader, NovitecCamera1SubprocessLoader):
+                ret, frame = loader.read()
+                return frame if ret else None
+            if not isinstance(loader, NovitecCameraLoader):
+                return None
             data = loader.camera.capture(output_formats=["image"])
             if not data or "image" not in data:
                 return None
@@ -939,10 +1006,8 @@ class CameraManager:
         stdin JSON 한 줄로 요청 (cold subprocess / 매번 Python·DLL 로드 비용 제거).
         데몬 실패 시 `novitec_manual_trigger_worker` 1회 실행으로 폴백.
         """
-        from src.utils.sequence_loader import NovitecCameraLoader
-
         loader = self.camera_loaders.get(camera_id)
-        if not isinstance(loader, NovitecCameraLoader) or not loader.camera:
+        if not _loader_is_novitec_family(loader) or not loader.camera:
             return None
 
         device_id = loader.device_id
@@ -1060,6 +1125,9 @@ class CameraManager:
                 enable_buffering=enable_buffering,
                 buffer_size=buffer_size,
                 buffer_drop_policy=buffer_drop_policy,
+                novitec_cam1_subprocess=(
+                    USE_NOVITEC_CAM1_SUBPROCESS_STREAM and camera_index == 1
+                ),
             )
             if new_loader is None:
                 logger.error(
